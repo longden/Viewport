@@ -1,6 +1,4 @@
-import AppKit
 import Combine
-import CoreGraphics
 import Foundation
 
 @MainActor
@@ -15,7 +13,6 @@ final class WorkspaceStore: ObservableObject {
     private let defaults: UserDefaults
     private let visibleSourcesKey: String
     private var captureRefreshTask: Task<Void, Never>?
-    private var permissionRefreshTask: Task<Void, Never>?
 
     init(
         defaults: UserDefaults = .standard,
@@ -39,7 +36,6 @@ final class WorkspaceStore: ObservableObject {
 
     deinit {
         captureRefreshTask?.cancel()
-        permissionRefreshTask?.cancel()
     }
 
     var orderedVisibleSources: [ViewerSource] {
@@ -68,6 +64,9 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshCaptures() {
+        androidCapture.refreshInputAccess()
+        iOSCapture.refreshInputAccess()
+
         if isVisible(.android) {
             androidCapture.refreshWindows()
         }
@@ -86,31 +85,6 @@ final class WorkspaceStore: ObservableObject {
         refreshCaptures()
     }
 
-    func requestScreenRecordingAccess() {
-        if CGRequestScreenCaptureAccess() {
-            refreshCaptures()
-            return
-        }
-
-        refreshCaptures()
-
-        guard let settingsURL = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        ) else {
-            return
-        }
-        NSWorkspace.shared.open(settingsURL)
-    }
-
-    func recheckScreenRecordingAccess() {
-        permissionRefreshTask?.cancel()
-        permissionRefreshTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
-            guard let self, !Task.isCancelled else { return }
-            self.refreshCaptures()
-        }
-    }
-
     func reconnectAfterDeviceLaunch() {
         captureRefreshTask?.cancel()
         captureRefreshTask = Task { [weak self] in
@@ -124,7 +98,6 @@ final class WorkspaceStore: ObservableObject {
 
     func stopCaptures() {
         captureRefreshTask?.cancel()
-        permissionRefreshTask?.cancel()
         androidCapture.stopCapture()
         iOSCapture.stopCapture()
     }

@@ -11,8 +11,19 @@ let package = Package(
         .executable(name: "Viewport", targets: ["Viewport"])
     ],
     targets: [
+        .target(
+            name: "IndigoTouch",
+            path: "Sources/IndigoTouch",
+            sources: ["ViewportIndigoTouch.m"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include"),
+                .headerSearchPath(".")
+            ]
+        ),
         .executableTarget(
             name: "Viewport",
+            dependencies: ["IndigoTouch"],
             path: "Sources/Viewport",
             swiftSettings: [
                 .swiftLanguageMode(.v5)

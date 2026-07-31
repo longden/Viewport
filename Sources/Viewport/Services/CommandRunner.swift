@@ -6,6 +6,12 @@ struct CommandResult: Equatable {
     let standardError: String
 }
 
+struct CommandDataResult: Equatable {
+    let exitCode: Int32
+    let standardOutput: Data
+    let standardError: Data
+}
+
 enum CommandRunnerError: LocalizedError {
     case executableNotFound(String)
     case failedToLaunch(String)
@@ -29,6 +35,24 @@ actor CommandRunner {
         arguments: [String],
         environment: [String: String] = [:]
     ) async throws -> CommandResult {
+        let result = try await runData(
+            executable: executable,
+            arguments: arguments,
+            environment: environment
+        )
+
+        return CommandResult(
+            exitCode: result.exitCode,
+            standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+            standardError: String(decoding: result.standardError, as: UTF8.self)
+        )
+    }
+
+    func runData(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String] = [:]
+    ) async throws -> CommandDataResult {
         try Task.checkCancellation()
 
         let process = Process()
@@ -70,10 +94,10 @@ actor CommandRunner {
             let errorData = await errorTask.value
             try Task.checkCancellation()
 
-            return CommandResult(
+            return CommandDataResult(
                 exitCode: exitCode,
-                standardOutput: String(decoding: outputData, as: UTF8.self),
-                standardError: String(decoding: errorData, as: UTF8.self)
+                standardOutput: outputData,
+                standardError: errorData
             )
         } onCancel: {
             if process.isRunning {

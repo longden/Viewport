@@ -27,14 +27,12 @@ struct WorkspaceSplitView: View {
         case .android:
             CaptureViewerPane(
                 session: workspace.androidCapture,
-                deviceManager: workspace.androidDevices,
-                onRequestScreenAccess: workspace.requestScreenRecordingAccess
+                deviceManager: workspace.androidDevices
             )
         case .iOS:
             CaptureViewerPane(
                 session: workspace.iOSCapture,
-                deviceManager: workspace.iOSDevices,
-                onRequestScreenAccess: workspace.requestScreenRecordingAccess
+                deviceManager: workspace.iOSDevices
             )
         }
     }

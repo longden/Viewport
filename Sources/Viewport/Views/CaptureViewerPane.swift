@@ -3,7 +3,6 @@ import SwiftUI
 struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
     @ObservedObject var deviceManager: DeviceManager
-    let onRequestScreenAccess: () -> Void
 
     var body: some View {
         ViewerPane(
@@ -14,16 +13,15 @@ struct CaptureViewerPane: View {
             sourcePicker
         } content: {
             ZStack {
-                Color.black
-
                 if session.phase == .live {
+                    Color.primary.opacity(0.035)
                     CapturePreviewView(session: session)
 
                     VStack {
                         Spacer()
                         HStack {
                             Spacer()
-                            Text("Live mirror")
+                            Text(session.inputAccess.label)
                                 .font(.caption2.weight(.medium))
                                 .foregroundStyle(.white.opacity(0.82))
                                 .padding(.horizontal, 8)
@@ -37,6 +35,7 @@ struct CaptureViewerPane: View {
                     .padding(10)
                     .allowsHitTesting(false)
                 } else {
+                    Color.black
                     emptyState
                 }
             }
@@ -47,26 +46,26 @@ struct CaptureViewerPane: View {
     @ViewBuilder
     private var sourcePicker: some View {
         HStack(spacing: 8) {
-            if session.availableWindows.isEmpty {
-                Text("No \(session.source.detail.lowercased()) window")
+            if session.availableDevices.isEmpty {
+                Text("No running \(session.source.detail.lowercased())")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Picker(
-                    "Window",
+                    "Device",
                     selection: Binding(
-                        get: { session.selectedWindowID },
+                        get: { session.selectedDeviceID },
                         set: { id in
                             if let id {
-                                session.selectWindow(id)
+                                session.selectDevice(id)
                             }
                         }
                     )
                 ) {
-                    ForEach(session.availableWindows) { window in
-                        Text(window.displayName)
-                            .tag(Optional(window.id))
+                    ForEach(session.availableDevices) { device in
+                        Text(device.displayName)
+                            .tag(Optional(device.id))
                     }
                 }
                 .labelsHidden()
@@ -76,23 +75,32 @@ struct CaptureViewerPane: View {
             Button {
                 session.refreshWindows()
             } label: {
-                Label("Refresh windows", systemImage: "arrow.clockwise")
+                Label("Refresh devices", systemImage: "arrow.clockwise")
             }
             .labelStyle(.iconOnly)
-            .help("Refresh windows")
+            .help("Refresh devices")
 
             if session.phase == .live {
                 Button {
-                    session.activateSelectedApplication()
+                    session.requestInputAccess()
                 } label: {
                     Label(
-                        "Open device window",
-                        systemImage: "arrow.up.forward.app"
+                        session.inputAccess.label,
+                        systemImage: session.inputAccess == .ready
+                            ? "cursorarrow.click.2"
+                            : "hand.raised"
                     )
                 }
                 .labelStyle(.iconOnly)
+                .foregroundStyle(
+                    session.inputAccess == .ready
+                        ? Color.green
+                        : Color.orange
+                )
                 .help(
-                    "Open the device window to interact; this pane is a live mirror"
+                    session.inputAccess == .ready
+                        ? "Direct device input is active; keyboard input follows focus"
+                        : "Direct device input is unavailable"
                 )
             }
 
@@ -119,24 +127,7 @@ struct CaptureViewerPane: View {
                     .frame(maxWidth: 260)
             }
 
-            if session.phase == .permissionNeeded {
-                Button {
-                    onRequestScreenAccess()
-                } label: {
-                    Label("Open screen access", systemImage: "lock.open")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.black.opacity(0.82))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            session.source.accentColor,
-                            in: Capsule()
-                        )
-                }
-                .buttonStyle(.plain)
-            } else {
-                DeviceLauncherMenu(manager: deviceManager, compact: false)
-            }
+            DeviceLauncherMenu(manager: deviceManager, compact: false)
         }
         .padding(24)
     }
@@ -147,7 +138,7 @@ struct CaptureViewerPane: View {
             .active
         case .failed:
             .error
-        case .permissionNeeded, .noWindow:
+        case .noWindow:
             .warning
         case .idle, .searching, .connecting:
             .neutral
@@ -156,8 +147,6 @@ struct CaptureViewerPane: View {
 
     private var emptyStateIcon: String {
         return switch session.phase {
-        case .permissionNeeded:
-            "rectangle.inset.filled.and.person.filled"
         case .failed:
             "exclamationmark.triangle"
         default:
@@ -171,12 +160,10 @@ struct CaptureViewerPane: View {
         }
 
         return switch session.phase {
-        case .permissionNeeded:
-            "Screen access needed"
         case .failed:
-            "Capture stopped"
+            "Device stream stopped"
         case .searching:
-            "Looking for a window"
+            "Looking for a device"
         case .connecting:
             "Connecting"
         default:
@@ -190,20 +177,18 @@ struct CaptureViewerPane: View {
         }
 
         if case .launching = deviceManager.phase {
-            return "The live view will connect when the window appears."
+            return "The live view will connect when the device finishes booting."
         }
 
         return switch session.phase {
-        case .permissionNeeded:
-            "Enable Viewport in System Settings, then return here. It will reconnect automatically."
         case let .failed(message):
             message
         case .searching:
             "This usually takes a moment."
         case .connecting:
-            "Preparing the live view."
+            "Connecting directly to the device framebuffer."
         default:
-            "Keep the \(session.source.detail.lowercased()) window open and unminimized, then refresh."
+            "Start a device, then refresh. Its host window may stay hidden or closed."
         }
     }
 }
