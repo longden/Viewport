@@ -1,13 +1,10 @@
 import AppKit
-import AVFoundation
 import Combine
 import CoreGraphics
-import CoreMedia
-import ScreenCaptureKit
+import Foundation
 
 enum CapturePhase: Equatable {
     case idle
-    case permissionNeeded
     case searching
     case connecting
     case live
@@ -16,71 +13,58 @@ enum CapturePhase: Equatable {
 
     var label: String {
         switch self {
-        case .idle:
-            "Waiting"
-        case .permissionNeeded:
-            "Screen access"
-        case .searching:
-            "Looking"
-        case .connecting:
-            "Connecting"
-        case .live:
-            "Live"
-        case .noWindow:
-            "Not found"
-        case .failed:
-            "Capture error"
+        case .idle: "Waiting"
+        case .searching: "Looking"
+        case .connecting: "Connecting"
+        case .live: "Live"
+        case .noWindow: "Not found"
+        case .failed: "Device error"
         }
-    }
-}
-
-struct CapturableWindow: Identifiable {
-    let window: SCWindow
-    let descriptor: CaptureDescriptor
-
-    var id: CGWindowID { window.windowID }
-
-    var displayName: String {
-        if !descriptor.windowTitle.isEmpty {
-            return descriptor.windowTitle
-        }
-        return descriptor.applicationName
     }
 }
 
 @MainActor
-final class WindowCaptureSession: NSObject, ObservableObject {
+final class WindowCaptureSession: ObservableObject {
     let source: ViewerSource
 
-    @Published private(set) var availableWindows: [CapturableWindow] = []
-    @Published private(set) var selectedWindowID: CGWindowID?
+    @Published private(set) var availableDevices: [StreamedDevice] = []
+    @Published private(set) var selectedDeviceID: String?
     @Published private(set) var phase: CapturePhase = .idle
+    @Published private(set) var inputAccess: InputAccessPhase
+    @Published private(set) var capturedFrameSize: CGSize?
 
-    private let sampleQueue: DispatchQueue
-    nonisolated private let frameDelivery = LatestFrameDelivery()
-    private var activeStream: SCStream?
-    private var captureGeneration = UUID()
-    private var refreshGeneration = UUID()
-    private var lifecycleTask: Task<Void, Never>?
+    private let frameClient: DeviceFrameClient
+    private let androidInput: AndroidDeviceInput?
+    private let iOSInput: IOSSimulatorHIDInput?
+    private var captureTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = UUID()
     private weak var previewView: CapturePreviewNSView?
 
     init(source: ViewerSource) {
         self.source = source
-        sampleQueue = DispatchQueue(
-            label: "com.longden.viewport.capture.\(source.rawValue)",
-            qos: .userInitiated
-        )
-        super.init()
+        let frameClient = DeviceFrameClient(source: source)
+        self.frameClient = frameClient
+        androidInput = source == .android ? AndroidDeviceInput() : nil
+        let iOSInput = source == .iOS ? IOSSimulatorHIDInput() : nil
+        self.iOSInput = iOSInput
+        inputAccess = frameClient.isAvailable
+            && (source != .iOS || iOSInput?.isAvailable == true)
+            ? .ready
+            : .permissionNeeded
     }
 
     deinit {
-        lifecycleTask?.cancel()
+        captureTask?.cancel()
         refreshTask?.cancel()
     }
 
-    var selectedWindow: CapturableWindow? {
-        availableWindows.first(where: { $0.id == selectedWindowID })
+    var selectedDevice: StreamedDevice? {
+        availableDevices.first(where: { $0.id == selectedDeviceID })
+    }
+
+    var capturedWindowSize: CGSize? {
+        capturedFrameSize
     }
 
     func attachPreview(_ view: CapturePreviewNSView) {
@@ -92,300 +76,221 @@ final class WindowCaptureSession: NSObject, ObservableObject {
         previewView = nil
     }
 
-    func refreshWindows() {
-        guard CGPreflightScreenCaptureAccess() else {
-            phase = .permissionNeeded
-            availableWindows = []
-            selectedWindowID = nil
-            stopCapture()
-            return
-        }
+    func refreshInputAccess() {
+        inputAccess = frameClient.isAvailable
+            && (source != .iOS || iOSInput?.isAvailable == true)
+            ? .ready
+            : .permissionNeeded
+    }
 
-        if phase != .live {
-            phase = .searching
-        }
+    func requestInputAccess() {
+        // Direct ADB and Simulator HID input do not use macOS Accessibility.
+        refreshInputAccess()
+    }
+
+    func refreshWindows() {
         refreshTask?.cancel()
         let generation = UUID()
         refreshGeneration = generation
+        if phase != .live {
+            phase = .searching
+        }
 
         refreshTask = Task { [weak self] in
             guard let self else { return }
-
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: true
-                )
-
-                let matches = content.windows
-                    .compactMap { window -> CapturableWindow? in
-                        let descriptor = CaptureDescriptor(
-                            applicationName: window.owningApplication?.applicationName ?? "",
-                            bundleIdentifier: window.owningApplication?.bundleIdentifier ?? "",
-                            windowTitle: window.title ?? ""
-                        )
-
-                        guard descriptor.matches(self.source),
-                              window.frame.width > 120,
-                              window.frame.height > 180 else {
-                            return nil
-                        }
-
-                        return CapturableWindow(window: window, descriptor: descriptor)
-                    }
-                    .sorted { lhs, rhs in
-                        lhs.displayName.localizedStandardCompare(rhs.displayName)
-                            == .orderedAscending
-                    }
-
+                let devices = try await frameClient.listRunningDevices()
                 guard !Task.isCancelled,
-                      self.refreshGeneration == generation else {
+                      refreshGeneration == generation else {
                     return
                 }
 
-                let previousSelection = self.selectedWindowID
-                self.availableWindows = matches
-
-                guard let selected = matches.first(where: { $0.id == previousSelection })
-                    ?? matches.first else {
-                    self.selectedWindowID = nil
-                    self.stopCapture()
-                    self.phase = .noWindow
+                let previousSelection = selectedDeviceID
+                availableDevices = devices
+                guard let selected = devices.first(where: {
+                    $0.id == previousSelection
+                }) ?? devices.first else {
+                    selectedDeviceID = nil
+                    stopCapture()
+                    phase = .noWindow
                     return
                 }
 
-                if selected.id == previousSelection,
-                   self.phase == .live,
-                   self.activeStream != nil {
-                    return
+                if selected.id != previousSelection || captureTask == nil {
+                    selectDevice(selected.id)
                 }
-
-                self.selectWindow(selected.id)
             } catch {
                 guard !Task.isCancelled,
-                      self.refreshGeneration == generation else {
+                      refreshGeneration == generation else {
                     return
                 }
-                self.phase = .failed(error.localizedDescription)
+                availableDevices = []
+                selectedDeviceID = nil
+                stopCapture()
+                phase = .failed(error.localizedDescription)
             }
         }
     }
 
-    func selectWindow(_ id: CGWindowID) {
-        guard let target = availableWindows.first(where: { $0.id == id }) else {
+    func selectDevice(_ id: String) {
+        guard availableDevices.contains(where: { $0.id == id }) else {
             return
         }
-
-        selectedWindowID = id
-        startCapture(of: target.window)
-    }
-
-    func activateSelectedApplication() {
-        guard let processID = selectedWindow?
-            .window
-            .owningApplication?
-            .processID,
-            let application = NSRunningApplication(
-                processIdentifier: processID
-            ) else {
-            return
-        }
-
-        application.activate(options: [.activateAllWindows])
+        selectedDeviceID = id
+        startCapture(deviceID: id)
     }
 
     func stopCapture() {
-        captureGeneration = UUID()
-        lifecycleTask?.cancel()
-        let stream = activeStream
-        activeStream = nil
-        frameDelivery.clear()
+        captureTask?.cancel()
+        captureTask = nil
+        capturedFrameSize = nil
         previewView?.clear()
+    }
 
-        guard let stream else { return }
-        lifecycleTask = Task {
-            try? await stream.stopCapture()
+    func performGesture(
+        from start: CGPoint,
+        to end: CGPoint,
+        duration: TimeInterval
+    ) {
+        guard let device = selectedDevice else { return }
+        let distance = hypot(end.x - start.x, end.y - start.y)
+
+        if source == .android,
+           let androidInput,
+           let deviceSize = capturedFrameSize ?? device.pixelSize {
+            if distance < 0.015 {
+                Task {
+                    await androidInput.tap(
+                        serial: device.id,
+                        deviceSize: deviceSize,
+                        at: end
+                    )
+                }
+            } else {
+                Task {
+                    await androidInput.swipe(
+                        serial: device.id,
+                        deviceSize: deviceSize,
+                        from: start,
+                        to: end,
+                        duration: duration
+                    )
+                }
+            }
+            return
+        }
+
+        guard source == .iOS, let iOSInput else { return }
+        Task { @MainActor in
+            iOSInput.touchDown(at: start, udid: device.id)
+            let steps = distance < 0.015
+                ? 1
+                : max(2, min(Int(duration * 60), 30))
+            if steps > 1 {
+                let delay = max(duration / Double(steps), 0.008)
+                for step in 1...steps {
+                    let progress = CGFloat(step) / CGFloat(steps)
+                    iOSInput.touchMove(
+                        to: CGPoint(
+                            x: start.x + (end.x - start.x) * progress,
+                            y: start.y + (end.y - start.y) * progress
+                        ),
+                        udid: device.id
+                    )
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+            } else {
+                try? await Task.sleep(for: .milliseconds(45))
+            }
+            iOSInput.touchUp(at: end, udid: device.id)
+            // CoreSimulator can leave an in-flight simctl screenshot command
+            // stale after private HID delivery. Replace the polling task while
+            // keeping the last frame visible so navigation updates immediately.
+            startCapture(
+                deviceID: device.id,
+                preservingCurrentFrame: true
+            )
         }
     }
 
-    private func startCapture(of window: SCWindow) {
-        let generation = UUID()
-        captureGeneration = generation
-        phase = .connecting
+    @discardableResult
+    func postKeyboardEvent(_ event: NSEvent) -> Bool {
+        guard let device = selectedDevice else { return false }
+        if source == .android, let androidInput {
+            Task {
+                await androidInput.key(serial: device.id, event: event)
+            }
+            return true
+        }
+        if source == .iOS, let iOSInput {
+            return iOSInput.sendKey(event, udid: device.id)
+                || event.type != .keyDown
+        }
+        return false
+    }
 
-        lifecycleTask?.cancel()
-        let previousStream = activeStream
-        activeStream = nil
+    private func startCapture(
+        deviceID: String,
+        preservingCurrentFrame: Bool = false
+    ) {
+        captureTask?.cancel()
+        if !preservingCurrentFrame {
+            previewView?.clear()
+            capturedFrameSize = nil
+            phase = .connecting
+        }
 
-        lifecycleTask = Task { [weak self] in
+        captureTask = Task { [weak self] in
             guard let self else { return }
+            var hasDisplayedFrame = preservingCurrentFrame
+                && capturedFrameSize != nil
+            var consecutiveFailures = 0
 
-            if let previousStream {
-                try? await previousStream.stopCapture()
-            }
+            while !Task.isCancelled, selectedDeviceID == deviceID {
+                do {
+                    let data = try await frameClient.captureFrame(
+                        deviceID: deviceID
+                    )
+                    try Task.checkCancellation()
+                    guard selectedDeviceID == deviceID,
+                          let image = NSImage(data: data),
+                          let cgImage = image.cgImage(
+                            forProposedRect: nil,
+                            context: nil,
+                            hints: nil
+                          ) else {
+                        throw DeviceFrameError.invalidImage
+                    }
 
-            guard !Task.isCancelled,
-                  self.captureGeneration == generation else {
-                return
-            }
-
-            let configuration = SCStreamConfiguration()
-            let scale = min(
-                2,
-                1_440 / max(window.frame.width, 1),
-                1_800 / max(window.frame.height, 1)
-            )
-            configuration.width = max(Int(window.frame.width * scale), 1)
-            configuration.height = max(Int(window.frame.height * scale), 1)
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 20)
-            configuration.queueDepth = 2
-            configuration.showsCursor = false
-            configuration.capturesAudio = false
-            // Keep the framework default. On macOS 26.5, assigning a bridged
-            // NSColor.cgColor can trap inside SCStreamConfiguration.copy().
-
-            let filter = SCContentFilter(desktopIndependentWindow: window)
-            let stream = SCStream(
-                filter: filter,
-                configuration: configuration,
-                delegate: self
-            )
-
-            do {
-                try stream.addStreamOutput(
-                    self,
-                    type: .screen,
-                    sampleHandlerQueue: self.sampleQueue
-                )
-                self.activeStream = stream
-                try await stream.startCapture()
-
-                guard !Task.isCancelled,
-                      self.captureGeneration == generation,
-                      self.activeStream === stream else {
-                    try? await stream.stopCapture()
+                    capturedFrameSize = CGSize(
+                        width: cgImage.width,
+                        height: cgImage.height
+                    )
+                    previewView?.display(cgImage)
+                    consecutiveFailures = 0
+                    if !hasDisplayedFrame {
+                        hasDisplayedFrame = true
+                        phase = .live
+                    }
+                } catch is CancellationError {
                     return
+                } catch {
+                    consecutiveFailures += 1
+                    if !hasDisplayedFrame || consecutiveFailures >= 4 {
+                        phase = .failed(error.localizedDescription)
+                    }
                 }
 
-                self.phase = .live
-            } catch {
-                guard !Task.isCancelled,
-                      self.captureGeneration == generation,
-                      self.activeStream === stream else {
-                    return
-                }
-                self.activeStream = nil
-                self.phase = .failed(error.localizedDescription)
+                try? await Task.sleep(for: frameClient.frameInterval)
             }
         }
     }
 }
 
-extension WindowCaptureSession: SCStreamOutput, SCStreamDelegate {
-    nonisolated func stream(
-        _ stream: SCStream,
-        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-        of outputType: SCStreamOutputType
-    ) {
-        guard outputType == .screen,
-              sampleBuffer.isValid,
-              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
-            return
-        }
+private enum DeviceFrameError: LocalizedError {
+    case invalidImage
 
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
-            sampleBuffer,
-            createIfNecessary: false
-        ) as? [[SCStreamFrameInfo: Any]],
-        let statusRawValue = attachments.first?[.status] as? Int,
-        let status = SCFrameStatus(rawValue: statusRawValue),
-        status == .complete else {
-            return
-        }
-
-        frameDelivery.submit(
-            stream: stream,
-            frame: sampleBuffer
-        ) { [weak self] payload in
-            Task { @MainActor in
-                guard let self,
-                      self.activeStream === payload.stream else {
-                    return
-                }
-                self.previewView?.display(payload.frame)
-            }
-        }
-    }
-
-    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        Task { @MainActor [weak self] in
-            guard let self, self.activeStream === stream else { return }
-            self.activeStream = nil
-            self.phase = .failed(error.localizedDescription)
-        }
-    }
-}
-
-private final class LatestFrameDelivery: @unchecked Sendable {
-    struct Payload {
-        let stream: SCStream
-        let frame: CMSampleBuffer
-    }
-
-    private let lock = NSLock()
-    private var latestPayload: Payload?
-    private var deliveryIsScheduled = false
-
-    func submit(
-        stream: SCStream,
-        frame: CMSampleBuffer,
-        deliver: @escaping (Payload) -> Void
-    ) {
-        lock.lock()
-        latestPayload = Payload(stream: stream, frame: frame)
-        let shouldSchedule = !deliveryIsScheduled
-        deliveryIsScheduled = true
-        lock.unlock()
-
-        guard shouldSchedule else { return }
-        scheduleDelivery(deliver)
-    }
-
-    func clear() {
-        lock.lock()
-        latestPayload = nil
-        lock.unlock()
-    }
-
-    private func scheduleDelivery(
-        _ deliver: @escaping (Payload) -> Void
-    ) {
-        DispatchQueue.main.async { [weak self] in
-            self?.deliverLatest(deliver)
-        }
-    }
-
-    private func deliverLatest(
-        _ deliver: @escaping (Payload) -> Void
-    ) {
-        lock.lock()
-        let payload = latestPayload
-        latestPayload = nil
-        lock.unlock()
-
-        if let payload {
-            deliver(payload)
-        }
-
-        lock.lock()
-        let hasAnotherFrame = latestPayload != nil
-        if !hasAnotherFrame {
-            deliveryIsScheduled = false
-        }
-        lock.unlock()
-
-        if hasAnotherFrame {
-            scheduleDelivery(deliver)
-        }
+    var errorDescription: String? {
+        "The device returned an unreadable frame."
     }
 }

@@ -14,7 +14,6 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 MODULE_CACHE_DIR="$ROOT_DIR/.build/swiftpm-module-cache"
-SCREEN_ACCESS_REQUIREMENT_FILE="$DIST_DIR/.viewport-screen-access-requirement"
 
 if [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -24,53 +23,11 @@ open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
-code_requirement() {
-  /usr/bin/codesign -d --requirements - "$APP_BUNDLE" 2>&1 \
-    | /usr/bin/sed -n \
-      -e 's/^# designated => /designated => /' \
-      -e '/^designated => /p'
-}
-
-record_screen_access_requirement() {
-  local current_requirement
-  current_requirement="$(code_requirement)"
-
-  if [[ -z "$current_requirement" ]]; then
-    echo "Could not read the Viewport code requirement." >&2
-    exit 1
-  fi
-
-  printf '%s\n' "$current_requirement" >"$SCREEN_ACCESS_REQUIREMENT_FILE"
-}
-
-prepare_screen_access() {
-  local current_requirement
-  local approved_requirement=""
-
-  current_requirement="$(code_requirement)"
-  if [[ -z "$current_requirement" ]]; then
-    echo "Could not read the Viewport code requirement." >&2
-    exit 1
-  fi
-
-  if [[ -f "$SCREEN_ACCESS_REQUIREMENT_FILE" ]]; then
-    approved_requirement="$(<"$SCREEN_ACCESS_REQUIREMENT_FILE")"
-  fi
-
-  if [[ "$approved_requirement" != "$current_requirement" ]]; then
-    echo "Viewport's code identity changed; clearing its stale Screen Recording entry."
-    /usr/bin/tccutil reset ScreenCapture "$BUNDLE_ID"
-  fi
-
-  printf '%s\n' "$current_requirement" >"$SCREEN_ACCESS_REQUIREMENT_FILE"
-}
-
 if [[ "$MODE" == "--launch" || "$MODE" == "launch" ]]; then
   if [[ ! -d "$APP_BUNDLE" ]]; then
     echo "$APP_BUNDLE does not exist; run the build first." >&2
     exit 1
   fi
-  prepare_screen_access
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
   open_app
   exit 0
@@ -109,8 +66,6 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
-  <key>NSScreenCaptureUsageDescription</key>
-  <string>Viewport displays your Android Emulator and iOS Simulator windows together.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>
@@ -140,39 +95,29 @@ fi
 
 case "$MODE" in
   run)
-    prepare_screen_access
-    open_app
-    ;;
-  --reset-screen-access|reset-screen-access)
-    /usr/bin/tccutil reset ScreenCapture "$BUNDLE_ID"
-    record_screen_access_requirement
     open_app
     ;;
   --build-only|build-only)
     echo "Built $APP_BUNDLE"
     ;;
   --debug|debug)
-    prepare_screen_access
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
-    prepare_screen_access
     open_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
-    prepare_screen_access
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
-    prepare_screen_access
     open_app
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--launch|--reset-screen-access|--build-only|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--launch|--build-only|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac

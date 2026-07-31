@@ -1,8 +1,6 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(\.scenePhase) private var scenePhase
-
     @StateObject private var workspace = WorkspaceStore()
     @StateObject private var web = WebViewModel()
     @StateObject private var favorites = FavoritesStore()
@@ -77,13 +75,6 @@ struct ContentView: View {
         }
         .onChange(of: workspace.iOSDevices.lastLaunchToken) {
             workspace.reconnectAfterDeviceLaunch()
-        }
-        .onChange(of: scenePhase) {
-            guard scenePhase == .active else { return }
-            workspace.recheckScreenRecordingAccess()
-        }
-        .onDisappear {
-            workspace.stopCaptures()
         }
     }
 
