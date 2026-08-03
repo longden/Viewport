@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurface.h>
 
 /// Loads CoreSimulator and SimulatorKit from the active Xcode installation.
 FOUNDATION_EXPORT BOOL ViewportHIDLoadFrameworks(void);
@@ -44,3 +45,19 @@ FOUNDATION_EXPORT BOOL ViewportHIDSessionSendKeyboard(
   size_t errorBufferLength);
 
 FOUNDATION_EXPORT void ViewportHIDSessionClose(void *_Nullable session);
+
+/// Callback for SimulatorKit framebuffer surface changes.
+/// `surface` is the latest unmasked framebuffer (may be NULL while reconnecting).
+typedef void (^ViewportSurfaceFrameHandler)(IOSurfaceRef _Nullable surface);
+
+/// Subscribes to the booted simulator's main display IOSurface.
+/// Returns an opaque subscription handle, or NULL on failure.
+FOUNDATION_EXPORT void *_Nullable ViewportSurfaceSubscribe(
+  NSString *_Nonnull udid,
+  dispatch_queue_t _Nonnull queue,
+  unsigned int frameRate,
+  ViewportSurfaceFrameHandler _Nonnull handler,
+  char *_Nonnull errorBuffer,
+  size_t errorBufferLength);
+
+FOUNDATION_EXPORT void ViewportSurfaceUnsubscribe(void *_Nullable subscription);

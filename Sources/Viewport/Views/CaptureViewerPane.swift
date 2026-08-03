@@ -7,7 +7,9 @@ struct CaptureViewerPane: View {
     var body: some View {
         ViewerPane(
             source: session.source,
-            status: session.phase.label,
+            status: session.phase == .live
+                ? session.liveStatus
+                : session.phase.label,
             statusStyle: statusStyle
         ) {
             sourcePicker
@@ -86,22 +88,13 @@ struct CaptureViewerPane: View {
                 } label: {
                     Label(
                         session.inputAccess.label,
-                        systemImage: session.inputAccess == .ready
-                            ? "cursorarrow.click.2"
-                            : "hand.raised"
+                        systemImage: inputStatusIcon
                     )
                 }
                 .labelStyle(.iconOnly)
-                .foregroundStyle(
-                    session.inputAccess == .ready
-                        ? Color.green
-                        : Color.orange
-                )
-                .help(
-                    session.inputAccess == .ready
-                        ? "Direct device input is active; keyboard input follows focus"
-                        : "Direct device input is unavailable"
-                )
+                .foregroundStyle(inputStatusColor)
+                .disabled(session.inputAccess == .viewOnly)
+                .help(inputStatusHelp)
             }
 
             DeviceLauncherMenu(manager: deviceManager)
@@ -142,6 +135,39 @@ struct CaptureViewerPane: View {
             .warning
         case .idle, .searching, .connecting:
             .neutral
+        }
+    }
+
+    private var inputStatusIcon: String {
+        switch session.inputAccess {
+        case .ready:
+            "cursorarrow.click.2"
+        case .permissionNeeded:
+            "hand.raised"
+        case .viewOnly:
+            "eye"
+        }
+    }
+
+    private var inputStatusColor: Color {
+        switch session.inputAccess {
+        case .ready:
+            .green
+        case .permissionNeeded:
+            .orange
+        case .viewOnly:
+            .secondary
+        }
+    }
+
+    private var inputStatusHelp: String {
+        switch session.inputAccess {
+        case .ready:
+            "Direct device input is active; keyboard input follows focus"
+        case .permissionNeeded:
+            "Direct device input is unavailable"
+        case .viewOnly:
+            "Connected iPhones are view only; interact on the phone itself"
         }
     }
 
@@ -186,9 +212,11 @@ struct CaptureViewerPane: View {
         case .searching:
             "This usually takes a moment."
         case .connecting:
-            "Connecting directly to the device framebuffer."
+            "Connecting to the device video stream."
         default:
-            "Start a device, then refresh. Its host window may stay hidden or closed."
+            session.source == .iOS
+                ? "Start a Simulator, or connect and trust an unlocked iPhone, then refresh."
+                : "Start a device, then refresh. Its host window may stay hidden or closed."
         }
     }
 }

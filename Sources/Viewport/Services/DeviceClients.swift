@@ -6,6 +6,24 @@ protocol DeviceClient {
     func launch(_ device: LaunchableDevice) async throws
 }
 
+struct ADBDeviceRecord: Equatable {
+    let serial: String
+    let state: String
+    let model: String?
+
+    var isEmulator: Bool {
+        serial.hasPrefix("emulator-")
+    }
+
+    var isOnline: Bool {
+        state == "device"
+    }
+
+    var displayModel: String? {
+        model?.replacingOccurrences(of: "_", with: " ")
+    }
+}
+
 struct AndroidDeviceClient: DeviceClient {
     let source = ViewerSource.android
 
@@ -97,19 +115,42 @@ struct AndroidDeviceClient: DeviceClient {
             .filter(isPlausibleAVDIdentifier)
     }
 
-    static func parseADBSerials(_ output: String) -> [String] {
+    static func parseADBDevices(_ output: String) -> [ADBDeviceRecord] {
         output
             .split(whereSeparator: \.isNewline)
-            .dropFirst()
-            .compactMap { line -> String? in
+            .compactMap { line -> ADBDeviceRecord? in
                 let columns = line.split(whereSeparator: \.isWhitespace)
                 guard columns.count >= 2,
-                      columns[0].hasPrefix("emulator-"),
-                      columns[1] == "device" else {
+                      columns[0] != "List",
+                      !columns[0].hasPrefix("*") else {
                     return nil
                 }
-                return String(columns[0])
+
+                let model = columns.dropFirst(2).compactMap {
+                    column -> String? in
+                    let field = column.split(
+                        separator: ":",
+                        maxSplits: 1,
+                        omittingEmptySubsequences: false
+                    )
+                    guard field.count == 2, field[0] == "model" else {
+                        return nil
+                    }
+                    return String(field[1])
+                }.first
+
+                return ADBDeviceRecord(
+                    serial: String(columns[0]),
+                    state: String(columns[1]),
+                    model: model
+                )
             }
+    }
+
+    static func parseADBSerials(_ output: String) -> [String] {
+        parseADBDevices(output)
+            .filter(\.isOnline)
+            .map(\.serial)
     }
 
     static func parseAVDNameResponse(_ output: String) -> String? {
@@ -176,7 +217,9 @@ struct AndroidDeviceClient: DeviceClient {
         }
 
         var names = Set<String>()
-        for serial in Self.parseADBSerials(devicesResult.standardOutput) {
+        for serial in Self.parseADBDevices(devicesResult.standardOutput)
+            .filter({ $0.isOnline && $0.isEmulator })
+            .map(\.serial) {
             guard let result = try? await runner.run(
                 executable: adb,
                 arguments: ["-s", serial, "emu", "avd", "name"]

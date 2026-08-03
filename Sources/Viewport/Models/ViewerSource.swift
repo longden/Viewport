@@ -23,6 +23,17 @@ enum ViewerSource: String, CaseIterable, Identifiable {
         case .web:
             "Browser"
         case .android:
+            "Device"
+        case .iOS:
+            "Device"
+        }
+    }
+
+    var launchDetail: String {
+        switch self {
+        case .web:
+            "Browser"
+        case .android:
             "Emulator"
         case .iOS:
             "Simulator"

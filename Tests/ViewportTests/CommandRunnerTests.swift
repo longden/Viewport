@@ -37,4 +37,53 @@ final class CommandRunnerTests: XCTestCase {
             XCTFail("Expected CancellationError, got \(error)")
         }
     }
+
+    func testTimeoutTerminatesTheChildProcess() async {
+        do {
+            _ = try await CommandRunner().run(
+                executable: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["10"],
+                timeout: 0.05
+            )
+            XCTFail("Expected command timeout")
+        } catch let error as CommandRunnerError {
+            guard case .timedOut = error else {
+                XCTFail("Expected timeout, got \(error)")
+                return
+            }
+        } catch {
+            XCTFail("Expected timeout, got \(error)")
+        }
+    }
+
+    func testRepeatedFastExitDoesNotLoseCompletion() async throws {
+        let runner = CommandRunner()
+
+        for _ in 0..<50 {
+            let result = try await runner.run(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                arguments: []
+            )
+            XCTAssertEqual(result.exitCode, 0)
+        }
+    }
+
+    func testCancelAfterFastExitStillCompletes() async {
+        for _ in 0..<20 {
+            let task = Task {
+                try await CommandRunner().run(
+                    executable: URL(fileURLWithPath: "/usr/bin/true"),
+                    arguments: []
+                )
+            }
+            task.cancel()
+            do {
+                _ = try await task.value
+            } catch is CancellationError {
+                // Expected when cancellation wins the race.
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
 }

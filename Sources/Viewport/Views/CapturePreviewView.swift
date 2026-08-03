@@ -1,4 +1,5 @@
 import AppKit
+import IOSurface
 import SwiftUI
 
 final class CapturePreviewNSView: NSView {
@@ -7,6 +8,7 @@ final class CapturePreviewNSView: NSView {
         point: CGPoint,
         timestamp: TimeInterval
     )?
+    private var lastMoveSentAt: TimeInterval = 0
     weak var session: WindowCaptureSession?
 
     init(session: WindowCaptureSession) {
@@ -22,7 +24,7 @@ final class CapturePreviewNSView: NSView {
         displayLayer.cornerRadius = 16
         displayLayer.masksToBounds = true
         displayLayer.magnificationFilter = .linear
-        displayLayer.minificationFilter = .trilinear
+        displayLayer.minificationFilter = .linear
         layer?.addSublayer(displayLayer)
     }
 
@@ -69,8 +71,18 @@ final class CapturePreviewNSView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = image
-        needsLayout = true
         CATransaction.commit()
+    }
+
+    func display(surface: IOSurfaceRef) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.contents = surface
+        CATransaction.commit()
+    }
+
+    func sourceSizeDidChange() {
+        needsLayout = true
     }
 
     func clear() {
@@ -84,6 +96,8 @@ final class CapturePreviewNSView: NSView {
             return
         }
         gestureStart = (point, event.timestamp)
+        lastMoveSentAt = event.timestamp
+        session?.beginPointer(at: point)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -94,7 +108,10 @@ final class CapturePreviewNSView: NSView {
               ) else {
             return
         }
-        _ = point
+        // ~60 Hz is enough for smooth dragging without flooding ADB.
+        guard event.timestamp - lastMoveSentAt >= 0.016 else { return }
+        lastMoveSentAt = event.timestamp
+        session?.movePointer(to: point)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -104,11 +121,14 @@ final class CapturePreviewNSView: NSView {
             for: event,
             clampsToDisplayedFrame: true
         ) else {
+            session?.endPointer(
+                at: start.point,
+                duration: max(event.timestamp - start.timestamp, 0.05)
+            )
             return
         }
-        session?.performGesture(
-            from: start.point,
-            to: point,
+        session?.endPointer(
+            at: point,
             duration: max(event.timestamp - start.timestamp, 0.05)
         )
     }
@@ -130,7 +150,7 @@ final class CapturePreviewNSView: NSView {
         session?.performGesture(
             from: point,
             to: end,
-            duration: 0.25
+            duration: 0.12
         )
     }
 

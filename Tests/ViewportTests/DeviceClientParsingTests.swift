@@ -35,18 +35,57 @@ final class DeviceClientParsingTests: XCTestCase {
         )
     }
 
-    func testParsesOnlyRunningEmulatorSerials() {
+    func testParsesOnlineADBDevicesIncludingPhysicalPhones() {
         let output = """
         List of devices attached
         emulator-5554 device product:sdk_gphone model:sdk_gphone
         emulator-5556 offline
         ABC123 device product:husky model:Pixel_8_Pro
+        LOCKED unauthorized usb:1-2
         """
 
         XCTAssertEqual(
             AndroidDeviceClient.parseADBSerials(output),
-            ["emulator-5554"]
+            ["emulator-5554", "ABC123"]
         )
+
+        XCTAssertEqual(
+            AndroidDeviceClient.parseADBDevices(output),
+            [
+                ADBDeviceRecord(
+                    serial: "emulator-5554",
+                    state: "device",
+                    model: "sdk_gphone"
+                ),
+                ADBDeviceRecord(
+                    serial: "emulator-5556",
+                    state: "offline",
+                    model: nil
+                ),
+                ADBDeviceRecord(
+                    serial: "ABC123",
+                    state: "device",
+                    model: "Pixel_8_Pro"
+                ),
+                ADBDeviceRecord(
+                    serial: "LOCKED",
+                    state: "unauthorized",
+                    model: nil
+                )
+            ]
+        )
+    }
+
+    func testADBDeviceRecordFormatsPhysicalModelName() {
+        let device = ADBDeviceRecord(
+            serial: "ABC123",
+            state: "device",
+            model: "Pixel_8_Pro"
+        )
+
+        XCTAssertFalse(device.isEmulator)
+        XCTAssertTrue(device.isOnline)
+        XCTAssertEqual(device.displayModel, "Pixel 8 Pro")
     }
 
     func testParsesAVDNameBeforeOKMarker() {
@@ -100,5 +139,43 @@ final class DeviceClientParsingTests: XCTestCase {
         XCTAssertEqual(devices.map(\.id), ["BOOTED", "SHUTDOWN"])
         XCTAssertEqual(devices.first?.runtime, "iOS 26.5")
         XCTAssertEqual(devices.first?.state, .booted)
+    }
+
+    func testRecognizesAppleIOSCaptureDevice() {
+        XCTAssertTrue(
+            DeviceFrameClient.isConnectedIOSCaptureDevice(
+                name: "Lorem Phone",
+                modelID: "iPhone17,1",
+                manufacturer: "Apple Inc.",
+                isContinuityCamera: false
+            )
+        )
+        XCTAssertTrue(
+            DeviceFrameClient.isConnectedIOSCaptureDevice(
+                name: "Test Phone",
+                modelID: "iPhone17,1",
+                manufacturer: "",
+                isContinuityCamera: false
+            )
+        )
+    }
+
+    func testRejectsContinuityCameraAndNonAppleCaptureDevices() {
+        XCTAssertFalse(
+            DeviceFrameClient.isConnectedIOSCaptureDevice(
+                name: "Lorem Phone",
+                modelID: "iPhone17,1",
+                manufacturer: "Apple Inc.",
+                isContinuityCamera: true
+            )
+        )
+        XCTAssertFalse(
+            DeviceFrameClient.isConnectedIOSCaptureDevice(
+                name: "USB Capture Card",
+                modelID: "UVC-1",
+                manufacturer: "Example",
+                isContinuityCamera: false
+            )
+        )
     }
 }

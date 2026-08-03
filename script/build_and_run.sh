@@ -2,6 +2,10 @@
 set -euo pipefail
 
 MODE="${1:-run}"
+BUILD_CONFIGURATION="release"
+if [[ "$MODE" == "--debug" || "$MODE" == "debug" ]]; then
+  BUILD_CONFIGURATION="debug"
+fi
 APP_NAME="Viewport"
 BUNDLE_ID="com.longden.viewport"
 MIN_SYSTEM_VERSION="15.0"
@@ -39,8 +43,8 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIR"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
-xcrun swift build --disable-sandbox
-BUILD_BINARY="$(xcrun swift build --disable-sandbox --show-bin-path)/$APP_NAME"
+xcrun swift build --disable-sandbox -c "$BUILD_CONFIGURATION"
+BUILD_BINARY="$(xcrun swift build --disable-sandbox -c "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS"
@@ -66,6 +70,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>Viewport uses video access to display the screen of an iPhone or iPad connected over USB.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>
@@ -75,16 +81,41 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-if [[ -n "${VIEWPORT_SIGNING_IDENTITY:-}" ]]; then
-  /usr/bin/codesign \
-    --force \
-    --deep \
-    --options runtime \
-    --timestamp=none \
-    --identifier "$BUNDLE_ID" \
-    --sign "$VIEWPORT_SIGNING_IDENTITY" \
-    "$APP_BUNDLE"
+# Prefer a stable Apple Development identity so Screen Recording TCC survives
+# rebuilds. Ad-hoc signing changes the CDHash every build, which makes macOS
+# show a stale enabled "Viewport" toggle while the new binary is denied.
+resolve_signing_identity() {
+  if [[ -n "${VIEWPORT_SIGNING_IDENTITY:-}" ]]; then
+    printf '%s\n' "$VIEWPORT_SIGNING_IDENTITY"
+    return
+  fi
+  security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Apple Development: .*\)"/\1/p' \
+    | head -1
+}
+
+SIGNING_IDENTITY="$(resolve_signing_identity || true)"
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+  echo "Signing with $SIGNING_IDENTITY"
+  if [[ -n "${VIEWPORT_SIGNING_IDENTITY:-}" ]]; then
+    /usr/bin/codesign \
+      --force \
+      --deep \
+      --options runtime \
+      --timestamp=none \
+      --identifier "$BUNDLE_ID" \
+      --sign "$SIGNING_IDENTITY" \
+      "$APP_BUNDLE"
+  else
+    /usr/bin/codesign \
+      --force \
+      --deep \
+      --identifier "$BUNDLE_ID" \
+      --sign "$SIGNING_IDENTITY" \
+      "$APP_BUNDLE"
+  fi
 else
+  echo "No Apple Development identity found; using ad-hoc signing (Screen Recording may reset each rebuild)."
   /usr/bin/codesign \
     --force \
     --deep \

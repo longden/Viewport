@@ -61,4 +61,47 @@ final class WorkspaceStoreTests: XCTestCase {
             XCTAssertEqual(store.orderedVisibleSources, expected)
         }
     }
+
+    func testPaneWeightsSurviveVisibilityChangesAndRelaunch() {
+        let store = WorkspaceStore(defaults: defaults)
+        store.resizePanes(
+            leading: .web,
+            leadingWeight: 1.6,
+            trailing: .android,
+            trailingWeight: 0.4,
+            persist: true
+        )
+        store.setVisible(false, for: .web)
+        store.setVisible(true, for: .web)
+
+        XCTAssertEqual(store.paneWeight(for: .web), 1.6)
+        XCTAssertEqual(store.paneWeight(for: .android), 0.4)
+
+        let restored = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(restored.paneWeight(for: .web), 1.6)
+        XCTAssertEqual(restored.paneWeight(for: .android), 0.4)
+    }
+
+    func testPerformanceProfilePersists() {
+        let store = WorkspaceStore(defaults: defaults)
+        store.setPerformanceProfile(.sharp)
+
+        let restored = WorkspaceStore(defaults: defaults)
+
+        XCTAssertEqual(restored.performanceProfile, .sharp)
+    }
+
+    func testCaptureModeDefaultsToDirect() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(store.captureMode, .direct)
+    }
+
+    func testCaptureModePersists() {
+        let store = WorkspaceStore(defaults: defaults)
+        store.setCaptureMode(.classic)
+
+        let restored = WorkspaceStore(defaults: defaults)
+
+        XCTAssertEqual(restored.captureMode, .classic)
+    }
 }

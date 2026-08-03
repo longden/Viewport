@@ -1,0 +1,288 @@
+import AppKit
+import CoreImage
+import CoreMedia
+import CoreVideo
+import ScreenCaptureKit
+
+@MainActor
+final class HostWindowStream: NSObject {
+    private let sampleQueue: DispatchQueue
+    nonisolated private let frameConverter = StreamFrameConverter()
+    nonisolated private let frameDelivery = LatestStreamFrameDelivery()
+
+    private var activeStream: SCStream?
+    private var onFrame: ((CGImage) -> Void)?
+    private var onFailure: ((Error) -> Void)?
+
+    override init() {
+        sampleQueue = DispatchQueue(
+            label: "com.longden.viewport.host-window-stream",
+            qos: .userInteractive
+        )
+        super.init()
+    }
+
+    var isAvailable: Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
+    func start(
+        source: ViewerSource,
+        deviceName: String,
+        profile: CapturePerformanceProfile,
+        contentAspect: CGSize? = nil,
+        onFrame: @escaping (CGImage) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) async throws -> Bool {
+        await stopAndWait()
+        guard isAvailable else { return false }
+
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let window = Self.bestWindow(
+            in: content.windows,
+            source: source,
+            deviceName: deviceName
+        ) else {
+            return false
+        }
+
+        let captureRect = DevicePreviewInputGeometry.hostWindowContentRect(
+            windowSize: window.frame.size,
+            deviceAspect: contentAspect,
+            chromeInsets: DevicePreviewInputGeometry.hostWindowChromeInsets(
+                for: source
+            )
+        ) ?? CGRect(origin: .zero, size: window.frame.size)
+        // sourceRect is in window-local points (origin at the top-left).
+        let sourceRect = CGRect(
+            x: captureRect.origin.x,
+            y: captureRect.origin.y,
+            width: captureRect.size.width,
+            height: captureRect.size.height
+        )
+
+        let configuration = SCStreamConfiguration()
+        let requestedDimension = profile.maximumDisplayDimension ?? 2_800
+        let longestSide = max(sourceRect.width, sourceRect.height, 1)
+        let scale = min(
+            profile.maximumHostWindowScale,
+            CGFloat(requestedDimension) / longestSide
+        )
+        configuration.width = max(Int(sourceRect.width * scale), 1)
+        configuration.height = max(Int(sourceRect.height * scale), 1)
+        configuration.sourceRect = sourceRect
+        configuration.minimumFrameInterval = CMTime(
+            value: 1,
+            timescale: CMTimeScale(profile.hostWindowFrameRate)
+        )
+        configuration.queueDepth = 2
+        configuration.showsCursor = false
+        configuration.capturesAudio = false
+
+        let stream = SCStream(
+            filter: SCContentFilter(desktopIndependentWindow: window),
+            configuration: configuration,
+            delegate: self
+        )
+        try stream.addStreamOutput(
+            self,
+            type: .screen,
+            sampleHandlerQueue: sampleQueue
+        )
+
+        self.onFrame = onFrame
+        self.onFailure = onFailure
+        activeStream = stream
+
+        do {
+            try await stream.startCapture()
+            guard activeStream === stream else {
+                try? await stream.stopCapture()
+                return false
+            }
+            return true
+        } catch {
+            if activeStream === stream {
+                activeStream = nil
+                self.onFrame = nil
+                self.onFailure = nil
+            }
+            throw error
+        }
+    }
+
+    func stop() {
+        let stream = activeStream
+        activeStream = nil
+        onFrame = nil
+        onFailure = nil
+        frameDelivery.clear()
+        guard let stream else { return }
+
+        Task {
+            try? await stream.stopCapture()
+        }
+    }
+
+    private func stopAndWait() async {
+        let stream = activeStream
+        activeStream = nil
+        onFrame = nil
+        onFailure = nil
+        frameDelivery.clear()
+        if let stream {
+            try? await stream.stopCapture()
+        }
+    }
+
+    private static func bestWindow(
+        in windows: [SCWindow],
+        source: ViewerSource,
+        deviceName: String
+    ) -> SCWindow? {
+        let candidates = windows.filter { window in
+            let descriptor = CaptureDescriptor(
+                applicationName: window.owningApplication?.applicationName ?? "",
+                bundleIdentifier: window.owningApplication?.bundleIdentifier ?? "",
+                windowTitle: window.title ?? ""
+            )
+            return descriptor.matches(source)
+                && window.frame.width > 120
+                && window.frame.height > 180
+        }
+        let normalizedName = deviceName.lowercased()
+        return candidates.first(where: {
+            ($0.title ?? "").lowercased().contains(normalizedName)
+        }) ?? candidates.first
+    }
+}
+
+extension HostWindowStream: SCStreamOutput, SCStreamDelegate {
+    nonisolated func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen,
+              sampleBuffer.isValid,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer,
+                createIfNecessary: false
+              ) as? [[SCStreamFrameInfo: Any]],
+              let statusRawValue = attachments.first?[.status] as? Int,
+              SCFrameStatus(rawValue: statusRawValue) == .complete else {
+            return
+        }
+
+        frameDelivery.submit(stream: stream, pixelBuffer: pixelBuffer) {
+            [frameConverter] buffer in
+            frameConverter.image(from: buffer)
+        } deliver: {
+            @MainActor [weak self] payload in
+            guard let self, self.activeStream === payload.stream else {
+                return
+            }
+            self.onFrame?(payload.image)
+        }
+    }
+
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor [weak self] in
+            guard let self, self.activeStream === stream else { return }
+            self.activeStream = nil
+            let onFailure = self.onFailure
+            self.onFrame = nil
+            self.onFailure = nil
+            onFailure?(error)
+        }
+    }
+}
+
+private final class StreamFrameConverter: @unchecked Sendable {
+    private let context = CIContext(options: [
+        .cacheIntermediates: false
+    ])
+
+    func image(from pixelBuffer: CVPixelBuffer) -> CGImage? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        return context.createCGImage(image, from: image.extent)
+    }
+}
+
+private final class LatestStreamFrameDelivery: @unchecked Sendable {
+    struct Payload: @unchecked Sendable {
+        let stream: SCStream
+        let image: CGImage
+    }
+
+    private let lock = NSLock()
+    private var latestStream: SCStream?
+    private var latestBuffer: CVPixelBuffer?
+    private var deliveryIsScheduled = false
+
+    func submit(
+        stream: SCStream,
+        pixelBuffer: CVPixelBuffer,
+        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
+        deliver: @escaping @MainActor @Sendable (Payload) -> Void
+    ) {
+        lock.lock()
+        latestStream = stream
+        latestBuffer = pixelBuffer
+        let shouldSchedule = !deliveryIsScheduled
+        deliveryIsScheduled = true
+        lock.unlock()
+
+        guard shouldSchedule else { return }
+        scheduleDelivery(convert: convert, deliver: deliver)
+    }
+
+    func clear() {
+        lock.lock()
+        latestStream = nil
+        latestBuffer = nil
+        lock.unlock()
+    }
+
+    private func scheduleDelivery(
+        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
+        deliver: @escaping @MainActor @Sendable (Payload) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            self?.deliverLatest(convert: convert, deliver: deliver)
+        }
+    }
+
+    private func deliverLatest(
+        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
+        deliver: @escaping @MainActor @Sendable (Payload) -> Void
+    ) {
+        lock.lock()
+        let stream = latestStream
+        let buffer = latestBuffer
+        latestStream = nil
+        latestBuffer = nil
+        lock.unlock()
+
+        if let stream, let buffer, let image = convert(buffer) {
+            Task { @MainActor in
+                deliver(Payload(stream: stream, image: image))
+            }
+        }
+
+        lock.lock()
+        let hasAnotherFrame = latestBuffer != nil
+        if !hasAnotherFrame {
+            deliveryIsScheduled = false
+        }
+        lock.unlock()
+
+        if hasAnotherFrame {
+            scheduleDelivery(convert: convert, deliver: deliver)
+        }
+    }
+}

@@ -4,6 +4,8 @@ import Foundation
 actor AndroidDeviceInput {
     private let runner: CommandRunner
     private let adb: URL?
+    /// Serializes live motion `adb` launches and coalesces MOVE storms.
+    nonisolated private let motionLimiter = AndroidMotionEventLimiter()
 
     init(runner: CommandRunner = CommandRunner()) {
         self.runner = runner
@@ -56,7 +58,9 @@ actor AndroidDeviceInput {
     ) async {
         let startPoint = Self.devicePoint(start, deviceSize: deviceSize)
         let endPoint = Self.devicePoint(end, deviceSize: deviceSize)
-        let milliseconds = min(max(Int(duration * 1_000), 100), 2_000)
+        // Keep the injected swipe short so UI feels responsive even when the
+        // pointer gesture on macOS lasted longer.
+        let milliseconds = min(max(Int(duration * 1_000), 40), 180)
         _ = try? await run(
             serial: serial,
             arguments: [
@@ -67,6 +71,29 @@ actor AndroidDeviceInput {
                 String(Int(endPoint.y)),
                 String(milliseconds)
             ]
+        )
+    }
+
+    /// Live dragging via `adb shell input motionevent`. MOVE events are
+    /// coalesced so a drag cannot spawn dozens of concurrent adb children.
+    nonisolated func motionEvent(
+        serial: String,
+        deviceSize: CGSize,
+        action: AndroidMotionAction,
+        at normalizedPoint: CGPoint
+    ) {
+        guard let adb else { return }
+        let point = Self.devicePoint(normalizedPoint, deviceSize: deviceSize)
+        motionLimiter.submit(
+            adb: adb,
+            arguments: [
+                "-s", serial,
+                "shell", "input", "motionevent",
+                action.rawValue,
+                String(Int(point.x)),
+                String(Int(point.y))
+            ],
+            action: action
         )
     }
 
@@ -102,7 +129,8 @@ actor AndroidDeviceInput {
 
         return try await runner.run(
             executable: adb,
-            arguments: ["-s", serial] + arguments
+            arguments: ["-s", serial] + arguments,
+            timeout: 2
         )
     }
 
@@ -129,7 +157,7 @@ actor AndroidDeviceInput {
         }
     }
 
-    private static func devicePoint(
+    nonisolated private static func devicePoint(
         _ normalizedPoint: CGPoint,
         deviceSize: CGSize
     ) -> CGPoint {
@@ -137,5 +165,80 @@ actor AndroidDeviceInput {
             x: min(max(normalizedPoint.x, 0), 1) * deviceSize.width,
             y: min(max(normalizedPoint.y, 0), 1) * deviceSize.height
         )
+    }
+}
+
+enum AndroidMotionAction: String {
+    case down = "DOWN"
+    case move = "MOVE"
+    case up = "UP"
+}
+
+/// At most one in-flight `adb` process. MOVE events overwrite each other;
+/// DOWN/UP flush the latest MOVE first so the gesture ends at the right point.
+private final class AndroidMotionEventLimiter: @unchecked Sendable {
+    private struct Launch {
+        let adb: URL
+        let arguments: [String]
+    }
+
+    private let lock = NSLock()
+    private var isRunning = false
+    private var pendingMove: Launch?
+    private var pendingOrdered: [Launch] = []
+
+    func submit(adb: URL, arguments: [String], action: AndroidMotionAction) {
+        let launch = Launch(adb: adb, arguments: arguments)
+        lock.lock()
+        switch action {
+        case .move:
+            pendingMove = launch
+        case .down:
+            pendingOrdered.append(launch)
+        case .up:
+            if let pendingMove {
+                pendingOrdered.append(pendingMove)
+                self.pendingMove = nil
+            }
+            pendingOrdered.append(launch)
+        }
+        let shouldStart = !isRunning
+        if shouldStart {
+            isRunning = true
+        }
+        lock.unlock()
+        guard shouldStart else { return }
+        drain()
+    }
+
+    private func drain() {
+        lock.lock()
+        let next: Launch?
+        if !pendingOrdered.isEmpty {
+            next = pendingOrdered.removeFirst()
+        } else if let pendingMove {
+            self.pendingMove = nil
+            next = pendingMove
+        } else {
+            next = nil
+            isRunning = false
+        }
+        lock.unlock()
+
+        guard let next else { return }
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            let process = Process()
+            process.executableURL = next.adb
+            process.arguments = next.arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                // Ignore launch failures; the next gesture event can retry.
+            }
+            self?.drain()
+        }
     }
 }

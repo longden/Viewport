@@ -40,12 +40,12 @@ struct DeviceLauncherMenu: View {
                 Image(systemName: "play.circle")
             } else {
                 Label(
-                    "Choose \(manager.source.detail)",
+                    "Choose \(manager.source.launchDetail)",
                     systemImage: "play.circle"
                 )
             }
         }
-        .help("Choose and start \(manager.source.detail)")
+        .help("Choose and start \(manager.source.launchDetail)")
     }
 
     @ViewBuilder
