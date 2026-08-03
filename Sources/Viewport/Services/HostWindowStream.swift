@@ -8,7 +8,8 @@ import ScreenCaptureKit
 final class HostWindowStream: NSObject {
     private let sampleQueue: DispatchQueue
     nonisolated private let frameConverter = StreamFrameConverter()
-    nonisolated private let frameDelivery = LatestStreamFrameDelivery()
+    nonisolated private let frameDelivery =
+        LatestValueDelivery<HostWindowFrameInput>()
 
     private var activeStream: SCStream?
     private var onFrame: ((CGImage) -> Void)?
@@ -178,15 +179,16 @@ extension HostWindowStream: SCStreamOutput, SCStreamDelegate {
             return
         }
 
-        frameDelivery.submit(stream: stream, pixelBuffer: pixelBuffer) {
-            [frameConverter] buffer in
-            frameConverter.image(from: buffer)
-        } deliver: {
-            @MainActor [weak self] payload in
-            guard let self, self.activeStream === payload.stream else {
+        frameDelivery.submit(
+            HostWindowFrameInput(stream: stream, pixelBuffer: pixelBuffer)
+        ) { [weak self, frameConverter] input in
+            guard let image = frameConverter.image(from: input.pixelBuffer) else {
                 return
             }
-            self.onFrame?(payload.image)
+            Task { @MainActor [weak self] in
+                guard let self, self.activeStream === input.stream else { return }
+                self.onFrame?(image)
+            }
         }
     }
 
@@ -213,76 +215,7 @@ private final class StreamFrameConverter: @unchecked Sendable {
     }
 }
 
-private final class LatestStreamFrameDelivery: @unchecked Sendable {
-    struct Payload: @unchecked Sendable {
-        let stream: SCStream
-        let image: CGImage
-    }
-
-    private let lock = NSLock()
-    private var latestStream: SCStream?
-    private var latestBuffer: CVPixelBuffer?
-    private var deliveryIsScheduled = false
-
-    func submit(
-        stream: SCStream,
-        pixelBuffer: CVPixelBuffer,
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        lock.lock()
-        latestStream = stream
-        latestBuffer = pixelBuffer
-        let shouldSchedule = !deliveryIsScheduled
-        deliveryIsScheduled = true
-        lock.unlock()
-
-        guard shouldSchedule else { return }
-        scheduleDelivery(convert: convert, deliver: deliver)
-    }
-
-    func clear() {
-        lock.lock()
-        latestStream = nil
-        latestBuffer = nil
-        lock.unlock()
-    }
-
-    private func scheduleDelivery(
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.deliverLatest(convert: convert, deliver: deliver)
-        }
-    }
-
-    private func deliverLatest(
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        lock.lock()
-        let stream = latestStream
-        let buffer = latestBuffer
-        latestStream = nil
-        latestBuffer = nil
-        lock.unlock()
-
-        if let stream, let buffer, let image = convert(buffer) {
-            Task { @MainActor in
-                deliver(Payload(stream: stream, image: image))
-            }
-        }
-
-        lock.lock()
-        let hasAnotherFrame = latestBuffer != nil
-        if !hasAnotherFrame {
-            deliveryIsScheduled = false
-        }
-        lock.unlock()
-
-        if hasAnotherFrame {
-            scheduleDelivery(convert: convert, deliver: deliver)
-        }
-    }
+private struct HostWindowFrameInput: @unchecked Sendable {
+    let stream: SCStream
+    let pixelBuffer: CVPixelBuffer
 }

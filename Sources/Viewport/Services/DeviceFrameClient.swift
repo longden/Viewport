@@ -38,15 +38,21 @@ actor DeviceFrameClient {
 
     private let runner: CommandRunner
     private let adb: URL?
-    private let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+    private let xcrun: URL
     private let simctl: URL
     private let invokesSimctlThroughXcrun: Bool
-    private let developerDirectory = "/Applications/Xcode.app/Contents/Developer"
+    private let developerDirectory: String
     private let iOSScreenshotURL: URL
 
-    init(source: ViewerSource, runner: CommandRunner = CommandRunner()) {
+    init(
+        source: ViewerSource,
+        runner: CommandRunner = CommandRunner(),
+        toolchains: ToolchainLocator = ToolchainLocator()
+    ) {
         self.source = source
         self.runner = runner
+        xcrun = toolchains.xcrun
+        developerDirectory = toolchains.developerDirectory.path
 
         let directSimctl = URL(
             fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
@@ -61,19 +67,7 @@ actor DeviceFrameClient {
         iOSScreenshotURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
 
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let environment = ProcessInfo.processInfo.environment
-        let sdkPath = environment["ANDROID_SDK_ROOT"]
-            ?? environment["ANDROID_HOME"]
-            ?? home.appendingPathComponent("Library/Android/sdk").path
-        adb = ExecutableLocator.executable(
-            named: "adb",
-            candidates: [
-                URL(fileURLWithPath: sdkPath)
-                    .appendingPathComponent("platform-tools/adb"),
-                URL(fileURLWithPath: "/opt/homebrew/bin/adb")
-            ]
-        )
+        adb = toolchains.adb
     }
 
     nonisolated var isAvailable: Bool {
