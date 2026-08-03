@@ -1,13 +1,36 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
+import ImageIO
+
+enum StreamedDeviceKind: Equatable {
+    case androidEmulator
+    case androidDevice
+    case iOSSimulator
+    case iOSDevice
+}
 
 struct StreamedDevice: Identifiable, Equatable {
     let id: String
     let name: String
     let source: ViewerSource
     let pixelSize: CGSize?
+    let kind: StreamedDeviceKind
 
-    var displayName: String { name }
+    var displayName: String {
+        switch kind {
+        case .androidDevice:
+            "\(name) · ADB"
+        case .iOSDevice:
+            "\(name) · USB · View only"
+        case .androidEmulator, .iOSSimulator:
+            name
+        }
+    }
+
+    var supportsInput: Bool {
+        kind != .iOSDevice
+    }
 }
 
 actor DeviceFrameClient {
@@ -16,11 +39,27 @@ actor DeviceFrameClient {
     private let runner: CommandRunner
     private let adb: URL?
     private let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+    private let simctl: URL
+    private let invokesSimctlThroughXcrun: Bool
     private let developerDirectory = "/Applications/Xcode.app/Contents/Developer"
+    private let iOSScreenshotURL: URL
 
     init(source: ViewerSource, runner: CommandRunner = CommandRunner()) {
         self.source = source
         self.runner = runner
+
+        let directSimctl = URL(
+            fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
+        )
+        if FileManager.default.isExecutableFile(atPath: directSimctl.path) {
+            simctl = directSimctl
+            invokesSimctlThroughXcrun = false
+        } else {
+            simctl = xcrun
+            invokesSimctlThroughXcrun = true
+        }
+        iOSScreenshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
 
         let home = FileManager.default.homeDirectoryForCurrentUser
         let environment = ProcessInfo.processInfo.environment
@@ -48,10 +87,6 @@ actor DeviceFrameClient {
         }
     }
 
-    nonisolated var frameInterval: Duration {
-        source == .iOS ? .milliseconds(125) : .milliseconds(67)
-    }
-
     func listRunningDevices() async throws -> [StreamedDevice] {
         switch source {
         case .android:
@@ -74,13 +109,53 @@ actor DeviceFrameClient {
         }
     }
 
+    /// One-shot framebuffer size used to crop host-window chrome before touch
+    /// mapping. Falls back to `wm size` / screenshot dimensions.
+    func measureScreenSize(deviceID: String) async -> CGSize? {
+        switch source {
+        case .android:
+            if let size = await androidSize(serial: deviceID) {
+                return size
+            }
+            guard let data = try? await captureAndroidFrame(serial: deviceID) else {
+                return nil
+            }
+            return Self.imagePixelSize(of: data)
+        case .iOS:
+            guard let data = try? await captureIOSFrame(udid: deviceID) else {
+                return nil
+            }
+            return Self.imagePixelSize(of: data)
+        case .web:
+            return nil
+        }
+    }
+
+    private nonisolated static func imagePixelSize(of data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(
+                source,
+                0,
+                nil
+              ) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?
+                .doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?
+                .doubleValue,
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+
     private func listAndroidDevices() async throws -> [StreamedDevice] {
         guard let adb else {
             throw CommandRunnerError.executableNotFound("adb")
         }
         let result = try await runner.run(
             executable: adb,
-            arguments: ["devices"]
+            arguments: ["devices", "-l"]
         )
         guard result.exitCode == 0 else {
             throw CommandRunnerError.commandFailed(
@@ -90,21 +165,42 @@ actor DeviceFrameClient {
             )
         }
 
+        let records = AndroidDeviceClient.parseADBDevices(
+            result.standardOutput
+        )
+        let onlineDevices = records.filter(\.isOnline)
+        if onlineDevices.isEmpty,
+           let blockedDevice = records.first(where: {
+               !$0.isEmulator && $0.state != "device"
+           }) {
+            throw AndroidDeviceAvailabilityError(
+                serial: blockedDevice.serial,
+                state: blockedDevice.state
+            )
+        }
+
         var devices: [StreamedDevice] = []
-        for serial in AndroidDeviceClient.parseADBSerials(result.standardOutput) {
-            async let size = androidSize(serial: serial)
-            async let name = androidName(serial: serial)
+        for record in onlineDevices {
+            async let size = androidSize(serial: record.serial)
+            async let name = androidName(for: record)
             devices.append(
                 StreamedDevice(
-                    id: serial,
-                    name: await name ?? serial,
+                    id: record.serial,
+                    name: await name,
                     source: .android,
-                    pixelSize: await size
+                    pixelSize: await size,
+                    kind: record.isEmulator
+                        ? .androidEmulator
+                        : .androidDevice
                 )
             )
         }
         return devices.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            if $0.kind != $1.kind {
+                return $0.kind == .androidDevice
+            }
+            return $0.name.localizedStandardCompare($1.name)
+                == .orderedAscending
         }
     }
 
@@ -129,16 +225,38 @@ actor DeviceFrameClient {
         return CGSize(width: width, height: height)
     }
 
-    private func androidName(serial: String) async -> String? {
-        guard let adb,
-              let result = try? await runner.run(
-                executable: adb,
-                arguments: ["-s", serial, "emu", "avd", "name"]
-              ), result.exitCode == 0 else {
-            return nil
+    private func androidName(for device: ADBDeviceRecord) async -> String {
+        guard let adb else { return device.displayModel ?? device.serial }
+
+        if device.isEmulator,
+           let result = try? await runner.run(
+            executable: adb,
+            arguments: ["-s", device.serial, "emu", "avd", "name"]
+           ), result.exitCode == 0,
+           let name = AndroidDeviceClient.parseAVDNameResponse(
+            result.standardOutput
+           ) {
+            return name.replacingOccurrences(of: "_", with: " ")
         }
-        return AndroidDeviceClient.parseAVDNameResponse(result.standardOutput)?
-            .replacingOccurrences(of: "_", with: " ")
+
+        if let model = device.displayModel, !model.isEmpty {
+            return model
+        }
+
+        if let result = try? await runner.run(
+            executable: adb,
+            arguments: [
+                "-s", device.serial, "shell", "getprop", "ro.product.model"
+            ]
+        ), result.exitCode == 0 {
+            let model = result.standardOutput.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if !model.isEmpty {
+                return model
+            }
+        }
+        return device.serial
     }
 
     private func captureAndroidFrame(serial: String) async throws -> Data {
@@ -147,7 +265,8 @@ actor DeviceFrameClient {
         }
         let result = try await runner.runData(
             executable: adb,
-            arguments: ["-s", serial, "exec-out", "screencap", "-p"]
+            arguments: ["-s", serial, "exec-out", "screencap", "-p"],
+            timeout: 4
         )
         guard result.exitCode == 0 else {
             throw CommandRunnerError.commandFailed(
@@ -171,10 +290,24 @@ actor DeviceFrameClient {
     }
 
     private func listIOSDevices() async throws -> [StreamedDevice] {
+        let connectedDevices = Self.connectedIOSCaptureDevices()
+
+        do {
+            return try await (listIOSSimulators() + connectedDevices)
+                .sorted(by: Self.sortIOSDevices)
+        } catch where !connectedDevices.isEmpty {
+            // A trusted USB device is still useful when CoreSimulator is not
+            // installed or temporarily unavailable.
+            return connectedDevices.sorted(by: Self.sortIOSDevices)
+        }
+    }
+
+    private func listIOSSimulators() async throws -> [StreamedDevice] {
         let result = try await runner.run(
-            executable: xcrun,
-            arguments: ["simctl", "list", "devices", "--json"],
-            environment: processEnvironment
+            executable: simctl,
+            arguments: simctlArguments(["list", "devices", "--json"]),
+            environment: processEnvironment,
+            timeout: 3
         )
         guard result.exitCode == 0 else {
             throw CommandRunnerError.commandFailed(
@@ -196,32 +329,82 @@ actor DeviceFrameClient {
                     id: $0.udid,
                     name: $0.name,
                     source: .iOS,
-                    pixelSize: nil
+                    pixelSize: nil,
+                    kind: .iOSSimulator
                 )
             }
-            .sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+    }
+
+    private nonisolated static func connectedIOSCaptureDevices() -> [StreamedDevice] {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.external],
+            mediaType: .video,
+            position: .unspecified
+        )
+
+        return discovery.devices.compactMap { device in
+            guard device.isConnected,
+                  isConnectedIOSCaptureDevice(
+                    name: device.localizedName,
+                    modelID: device.modelID,
+                    manufacturer: device.manufacturer,
+                    isContinuityCamera: device.isContinuityCamera
+                  ) else {
+                return nil
             }
+            return StreamedDevice(
+                id: device.uniqueID,
+                name: device.localizedName,
+                source: .iOS,
+                pixelSize: nil,
+                kind: .iOSDevice
+            )
+        }
+    }
+
+    nonisolated static func isConnectedIOSCaptureDevice(
+        name: String,
+        modelID: String,
+        manufacturer: String,
+        isContinuityCamera: Bool
+    ) -> Bool {
+        guard !isContinuityCamera else { return false }
+
+        let identity = "\(name) \(modelID)".lowercased()
+        let iOSDeviceNames = ["iphone", "ipad", "ipod", "ios device"]
+        let hasAppleManufacturer = manufacturer.isEmpty
+            || manufacturer.localizedCaseInsensitiveContains("apple")
+        return iOSDeviceNames.contains(where: identity.contains)
+            && hasAppleManufacturer
+    }
+
+    private nonisolated static func sortIOSDevices(
+        _ lhs: StreamedDevice,
+        _ rhs: StreamedDevice
+    ) -> Bool {
+        if lhs.kind != rhs.kind {
+            return lhs.kind == .iOSDevice
+        }
+        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 
     private func captureIOSFrame(udid: String) async throws -> Data {
         // Despite `simctl io help` advertising `-` for stdout, Xcode 26.5
         // treats it as a literal filename. Use an isolated temporary file,
         // which is also the compatibility path used by Simmer.
-        let temporaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("viewport-\(UUID().uuidString).jpg")
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        defer { try? FileManager.default.removeItem(at: iOSScreenshotURL) }
 
         let result = try await runner.run(
-            executable: xcrun,
-            arguments: [
-                "simctl", "io", udid, "screenshot",
-                "--type=jpeg", "--mask=ignored", temporaryURL.path
-            ],
-            environment: processEnvironment
+            executable: simctl,
+            arguments: simctlArguments([
+                "io", udid, "screenshot", "--type=jpeg", "--mask=ignored",
+                iOSScreenshotURL.path
+            ]),
+            environment: processEnvironment,
+            timeout: 4
         )
         guard result.exitCode == 0,
-              let data = try? Data(contentsOf: temporaryURL),
+              let data = try? Data(contentsOf: iOSScreenshotURL),
               data.starts(with: [0xFF, 0xD8]) else {
             throw CommandRunnerError.commandFailed(
                 command: "Capture iOS Simulator screen",
@@ -235,6 +418,10 @@ actor DeviceFrameClient {
     private nonisolated var processEnvironment: [String: String] {
         ["DEVELOPER_DIR": developerDirectory]
     }
+
+    private func simctlArguments(_ arguments: [String]) -> [String] {
+        invokesSimctlThroughXcrun ? ["simctl"] + arguments : arguments
+    }
 }
 
 private struct StreamSimulatorCatalog: Decodable {
@@ -246,4 +433,22 @@ private struct StreamSimulatorDevice: Decodable {
     let name: String
     let state: String
     let isAvailable: Bool
+}
+
+private struct AndroidDeviceAvailabilityError: LocalizedError {
+    let serial: String
+    let state: String
+
+    var errorDescription: String? {
+        switch state {
+        case "unauthorized":
+            "Android device \(serial) is waiting for USB debugging "
+                + "authorization. Unlock it and approve this Mac."
+        case "offline":
+            "Android device \(serial) is offline. Reconnect it or restart "
+                + "ADB, then refresh."
+        default:
+            "Android device \(serial) is unavailable (\(state))."
+        }
+    }
 }

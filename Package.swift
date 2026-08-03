@@ -19,6 +19,10 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath(".")
+            ],
+            linkerSettings: [
+                .linkedFramework("IOSurface"),
+                .linkedFramework("CoreGraphics")
             ]
         ),
         .executableTarget(

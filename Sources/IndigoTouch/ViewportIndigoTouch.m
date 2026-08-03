@@ -13,6 +13,7 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurface.h>
 #import <dispatch/dispatch.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
@@ -343,3 +344,210 @@ void ViewportHIDSessionClose(void *session) {
     (void)client;
   }
 }
+
+#pragma mark - Framebuffer IOSurface
+
+@interface ViewportSurfaceSubscription : NSObject
+@property(nonatomic, strong) id device;
+@property(nonatomic, strong) id ioClient;
+@property(nonatomic, strong) id renderable;
+@property(nonatomic, copy) NSUUID *callbackUUID;
+@property(nonatomic, strong) dispatch_queue_t queue;
+@property(nonatomic, strong) dispatch_source_t frameTimer;
+@property(nonatomic, copy) ViewportSurfaceFrameHandler handler;
+@end
+
+@implementation ViewportSurfaceSubscription
+@end
+
+static id MainDisplayRenderable(id ioClient) {
+  NSArray *ports = ((NSArray *(*)(id, SEL))objc_msgSend)(
+    ioClient,
+    sel_registerName("ioPorts"));
+  Protocol *renderableProtocol = NSProtocolFromString(@"SimDisplayIOSurfaceRenderable");
+  Protocol *displayProtocol = NSProtocolFromString(@"SimDisplayRenderable");
+  for (id port in ports) {
+    id descriptor = ((id (*)(id, SEL))objc_msgSend)(
+      port,
+      sel_registerName("descriptor"));
+    if (!descriptor) {
+      continue;
+    }
+    if (displayProtocol && ![descriptor conformsToProtocol:displayProtocol]) {
+      continue;
+    }
+    if (renderableProtocol && ![descriptor conformsToProtocol:renderableProtocol]) {
+      continue;
+    }
+    if (![descriptor respondsToSelector:sel_registerName("state")]) {
+      continue;
+    }
+    id state = ((id (*)(id, SEL))objc_msgSend)(
+      descriptor,
+      sel_registerName("state"));
+    if ([state respondsToSelector:sel_registerName("displayClass")]) {
+      unsigned short displayClass = ((unsigned short (*)(id, SEL))objc_msgSend)(
+        state,
+        sel_registerName("displayClass"));
+      // 0 is the main display.
+      if (displayClass != 0) {
+        continue;
+      }
+    }
+    return descriptor;
+  }
+  return nil;
+}
+
+static IOSurfaceRef CurrentFramebufferSurface(id renderable) {
+  if ([renderable respondsToSelector:sel_registerName("framebufferSurface")]) {
+    return (__bridge IOSurfaceRef)((id (*)(id, SEL))objc_msgSend)(
+      renderable,
+      sel_registerName("framebufferSurface"));
+  }
+  if ([renderable respondsToSelector:sel_registerName("ioSurface")]) {
+    return (__bridge IOSurfaceRef)((id (*)(id, SEL))objc_msgSend)(
+      renderable,
+      sel_registerName("ioSurface"));
+  }
+  return NULL;
+}
+
+void *ViewportSurfaceSubscribe(
+  NSString *udid,
+  dispatch_queue_t queue,
+  unsigned int frameRate,
+  ViewportSurfaceFrameHandler handler,
+  char *errorBuffer,
+  size_t errorBufferLength) {
+  if (!ViewportHIDLoadFrameworks()) {
+    StoreError(errorBuffer, errorBufferLength, @"Could not load CoreSimulator or SimulatorKit");
+    return NULL;
+  }
+
+  NSError *error = nil;
+  id device = BootedDevice(udid, &error);
+  if (!device) {
+    StoreError(
+      errorBuffer,
+      errorBufferLength,
+      error.localizedDescription ?: @"The selected iOS Simulator is not booted");
+    return NULL;
+  }
+
+  id ioClient = nil;
+  if ([device respondsToSelector:sel_registerName("io")]) {
+    ioClient = ((id (*)(id, SEL))objc_msgSend)(device, sel_registerName("io"));
+  }
+  if (!ioClient) {
+    Class ioClass = objc_getClass("SimDeviceIOClient");
+    if (!ioClass) {
+      ioClass = objc_getClass("SimDeviceIO");
+    }
+    if (ioClass && [ioClass respondsToSelector:sel_registerName("ioForSimDevice:errorQueue:errorHandler:")]) {
+      ioClient = ((id (*)(Class, SEL, id, dispatch_queue_t, id))objc_msgSend)(
+        ioClass,
+        sel_registerName("ioForSimDevice:errorQueue:errorHandler:"),
+        device,
+        queue,
+        ^(NSError *ioError) {
+          NSLog(@"Viewport surface IO error: %@", ioError);
+        });
+    }
+  }
+  if (!ioClient) {
+    StoreError(errorBuffer, errorBufferLength, @"Simulator device IO is unavailable");
+    return NULL;
+  }
+  if ([ioClient respondsToSelector:sel_registerName("updateIOPorts")]) {
+    ((void (*)(id, SEL))objc_msgSend)(ioClient, sel_registerName("updateIOPorts"));
+  }
+
+  id renderable = MainDisplayRenderable(ioClient);
+  if (!renderable) {
+    StoreError(errorBuffer, errorBufferLength, @"Could not find the simulator main display surface");
+    return NULL;
+  }
+
+  ViewportSurfaceSubscription *subscription = [ViewportSurfaceSubscription new];
+  subscription.device = device;
+  subscription.ioClient = ioClient;
+  subscription.renderable = renderable;
+  subscription.queue = queue;
+  subscription.handler = handler;
+  subscription.callbackUUID = [NSUUID UUID];
+
+  void (^surfaceCallback)(IOSurfaceRef, IOSurfaceRef) = ^(IOSurfaceRef next, IOSurfaceRef previous) {
+    (void)previous;
+    IOSurfaceRef surface = next ?: CurrentFramebufferSurface(renderable);
+    handler(surface);
+  };
+
+  SEL registerSelector = sel_registerName("registerCallbackWithUUID:ioSurfacesChangeCallback:");
+  if (![renderable respondsToSelector:registerSelector]) {
+    StoreError(errorBuffer, errorBufferLength, @"Simulator surface callbacks are unavailable");
+    return NULL;
+  }
+  ((void (*)(id, SEL, NSUUID *, id))objc_msgSend)(
+    renderable,
+    registerSelector,
+    subscription.callbackUUID,
+    surfaceCallback);
+
+  IOSurfaceRef initial = CurrentFramebufferSurface(renderable);
+  if (initial) {
+    dispatch_async(queue, ^{ handler(initial); });
+  }
+
+  // ioSurfacesChangeCallback reports backing-surface replacements, not every
+  // presented frame. Simulator normally reuses one IOSurface, so resubmit its
+  // current contents at the requested cadence to keep CALayer presentation live.
+  unsigned int effectiveFrameRate = MAX(1, MIN(frameRate, 120));
+  uint64_t interval = NSEC_PER_SEC / effectiveFrameRate;
+  dispatch_source_t timer = dispatch_source_create(
+    DISPATCH_SOURCE_TYPE_TIMER,
+    0,
+    0,
+    queue);
+  subscription.frameTimer = timer;
+  dispatch_source_set_timer(
+    timer,
+    dispatch_time(DISPATCH_TIME_NOW, interval),
+    interval,
+    MIN(interval / 8, 2 * NSEC_PER_MSEC));
+  dispatch_source_set_event_handler(timer, ^{
+    IOSurfaceRef surface = CurrentFramebufferSurface(renderable);
+    if (surface) {
+      handler(surface);
+    }
+  });
+  dispatch_resume(timer);
+
+  return (__bridge_retained void *)subscription;
+}
+
+void ViewportSurfaceUnsubscribe(void *subscriptionPointer) {
+  if (!subscriptionPointer) {
+    return;
+  }
+  ViewportSurfaceSubscription *subscription =
+    (__bridge_transfer ViewportSurfaceSubscription *)subscriptionPointer;
+  if (subscription.frameTimer) {
+    dispatch_source_cancel(subscription.frameTimer);
+    subscription.frameTimer = nil;
+  }
+  id renderable = subscription.renderable;
+  NSUUID *uuid = subscription.callbackUUID;
+  if (renderable && uuid) {
+    SEL unregister = sel_registerName("unregisterIOSurfacesChangeCallbackWithUUID:");
+    if ([renderable respondsToSelector:unregister]) {
+      ((void (*)(id, SEL, NSUUID *))objc_msgSend)(renderable, unregister, uuid);
+    } else {
+      SEL generic = sel_registerName("unregisterCallbackWithUUID:");
+      if ([renderable respondsToSelector:generic]) {
+        ((void (*)(id, SEL, NSUUID *))objc_msgSend)(renderable, generic, uuid);
+      }
+    }
+  }
+}
+

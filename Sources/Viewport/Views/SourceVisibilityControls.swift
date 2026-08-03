@@ -5,18 +5,23 @@ struct SourceVisibilityButton: View {
     let source: ViewerSource
 
     var body: some View {
-        Toggle(
-            isOn: Binding(
-                get: { workspace.isVisible(source) },
-                set: { workspace.setVisible($0, for: source) }
+        Button {
+            workspace.toggle(source)
+        } label: {
+            Label(
+                "\(workspace.isVisible(source) ? "Hide" : "Show") \(source.title)",
+                systemImage: source.systemImage
             )
-        ) {
-            Image(systemName: source.systemImage)
-                .frame(width: 16, height: 16)
+            .labelStyle(.iconOnly)
+            .symbolVariant(workspace.isVisible(source) ? .fill : .none)
+            .frame(minWidth: 24, minHeight: 24)
+            .contentShape(Rectangle())
         }
-        .toggleStyle(.button)
-        .tint(source.accentColor)
-        .controlSize(.small)
+        .foregroundStyle(
+            workspace.isVisible(source)
+                ? source.accentColor
+                : Color.secondary
+        )
         .disabled(
             workspace.visibleSources.count == 1
                 && workspace.isVisible(source)
@@ -27,5 +32,23 @@ struct SourceVisibilityButton: View {
         .accessibilityLabel(
             "\(workspace.isVisible(source) ? "Hide" : "Show") \(source.title)"
         )
+    }
+}
+
+struct SourceVisibilityControls: View {
+    @ObservedObject var workspace: WorkspaceStore
+
+    var body: some View {
+        ControlGroup {
+            ForEach(ViewerSource.allCases) { source in
+                SourceVisibilityButton(
+                    workspace: workspace,
+                    source: source
+                )
+            }
+        }
+        .controlSize(.regular)
+        .fixedSize()
+        .accessibilityLabel("Visible sources")
     }
 }
