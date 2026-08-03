@@ -12,7 +12,8 @@ final class IOSDeviceStream: NSObject {
         qos: .userInteractive
     )
     nonisolated private let frameConverter = IOSDeviceFrameConverter()
-    nonisolated private let frameDelivery = LatestIOSDeviceFrameDelivery()
+    nonisolated private let frameDelivery =
+        LatestValueDelivery<IOSDeviceFrameInput>()
 
     private var activeSession: AVCaptureSession?
     private var activeOutput: AVCaptureVideoDataOutput?
@@ -155,16 +156,16 @@ extension IOSDeviceStream: AVCaptureVideoDataOutputSampleBufferDelegate {
             return
         }
 
-        frameDelivery.submit(output: videoOutput, pixelBuffer: pixelBuffer) {
-            [frameConverter] buffer in
-            frameConverter.image(from: buffer)
-        } deliver: {
-            @MainActor [weak self] payload in
-            guard let self,
-                  self.activeOutput === payload.output else {
+        frameDelivery.submit(
+            IOSDeviceFrameInput(output: videoOutput, pixelBuffer: pixelBuffer)
+        ) { [weak self, frameConverter] input in
+            guard let image = frameConverter.image(from: input.pixelBuffer) else {
                 return
             }
-            self.onFrame?(payload.image)
+            Task { @MainActor [weak self] in
+                guard let self, self.activeOutput === input.output else { return }
+                self.onFrame?(image)
+            }
         }
     }
 }
@@ -201,76 +202,7 @@ private final class IOSDeviceFrameConverter: @unchecked Sendable {
     }
 }
 
-private final class LatestIOSDeviceFrameDelivery: @unchecked Sendable {
-    struct Payload: @unchecked Sendable {
-        let output: AVCaptureVideoDataOutput
-        let image: CGImage
-    }
-
-    private let lock = NSLock()
-    private var latestOutput: AVCaptureVideoDataOutput?
-    private var latestBuffer: CVPixelBuffer?
-    private var deliveryIsScheduled = false
-
-    func submit(
-        output: AVCaptureVideoDataOutput,
-        pixelBuffer: CVPixelBuffer,
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        lock.lock()
-        latestOutput = output
-        latestBuffer = pixelBuffer
-        let shouldSchedule = !deliveryIsScheduled
-        deliveryIsScheduled = true
-        lock.unlock()
-
-        guard shouldSchedule else { return }
-        scheduleDelivery(convert: convert, deliver: deliver)
-    }
-
-    func clear() {
-        lock.lock()
-        latestOutput = nil
-        latestBuffer = nil
-        lock.unlock()
-    }
-
-    private func scheduleDelivery(
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.deliverLatest(convert: convert, deliver: deliver)
-        }
-    }
-
-    private func deliverLatest(
-        convert: @escaping @Sendable (CVPixelBuffer) -> CGImage?,
-        deliver: @escaping @MainActor @Sendable (Payload) -> Void
-    ) {
-        lock.lock()
-        let output = latestOutput
-        let buffer = latestBuffer
-        latestOutput = nil
-        latestBuffer = nil
-        lock.unlock()
-
-        if let output, let buffer, let image = convert(buffer) {
-            Task { @MainActor in
-                deliver(Payload(output: output, image: image))
-            }
-        }
-
-        lock.lock()
-        let hasAnotherFrame = latestBuffer != nil
-        if !hasAnotherFrame {
-            deliveryIsScheduled = false
-        }
-        lock.unlock()
-
-        if hasAnotherFrame {
-            scheduleDelivery(convert: convert, deliver: deliver)
-        }
-    }
+private struct IOSDeviceFrameInput: @unchecked Sendable {
+    let output: AVCaptureVideoDataOutput
+    let pixelBuffer: CVPixelBuffer
 }

@@ -33,37 +33,15 @@ struct AndroidDeviceClient: DeviceClient {
     private let adb: URL?
     private let sdkURL: URL
 
-    init(runner: CommandRunner = CommandRunner()) {
+    init(
+        runner: CommandRunner = CommandRunner(),
+        toolchains: ToolchainLocator = ToolchainLocator()
+    ) {
         self.runner = runner
-
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let environment = ProcessInfo.processInfo.environment
-        let sdkPath = environment["ANDROID_SDK_ROOT"]
-            ?? environment["ANDROID_HOME"]
-            ?? home.appendingPathComponent("Library/Android/sdk").path
-        sdkURL = URL(fileURLWithPath: sdkPath)
-
-        androidCLI = ExecutableLocator.executable(
-            named: "android",
-            candidates: [
-                URL(fileURLWithPath: "/opt/homebrew/bin/android"),
-                home.appendingPathComponent(".local/bin/android"),
-                URL(fileURLWithPath: "/usr/local/bin/android")
-            ]
-        )
-        emulator = ExecutableLocator.executable(
-            named: "emulator",
-            candidates: [
-                sdkURL.appendingPathComponent("emulator/emulator")
-            ]
-        )
-        adb = ExecutableLocator.executable(
-            named: "adb",
-            candidates: [
-                sdkURL.appendingPathComponent("platform-tools/adb"),
-                URL(fileURLWithPath: "/opt/homebrew/bin/adb")
-            ]
-        )
+        sdkURL = toolchains.androidSDK
+        androidCLI = toolchains.androidCLI
+        emulator = toolchains.androidEmulator
+        adb = toolchains.adb
     }
 
     func listDevices() async throws -> [LaunchableDevice] {
@@ -237,19 +215,19 @@ struct IOSSimulatorClient: DeviceClient {
     let source = ViewerSource.iOS
 
     private let runner: CommandRunner
-    private let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+    private let xcrun: URL
     private let open = URL(fileURLWithPath: "/usr/bin/open")
     private let developerDirectory: URL
     private let simulatorApplication: URL
 
-    init(runner: CommandRunner = CommandRunner()) {
+    init(
+        runner: CommandRunner = CommandRunner(),
+        toolchains: ToolchainLocator = ToolchainLocator()
+    ) {
         self.runner = runner
-
-        let xcodeDeveloper = URL(
-            fileURLWithPath: "/Applications/Xcode.app/Contents/Developer"
-        )
-        developerDirectory = xcodeDeveloper
-        simulatorApplication = xcodeDeveloper
+        xcrun = toolchains.xcrun
+        developerDirectory = toolchains.developerDirectory
+        simulatorApplication = developerDirectory
             .appendingPathComponent("Applications/Simulator.app")
     }
 

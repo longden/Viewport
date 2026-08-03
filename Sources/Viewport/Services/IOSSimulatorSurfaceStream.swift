@@ -11,7 +11,9 @@ final class IOSSimulatorSurfaceStream {
         label: "com.longden.viewport.simulator-surface",
         qos: .userInteractive
     )
-    nonisolated private let frameDelivery = LatestSurfaceFrameDelivery()
+    nonisolated private let frameDelivery = LatestValueDelivery<IOSurfaceRef>(
+        discard: { Unmanaged.passUnretained($0).release() }
+    )
 
     private var subscription: UnsafeMutableRawPointer?
     private var onFrame: ((IOSurfaceRef) -> Void)?
@@ -43,7 +45,10 @@ final class IOSSimulatorSurfaceStream {
                 UInt32(max(1, frameRate)),
                 { [weak self] surface in
                     guard let self, let surface else { return }
-                    self.frameDelivery.submit(surface) { delivered in
+                    let retained = Unmanaged.passUnretained(surface)
+                        .retain()
+                        .takeUnretainedValue()
+                    self.frameDelivery.submit(retained) { delivered in
                         Task { @MainActor [weak self] in
                             defer {
                                 Unmanaged.passUnretained(delivered).release()
@@ -91,71 +96,6 @@ enum IOSSimulatorSurfaceError: LocalizedError {
             "SimulatorKit is unavailable for direct framebuffer capture."
         case let .subscribeFailed(message):
             message
-        }
-    }
-}
-
-private final class LatestSurfaceFrameDelivery: @unchecked Sendable {
-    private let lock = NSLock()
-    private var latest: IOSurfaceRef?
-    private var deliveryIsScheduled = false
-
-    func submit(
-        _ surface: IOSurfaceRef,
-        deliver: @escaping @Sendable (IOSurfaceRef) -> Void
-    ) {
-        // Retain across the async hop; `deliver` takes ownership and must release.
-        let retained = Unmanaged.passUnretained(surface).retain().takeUnretainedValue()
-        lock.lock()
-        let previous = latest
-        latest = retained
-        let shouldSchedule = !deliveryIsScheduled
-        deliveryIsScheduled = true
-        lock.unlock()
-        if let previous {
-            Unmanaged.passUnretained(previous).release()
-        }
-        guard shouldSchedule else { return }
-
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.deliverLatest(deliver)
-        }
-    }
-
-    func clear() {
-        lock.lock()
-        let previous = latest
-        latest = nil
-        lock.unlock()
-        if let previous {
-            Unmanaged.passUnretained(previous).release()
-        }
-    }
-
-    private func deliverLatest(
-        _ deliver: @escaping @Sendable (IOSurfaceRef) -> Void
-    ) {
-        lock.lock()
-        let surface = latest
-        latest = nil
-        lock.unlock()
-
-        if let surface {
-            // Ownership transfers to `deliver`.
-            deliver(surface)
-        }
-
-        lock.lock()
-        let hasAnother = latest != nil
-        if !hasAnother {
-            deliveryIsScheduled = false
-        }
-        lock.unlock()
-
-        if hasAnother {
-            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-                self?.deliverLatest(deliver)
-            }
         }
     }
 }

@@ -6,8 +6,21 @@ import IndigoTouch
 /// Simulator.app, so Viewport stays in front and needs no Accessibility access.
 @MainActor
 final class IOSSimulatorHIDInput {
+    private var session: UnsafeMutableRawPointer?
+    private var sessionUDID: String?
+
+    deinit {
+        if let session {
+            ViewportHIDSessionClose(session)
+        }
+    }
+
     var isAvailable: Bool {
         ViewportHIDLoadFrameworks()
+    }
+
+    func reset() {
+        closeSession()
     }
 
     func touchDown(at point: CGPoint, udid: String) {
@@ -61,9 +74,10 @@ final class IOSSimulatorHIDInput {
         phase: Int32,
         udid: String
     ) {
+        guard let session = session(for: udid) else { return }
         var error = errorBuffer()
-        let succeeded = ViewportHIDSendTouch(
-            udid,
+        let succeeded = ViewportHIDSessionSendTouch(
+            session,
             min(max(point.x, 0), 1),
             min(max(point.y, 0), 1),
             phase,
@@ -72,6 +86,7 @@ final class IOSSimulatorHIDInput {
         )
         if !succeeded {
             report(error, operation: "send touch")
+            closeSession()
         }
     }
 
@@ -80,9 +95,10 @@ final class IOSSimulatorHIDInput {
         keyDown: Bool,
         udid: String
     ) -> Bool {
+        guard let session = session(for: udid) else { return false }
         var error = errorBuffer()
-        let succeeded = ViewportHIDSendKeyboard(
-            udid,
+        let succeeded = ViewportHIDSessionSendKeyboard(
+            session,
             usage,
             keyDown,
             &error,
@@ -90,8 +106,38 @@ final class IOSSimulatorHIDInput {
         )
         if !succeeded {
             report(error, operation: "send key")
+            closeSession()
         }
         return succeeded
+    }
+
+    private func session(for udid: String) -> UnsafeMutableRawPointer? {
+        if sessionUDID == udid, let session {
+            return session
+        }
+        closeSession()
+        guard isAvailable else { return nil }
+
+        var error = errorBuffer()
+        guard let opened = ViewportHIDSessionOpen(
+            udid,
+            &error,
+            error.count
+        ) else {
+            report(error, operation: "open HID session")
+            return nil
+        }
+        session = opened
+        sessionUDID = udid
+        return opened
+    }
+
+    private func closeSession() {
+        if let session {
+            ViewportHIDSessionClose(session)
+        }
+        session = nil
+        sessionUDID = nil
     }
 
     private func errorBuffer() -> [CChar] {

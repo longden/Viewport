@@ -7,23 +7,12 @@ actor AndroidDeviceInput {
     /// Serializes live motion `adb` launches and coalesces MOVE storms.
     nonisolated private let motionLimiter = AndroidMotionEventLimiter()
 
-    init(runner: CommandRunner = CommandRunner()) {
+    init(
+        runner: CommandRunner = CommandRunner(),
+        toolchains: ToolchainLocator = ToolchainLocator()
+    ) {
         self.runner = runner
-
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let environment = ProcessInfo.processInfo.environment
-        let sdkPath = environment["ANDROID_SDK_ROOT"]
-            ?? environment["ANDROID_HOME"]
-            ?? home.appendingPathComponent("Library/Android/sdk").path
-
-        adb = ExecutableLocator.executable(
-            named: "adb",
-            candidates: [
-                URL(fileURLWithPath: sdkPath)
-                    .appendingPathComponent("platform-tools/adb"),
-                URL(fileURLWithPath: "/opt/homebrew/bin/adb")
-            ]
-        )
+        adb = toolchains.adb
     }
 
     nonisolated var isAvailable: Bool {

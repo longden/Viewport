@@ -54,10 +54,9 @@ final class WindowCaptureSession: ObservableObject {
     private var captureTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = UUID()
-    private weak var previewView: CapturePreviewNSView?
+    private let framePresenter = CaptureFramePresenter()
     private var performanceProfile: CapturePerformanceProfile = .smooth
     private var captureMode: CaptureMode = .direct
-    private var latestFrame: CGImage?
     private var usesHostWindowStream = false
     private var activePointer: ActivePointer?
     private let simulatorSurfaceStream: IOSSimulatorSurfaceStream?
@@ -85,11 +84,7 @@ final class WindowCaptureSession: ObservableObject {
         captureTask?.cancel()
         refreshTask?.cancel()
         MainActor.assumeIsolated {
-            hostWindowStream.stop()
-            scrcpyDeviceStream?.stop()
-            iOSDeviceStream?.stop()
-            simulatorSurfaceStream?.stop()
-            emulatorGrpcStream?.stop()
+            stopDeviceStreams()
         }
     }
 
@@ -119,12 +114,11 @@ final class WindowCaptureSession: ObservableObject {
     }
 
     func attachPreview(_ view: CapturePreviewNSView) {
-        previewView = view
+        framePresenter.attach(view)
     }
 
     func detachPreview(_ view: CapturePreviewNSView) {
-        guard previewView === view else { return }
-        previewView = nil
+        framePresenter.detach(view)
     }
 
     func refreshInputAccess() {
@@ -167,7 +161,7 @@ final class WindowCaptureSession: ObservableObject {
     }
 
     func snapshotFrame() -> CGImage? {
-        latestFrame
+        framePresenter.latestFrame
     }
 
     func refreshWindows() {
@@ -237,14 +231,10 @@ final class WindowCaptureSession: ObservableObject {
         activePointer = nil
         usesHostWindowStream = false
         transport = .direct
-        hostWindowStream.stop()
-        scrcpyDeviceStream?.stop()
-        iOSDeviceStream?.stop()
-        simulatorSurfaceStream?.stop()
-        emulatorGrpcStream?.stop()
+        stopDeviceStreams()
+        iOSInput?.reset()
         capturedFrameSize = nil
-        latestFrame = nil
-        previewView?.clear()
+        framePresenter.clear()
     }
 
     func beginPointer(at point: CGPoint) {
@@ -485,13 +475,10 @@ final class WindowCaptureSession: ObservableObject {
     ) {
         captureTask?.cancel()
         usesHostWindowStream = false
-        hostWindowStream.stop()
-        scrcpyDeviceStream?.stop()
-        iOSDeviceStream?.stop()
-        simulatorSurfaceStream?.stop()
-        emulatorGrpcStream?.stop()
+        iOSInput?.reset()
+        stopDeviceStreams()
         if !preservingCurrentFrame {
-            previewView?.clear()
+            framePresenter.clear()
             capturedFrameSize = nil
             phase = .connecting
         }
@@ -503,102 +490,60 @@ final class WindowCaptureSession: ObservableObject {
             }) else {
                 return
             }
-            if captureMode == .direct {
-                await startDirectCapture(
-                    device: device,
-                    preservingCurrentFrame: preservingCurrentFrame
-                )
-            } else {
-                await startClassicCapture(
-                    device: device,
-                    preservingCurrentFrame: preservingCurrentFrame
-                )
-            }
+            await runCaptureStrategies(
+                CaptureTransportPolicy.strategies(
+                    mode: captureMode,
+                    deviceKind: device.kind
+                ),
+                device: device,
+                preservingCurrentFrame: preservingCurrentFrame
+            )
         }
     }
 
-    private func startDirectCapture(
+    private func runCaptureStrategies(
+        _ strategies: [CaptureStrategy],
         device: StreamedDevice,
         preservingCurrentFrame: Bool
     ) async {
         let deviceID = device.id
-        if device.kind == .iOSDevice {
-            await startIOSDeviceCapture(deviceID: deviceID)
-            return
-        }
-        if device.kind == .iOSSimulator {
-            if await startSimulatorSurfaceCapture(deviceID: deviceID) {
+        for strategy in strategies where !Task.isCancelled {
+            let started: Bool
+            switch strategy {
+            case .simulatorSurface:
+                started = await startSimulatorSurfaceCapture(deviceID: deviceID)
+            case .emulatorGrpc:
+                started = await startEmulatorGrpcCapture(deviceID: deviceID)
+            case .hostWindow:
+                started = await startHostWindowCapture(deviceID: deviceID)
+            case .scrcpy:
+                started = await startScrcpyDeviceCapture(deviceID: deviceID)
+            case .usbDevice:
+                await startIOSDeviceCapture(deviceID: deviceID)
+                started = true
+            case .polling:
+                await pollFrames(
+                    deviceID: deviceID,
+                    preservingCurrentFrame: preservingCurrentFrame
+                )
+                started = true
+            }
+            if started {
                 return
             }
-            await startClassicCapture(
-                device: device,
-                preservingCurrentFrame: preservingCurrentFrame
-            )
-            return
         }
-        if device.kind == .androidDevice {
-            if await startScrcpyDeviceCapture(deviceID: deviceID) {
-                return
-            }
-            await pollFrames(
-                deviceID: deviceID,
-                preservingCurrentFrame: preservingCurrentFrame
-            )
-            return
-        }
-        if device.kind == .androidEmulator {
-            if await startEmulatorGrpcCapture(deviceID: deviceID) {
-                return
-            }
-            await startClassicCapture(
-                device: device,
-                preservingCurrentFrame: preservingCurrentFrame
-            )
-            return
-        }
-        await startClassicCapture(
-            device: device,
-            preservingCurrentFrame: preservingCurrentFrame
-        )
     }
 
     private func startClassicCapture(
         device: StreamedDevice,
         preservingCurrentFrame: Bool
     ) async {
-        let deviceID = device.id
-        if device.kind == .iOSDevice {
-            await startIOSDeviceCapture(deviceID: deviceID)
-            return
-        }
-        if device.kind == .androidDevice {
-            if await startScrcpyDeviceCapture(deviceID: deviceID) {
-                return
-            }
-            await pollFrames(
-                deviceID: deviceID,
-                preservingCurrentFrame: preservingCurrentFrame
-            )
-            return
-        }
-        if device.kind == .androidEmulator {
-            if await startHostWindowCapture(deviceID: deviceID) {
-                return
-            }
-            if await startScrcpyDeviceCapture(deviceID: deviceID) {
-                return
-            }
-            await pollFrames(
-                deviceID: deviceID,
-                preservingCurrentFrame: preservingCurrentFrame
-            )
-            return
-        }
-        if await startHostWindowCapture(deviceID: deviceID) {
-            return
-        }
-        await pollFrames(
-            deviceID: deviceID,
+        await runCaptureStrategies(
+            CaptureTransportPolicy.strategies(
+                mode: .classic,
+                deviceKind: device.kind
+            ),
+            device: device,
             preservingCurrentFrame: preservingCurrentFrame
         )
     }
@@ -780,11 +725,7 @@ final class WindowCaptureSession: ObservableObject {
         captureTask?.cancel()
         usesHostWindowStream = false
         transport = .direct
-        hostWindowStream.stop()
-        scrcpyDeviceStream?.stop()
-        iOSDeviceStream?.stop()
-        simulatorSurfaceStream?.stop()
-        emulatorGrpcStream?.stop()
+        stopDeviceStreams()
         captureTask = Task { [weak self] in
             guard let self else { return }
             await pollFrames(
@@ -823,16 +764,10 @@ final class WindowCaptureSession: ObservableObject {
                 guard selectedDeviceID == deviceID,
                       !Task.isCancelled else { return }
 
-                if capturedFrameSize != imageBox.sourceSize {
-                    capturedFrameSize = imageBox.sourceSize
-                    previewView?.sourceSizeDidChange()
-                }
-                latestFrame = imageBox.image
-                previewView?.display(imageBox.image)
+                display(imageBox.image, sourceSize: imageBox.sourceSize)
                 consecutiveFailures = 0
                 if !hasDisplayedFrame {
                     hasDisplayedFrame = true
-                    phase = .live
                 }
             } catch is CancellationError {
                 return
@@ -851,34 +786,34 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
-    private func display(_ image: CGImage) {
-        let size = CGSize(width: image.width, height: image.height)
-        if capturedFrameSize != size {
-            capturedFrameSize = size
-            previewView?.sourceSizeDidChange()
+    private func display(_ image: CGImage, sourceSize: CGSize? = nil) {
+        if let changedSize = framePresenter.display(
+            image,
+            sourceSize: sourceSize
+        ) {
+            capturedFrameSize = changedSize
         }
-        latestFrame = image
-        previewView?.display(image)
         if phase != .live {
             phase = .live
         }
     }
 
     private func display(surface: IOSurfaceRef) {
-        let width = CGFloat(IOSurfaceGetWidth(surface))
-        let height = CGFloat(IOSurfaceGetHeight(surface))
-        let size = CGSize(width: width, height: height)
-        if capturedFrameSize != size {
-            capturedFrameSize = size
-            previewView?.sourceSizeDidChange()
+        if let changedSize = framePresenter.display(surface: surface) {
+            capturedFrameSize = changedSize
         }
-        if let image = CGImage.viewportImage(from: surface) {
-            latestFrame = image
-        }
-        previewView?.display(surface: surface)
         if phase != .live {
             phase = .live
         }
+    }
+
+    private func stopDeviceStreams() {
+        var streams: [any DeviceStream] = [hostWindowStream]
+        if let scrcpyDeviceStream { streams.append(scrcpyDeviceStream) }
+        if let iOSDeviceStream { streams.append(iOSDeviceStream) }
+        if let simulatorSurfaceStream { streams.append(simulatorSurfaceStream) }
+        if let emulatorGrpcStream { streams.append(emulatorGrpcStream) }
+        streams.forEach { $0.stop() }
     }
 }
 
@@ -889,41 +824,6 @@ private struct ActivePointer {
     let usesLiveAndroidMotion: Bool
     var usesEmulatorGrpc: Bool = false
     var deviceSize: CGSize? = nil
-}
-
-private extension CGImage {
-    static func viewportImage(from surface: IOSurfaceRef) -> CGImage? {
-        let width = IOSurfaceGetWidth(surface)
-        let height = IOSurfaceGetHeight(surface)
-        guard width > 0, height > 0 else { return nil }
-        IOSurfaceLock(surface, [.readOnly], nil)
-        defer { IOSurfaceUnlock(surface, [.readOnly], nil) }
-        let baseAddress = IOSurfaceGetBaseAddress(surface)
-        let bytesPerRow = IOSurfaceGetBytesPerRow(surface)
-        let data = Data(
-            bytes: baseAddress,
-            count: bytesPerRow * height
-        )
-        guard let provider = CGDataProvider(data: data as CFData) else {
-            return nil
-        }
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(
-                rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-                    | CGBitmapInfo.byteOrder32Little.rawValue
-            ),
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
-    }
 }
 
 private enum DeviceFrameError: LocalizedError {

@@ -221,25 +221,9 @@ private struct ScrcpyInstallation {
     let version: String
 
     static func locate() -> ScrcpyInstallation? {
-        let environment = ProcessInfo.processInfo.environment
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let sdkPath = environment["ANDROID_SDK_ROOT"]
-            ?? environment["ANDROID_HOME"]
-            ?? home.appendingPathComponent("Library/Android/sdk").path
-        guard let adb = ExecutableLocator.executable(
-            named: "adb",
-            candidates: [
-                URL(fileURLWithPath: sdkPath)
-                    .appendingPathComponent("platform-tools/adb"),
-                URL(fileURLWithPath: "/opt/homebrew/bin/adb")
-            ]
-        ), let scrcpy = ExecutableLocator.executable(
-            named: "scrcpy",
-            candidates: [
-                URL(fileURLWithPath: "/opt/homebrew/bin/scrcpy"),
-                URL(fileURLWithPath: "/usr/local/bin/scrcpy")
-            ]
-        ) else {
+        let toolchains = ToolchainLocator()
+        let environment = toolchains.environment
+        guard let adb = toolchains.adb, let scrcpy = toolchains.scrcpy else {
             return nil
         }
 
@@ -384,7 +368,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     private let port: Int
     private let onFrame: @MainActor @Sendable (CGImage) -> Void
     private let onFailure: @MainActor @Sendable (Error) -> Void
-    private let frameDelivery = ScrcpyFrameDelivery()
+    private let frameDelivery = LatestValueDelivery<CVPixelBuffer>()
     private let lock = NSLock()
     private let finishedGroup = DispatchGroup()
     private var socketDescriptor: Int32 = -1
@@ -845,60 +829,6 @@ private final class ScrcpyFrameConverter: @unchecked Sendable {
     func image(from pixelBuffer: CVPixelBuffer) -> CGImage? {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         return context.createCGImage(image, from: image.extent)
-    }
-}
-
-private final class ScrcpyFrameDelivery: @unchecked Sendable {
-    private let lock = NSLock()
-    private var latestBuffer: CVPixelBuffer?
-    private var deliveryIsScheduled = false
-
-    func submit(
-        _ pixelBuffer: CVPixelBuffer,
-        convertAndDeliver: @escaping @Sendable (CVPixelBuffer) -> Void
-    ) {
-        lock.lock()
-        latestBuffer = pixelBuffer
-        let shouldSchedule = !deliveryIsScheduled
-        deliveryIsScheduled = true
-        lock.unlock()
-        guard shouldSchedule else { return }
-
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.deliverLatest(convertAndDeliver)
-        }
-    }
-
-    func clear() {
-        lock.lock()
-        latestBuffer = nil
-        lock.unlock()
-    }
-
-    private func deliverLatest(
-        _ convertAndDeliver: @escaping @Sendable (CVPixelBuffer) -> Void
-    ) {
-        lock.lock()
-        let buffer = latestBuffer
-        latestBuffer = nil
-        lock.unlock()
-
-        if let buffer {
-            convertAndDeliver(buffer)
-        }
-
-        lock.lock()
-        let hasAnotherFrame = latestBuffer != nil
-        if !hasAnotherFrame {
-            deliveryIsScheduled = false
-        }
-        lock.unlock()
-
-        if hasAnotherFrame {
-            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-                self?.deliverLatest(convertAndDeliver)
-            }
-        }
     }
 }
 

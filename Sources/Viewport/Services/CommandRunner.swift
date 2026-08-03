@@ -353,10 +353,11 @@ private final class ProcessExecution: @unchecked Sendable {
 enum ExecutableLocator {
     static func executable(
         named name: String,
-        candidates: [URL] = []
+        candidates: [URL] = [],
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
         let fileManager = FileManager.default
-        let pathCandidates = ProcessInfo.processInfo.environment["PATH"]?
+        let pathCandidates = environment["PATH"]?
             .split(separator: ":")
             .map { URL(fileURLWithPath: String($0)).appendingPathComponent(name) }
             ?? []

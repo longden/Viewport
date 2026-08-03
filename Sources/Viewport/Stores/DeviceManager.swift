@@ -29,7 +29,7 @@ final class DeviceManager: ObservableObject {
     private let client: any DeviceClient
     private var refreshTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
-    private var refreshGeneration = UUID()
+    private var operationGeneration = UUID()
 
     init(client: any DeviceClient) {
         self.client = client
@@ -43,8 +43,9 @@ final class DeviceManager: ObservableObject {
 
     func refreshDevices() {
         refreshTask?.cancel()
+        launchTask?.cancel()
         let generation = UUID()
-        refreshGeneration = generation
+        operationGeneration = generation
         phase = .loading
 
         refreshTask = Task { [weak self] in
@@ -53,14 +54,14 @@ final class DeviceManager: ObservableObject {
             do {
                 let devices = try await client.listDevices()
                 guard !Task.isCancelled,
-                      refreshGeneration == generation else {
+                      operationGeneration == generation else {
                     return
                 }
                 self.devices = devices
                 self.phase = .ready
             } catch {
                 guard !Task.isCancelled,
-                      refreshGeneration == generation else {
+                      operationGeneration == generation else {
                     return
                 }
                 self.phase = .failed(error.localizedDescription)
@@ -71,7 +72,10 @@ final class DeviceManager: ObservableObject {
     func launch(_ device: LaunchableDevice) {
         guard devices.contains(where: { $0.id == device.id }) else { return }
 
+        refreshTask?.cancel()
         launchTask?.cancel()
+        let generation = UUID()
+        operationGeneration = generation
         phase = .launching(device.name)
 
         launchTask = Task { [weak self] in
@@ -79,16 +83,20 @@ final class DeviceManager: ObservableObject {
 
             do {
                 try await client.launch(device)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
 
                 self.lastLaunchToken = UUID()
                 self.phase = .ready
 
                 try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
+                self.launchTask = nil
                 self.refreshDevices()
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
                 self.phase = .failed(error.localizedDescription)
             }
         }
