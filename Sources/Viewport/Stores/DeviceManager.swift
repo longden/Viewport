@@ -6,11 +6,12 @@ enum DeviceManagerPhase: Equatable {
     case loading
     case ready
     case launching(String)
+    case creating(String)
     case failed(String)
 
     var isBusy: Bool {
         switch self {
-        case .loading, .launching:
+        case .loading, .launching, .creating:
             true
         case .idle, .ready, .failed:
             false
@@ -94,6 +95,59 @@ final class DeviceManager: ObservableObject {
                       operationGeneration == generation else { return }
                 self.launchTask = nil
                 self.refreshDevices()
+            } catch {
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
+                self.phase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    var supportsCreatingEmulators: Bool {
+        source == .android && client is AndroidDeviceClient
+    }
+
+    func listCreateProfiles() async throws -> [AndroidEmulatorProfile] {
+        guard let androidClient = client as? AndroidDeviceClient else {
+            throw CommandRunnerError.executableNotFound("Android CLI")
+        }
+        return try await androidClient.listCreateProfiles()
+    }
+
+    func createEmulator(profile: AndroidEmulatorProfile) {
+        guard let androidClient = client as? AndroidDeviceClient else {
+            phase = .failed("Android CLI is not available.")
+            return
+        }
+
+        refreshTask?.cancel()
+        launchTask?.cancel()
+        let generation = UUID()
+        operationGeneration = generation
+        phase = .creating(profile.displayName)
+
+        launchTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let created = try await androidClient.createEmulator(
+                    profile: profile
+                )
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
+
+                let devices = try await androidClient.listDevices()
+                guard !Task.isCancelled,
+                      operationGeneration == generation else { return }
+
+                self.devices = devices
+                self.phase = .ready
+                self.launchTask = nil
+
+                if let createdID = created.first,
+                   let device = devices.first(where: { $0.id == createdID }) {
+                    self.launch(device)
+                }
             } catch {
                 guard !Task.isCancelled,
                       operationGeneration == generation else { return }

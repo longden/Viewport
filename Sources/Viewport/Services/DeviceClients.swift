@@ -86,6 +86,85 @@ struct AndroidDeviceClient: DeviceClient {
         )
     }
 
+    func listCreateProfiles() async throws -> [AndroidEmulatorProfile] {
+        guard let androidCLI else {
+            throw CommandRunnerError.executableNotFound("Android CLI")
+        }
+
+        let result = try await runner.run(
+            executable: androidCLI,
+            arguments: [
+                "--no-metrics",
+                "--sdk=\(sdkURL.path)",
+                "emulator",
+                "create",
+                "--list-profiles"
+            ]
+        )
+
+        guard result.exitCode == 0 else {
+            throw CommandRunnerError.commandFailed(
+                command: "List emulator profiles",
+                code: result.exitCode,
+                message: result.standardError
+            )
+        }
+
+        return Self.parseCreateProfiles(result.standardOutput)
+    }
+
+    @discardableResult
+    func createEmulator(profile: AndroidEmulatorProfile) async throws -> [String] {
+        guard let androidCLI else {
+            throw CommandRunnerError.executableNotFound("Android CLI")
+        }
+
+        let before = Set(try await listAVDNames())
+        let result = try await runner.run(
+            executable: androidCLI,
+            arguments: [
+                "--no-metrics",
+                "--sdk=\(sdkURL.path)",
+                "emulator",
+                "create",
+                profile.id
+            ]
+        )
+
+        guard result.exitCode == 0 else {
+            throw CommandRunnerError.commandFailed(
+                command: "Create \(profile.displayName) emulator",
+                code: result.exitCode,
+                message: result.standardError.isEmpty
+                    ? result.standardOutput
+                    : result.standardError
+            )
+        }
+
+        let after = Set(try await listAVDNames())
+        let created = after.subtracting(before).sorted()
+        if !created.isEmpty {
+            return created
+        }
+
+        // Some CLI versions print the new AVD name without changing list timing.
+        let mentioned = Self.parseAVDNames(
+            result.standardOutput + "\n" + result.standardError
+        )
+        return mentioned.filter { !before.contains($0) }
+    }
+
+    static func parseCreateProfiles(_ output: String) -> [AndroidEmulatorProfile] {
+        parseAVDNames(output).map(AndroidEmulatorProfile.init(id:))
+            .sorted { lhs, rhs in
+                if lhs.isRecommended != rhs.isRecommended {
+                    return lhs.isRecommended
+                }
+                return lhs.displayName.localizedStandardCompare(rhs.displayName)
+                    == .orderedAscending
+            }
+    }
+
     static func parseAVDNames(_ output: String) -> [String] {
         output
             .split(whereSeparator: \.isNewline)

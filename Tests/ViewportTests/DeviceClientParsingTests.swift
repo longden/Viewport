@@ -106,6 +106,24 @@ final class DeviceClientParsingTests: XCTestCase {
         )
     }
 
+    func testParsesCreateProfilesAndPrefersMediumPhone() {
+        let profiles = AndroidDeviceClient.parseCreateProfiles(
+            """
+            large_desktop
+            medium_phone
+            small_phone
+            WARN | ignore me
+            """
+        )
+
+        XCTAssertEqual(
+            profiles.map(\.id),
+            ["medium_phone", "large_desktop", "small_phone"]
+        )
+        XCTAssertTrue(profiles[0].isRecommended)
+        XCTAssertEqual(profiles[0].displayName, "Medium Phone")
+    }
+
     func testParsesAvailableIOSDevicesAndSortsBootedFirst() throws {
         let json = """
         {

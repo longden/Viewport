@@ -3,9 +3,23 @@ import SwiftUI
 struct DeviceLauncherMenu: View {
     @ObservedObject var manager: DeviceManager
     var compact = true
+    var onCreateEmulator: (() -> Void)?
 
     var body: some View {
         Menu {
+            if manager.supportsCreatingEmulators, let onCreateEmulator {
+                Button {
+                    onCreateEmulator()
+                } label: {
+                    Label(
+                        "Create emulator…",
+                        systemImage: "plus.circle"
+                    )
+                }
+
+                Divider()
+            }
+
             if manager.devices.isEmpty {
                 emptyMenuContent
             } else {

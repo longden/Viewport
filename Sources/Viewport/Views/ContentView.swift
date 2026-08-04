@@ -7,9 +7,13 @@ struct ContentView: View {
     @StateObject private var favorites = FavoritesStore()
     @State private var isTakingScreenshot = false
     @State private var screenshotError: String?
+    @State private var screenshotSavedURL: URL?
+    @State private var showHelp = false
+    @State private var showScreenshotSettings = false
+    @State private var dismissScreenshotTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             workspaceBackground
 
             WorkspaceSplitView(
@@ -18,9 +22,19 @@ struct ContentView: View {
                 favorites: favorites
             )
             .padding(16)
+
+            if let screenshotSavedURL {
+                ScreenshotSavedToast(url: screenshotSavedURL) {
+                    clearScreenshotToast()
+                }
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(1)
+            }
         }
+        .animation(.snappy(duration: 0.22), value: screenshotSavedURL)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
+            ToolbarItemGroup(placement: .navigation) {
                 Menu {
                     Picker(
                         "Capture mode",
@@ -86,10 +100,23 @@ struct ContentView: View {
                             )
                         }
                     }
+
+                    Divider()
+
+                    Button("Screenshot settings…") {
+                        showScreenshotSettings = true
+                    }
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
                 .help("Viewport settings")
+
+                Button {
+                    showHelp = true
+                } label: {
+                    Label("Help", systemImage: "questionmark.circle")
+                }
+                .help("Check Android setup and create an emulator")
             }
 
             ToolbarItemGroup(placement: .principal) {
@@ -136,6 +163,12 @@ struct ContentView: View {
                 SourceVisibilityControls(workspace: workspace)
             }
         }
+        .sheet(isPresented: $showHelp) {
+            HelpSheet(androidDevices: workspace.androidDevices)
+        }
+        .sheet(isPresented: $showScreenshotSettings) {
+            ScreenshotSettingsSheet(workspace: workspace)
+        }
         .alert(
             "Screenshot Failed",
             isPresented: Binding(
@@ -161,6 +194,7 @@ struct ContentView: View {
             workspace.refreshAll()
         }
         .onDisappear {
+            dismissScreenshotTask?.cancel()
             workspace.stopCaptures()
         }
         .onReceive(
@@ -212,13 +246,32 @@ struct ContentView: View {
                 let image = try await service.createComposite(
                     sources: workspace.orderedVisibleSources,
                     web: web,
-                    workspace: workspace
+                    workspace: workspace,
+                    includePlatformLabels: workspace.screenshotPlatformLabelsEnabled
                 )
-                _ = try service.save(image)
+                if let url = try service.save(image) {
+                    presentScreenshotToast(url)
+                }
             } catch {
                 screenshotError = error.localizedDescription
             }
             isTakingScreenshot = false
         }
+    }
+
+    private func presentScreenshotToast(_ url: URL) {
+        dismissScreenshotTask?.cancel()
+        screenshotSavedURL = url
+        dismissScreenshotTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            clearScreenshotToast()
+        }
+    }
+
+    private func clearScreenshotToast() {
+        dismissScreenshotTask?.cancel()
+        dismissScreenshotTask = nil
+        screenshotSavedURL = nil
     }
 }

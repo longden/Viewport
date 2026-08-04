@@ -14,6 +14,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var paneWeights: [ViewerSource: Double]
     @Published private(set) var performanceProfile: CapturePerformanceProfile
     @Published private(set) var captureMode: CaptureMode
+    @Published private(set) var screenshotPlatformLabelsEnabled: Bool
     @Published private(set) var highFrameRateCaptureAvailable: Bool
 
     private let defaults: UserDefaults
@@ -21,6 +22,7 @@ final class WorkspaceStore: ObservableObject {
     private let paneWeightsKey: String
     private let performanceProfileKey: String
     private let captureModeKey: String
+    private let screenshotPlatformLabelsKey: String
     private var captureRefreshTask: Task<Void, Never>?
 
     init(
@@ -29,6 +31,7 @@ final class WorkspaceStore: ObservableObject {
         paneWeightsKey: String = "paneWeights",
         performanceProfileKey: String = "capturePerformanceProfile",
         captureModeKey: String = "captureMode",
+        screenshotPlatformLabelsKey: String = "screenshotPlatformLabelsEnabled",
         androidClient: any DeviceClient = AndroidDeviceClient(),
         iOSClient: any DeviceClient = IOSSimulatorClient()
     ) {
@@ -37,6 +40,7 @@ final class WorkspaceStore: ObservableObject {
         self.paneWeightsKey = paneWeightsKey
         self.performanceProfileKey = performanceProfileKey
         self.captureModeKey = captureModeKey
+        self.screenshotPlatformLabelsKey = screenshotPlatformLabelsKey
         androidDevices = DeviceManager(client: androidClient)
         iOSDevices = DeviceManager(client: iOSClient)
 
@@ -60,6 +64,9 @@ final class WorkspaceStore: ObservableObject {
         captureMode = defaults.string(forKey: captureModeKey)
             .flatMap(CaptureMode.init(rawValue:))
             ?? .direct
+        screenshotPlatformLabelsEnabled = defaults.object(
+            forKey: screenshotPlatformLabelsKey
+        ) as? Bool ?? false
         highFrameRateCaptureAvailable = CGPreflightScreenCaptureAccess()
 
         androidCapture.setPerformanceProfile(performanceProfile)
@@ -126,6 +133,12 @@ final class WorkspaceStore: ObservableObject {
         androidCapture.setCaptureMode(mode)
         iOSCapture.setCaptureMode(mode)
         refreshCaptures()
+    }
+
+    func setScreenshotPlatformLabelsEnabled(_ isEnabled: Bool) {
+        guard screenshotPlatformLabelsEnabled != isEnabled else { return }
+        screenshotPlatformLabelsEnabled = isEnabled
+        defaults.set(isEnabled, forKey: screenshotPlatformLabelsKey)
     }
 
     func requestHighFrameRateCapture() {
