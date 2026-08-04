@@ -16,11 +16,40 @@ final class WorkspaceScreenshotTests: XCTestCase {
         )
 
         XCTAssertEqual(layout.images.count, 3)
+        XCTAssertEqual(layout.labels.count, 3)
         XCTAssertEqual(layout.images.map(\.height), [1_000, 1_000, 1_000])
+        XCTAssertEqual(layout.images.map(\.minY), [0, 0, 0])
         XCTAssertEqual(layout.images[1].minX, layout.images[0].maxX + 10)
         XCTAssertEqual(layout.images[2].minX, layout.images[1].maxX + 10)
         XCTAssertEqual(layout.canvas.width, layout.images[2].maxX)
         XCTAssertEqual(layout.canvas.height, 1_000)
+    }
+
+    func testCompositeLayoutReservesLabelBandWhenEnabled() throws {
+        let layout = try XCTUnwrap(
+            CompositeScreenshotLayout.frames(
+                for: [CGSize(width: 400, height: 800)],
+                maximumHeight: 800,
+                includeLabels: true
+            )
+        )
+
+        XCTAssertEqual(
+            layout.canvas.height,
+            CompositeScreenshotLayout.labelBandHeight
+                + CompositeScreenshotLayout.labelToImageSpacing
+                + 800
+        )
+        XCTAssertEqual(layout.labels[0].minY, 0)
+        XCTAssertEqual(
+            layout.labels[0].height,
+            CompositeScreenshotLayout.labelBandHeight
+        )
+        XCTAssertEqual(
+            layout.images[0].minY,
+            CompositeScreenshotLayout.labelBandHeight
+                + CompositeScreenshotLayout.labelToImageSpacing
+        )
     }
 
     func testCompositeLayoutRejectsInvalidInput() {
@@ -30,5 +59,11 @@ final class WorkspaceScreenshotTests: XCTestCase {
                 for: [CGSize(width: 100, height: 0)]
             )
         )
+    }
+
+    func testFormatsPlatformLabels() {
+        XCTAssertEqual(ScreenshotPlatformLabel.title(for: .web), "Web")
+        XCTAssertEqual(ScreenshotPlatformLabel.title(for: .android), "Android")
+        XCTAssertEqual(ScreenshotPlatformLabel.title(for: .iOS), "iOS")
     }
 }

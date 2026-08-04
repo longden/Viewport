@@ -104,4 +104,14 @@ final class WorkspaceStoreTests: XCTestCase {
 
         XCTAssertEqual(restored.captureMode, .classic)
     }
+
+    func testScreenshotPlatformLabelsPersist() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertFalse(store.screenshotPlatformLabelsEnabled)
+
+        store.setScreenshotPlatformLabelsEnabled(true)
+
+        let restored = WorkspaceStore(defaults: defaults)
+        XCTAssertTrue(restored.screenshotPlatformLabelsEnabled)
+    }
 }
