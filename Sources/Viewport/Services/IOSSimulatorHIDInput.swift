@@ -6,7 +6,8 @@ import IndigoTouch
 /// Simulator.app, so Viewport stays in front and needs no Accessibility access.
 @MainActor
 final class IOSSimulatorHIDInput {
-    private var session: UnsafeMutableRawPointer?
+    // Accessed from nonisolated `deinit` to close the native session.
+    private nonisolated(unsafe) var session: UnsafeMutableRawPointer?
     private var sessionUDID: String?
 
     deinit {

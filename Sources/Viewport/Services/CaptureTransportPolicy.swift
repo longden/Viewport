@@ -1,6 +1,7 @@
 @MainActor
 protocol DeviceStream: AnyObject {
-    func stop()
+    /// Safe to call from any isolation domain, including `deinit`.
+    nonisolated func stop()
 }
 
 enum CaptureStrategy: Equatable {

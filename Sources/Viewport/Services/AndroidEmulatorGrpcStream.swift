@@ -25,10 +25,11 @@ final class AndroidEmulatorGrpcStream {
         @escaping @Sendable (Error) -> Void
     ) -> any EmulatorGrpcWorking
 
-    private var worker: (any EmulatorGrpcWorking)?
-    private var onFrame: ((CGImage) -> Void)?
-    private var onFailure: ((Error) -> Void)?
-    private var generation = UUID()
+    // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
+    private nonisolated(unsafe) var worker: (any EmulatorGrpcWorking)?
+    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
+    private nonisolated(unsafe) var generation = UUID()
     private let endpointProvider: @Sendable (String) -> EmulatorGrpcEndpoint?
     private let workerFactory: WorkerFactory
 
@@ -130,7 +131,7 @@ final class AndroidEmulatorGrpcStream {
         return true
     }
 
-    func stop() {
+    nonisolated func stop() {
         generation = UUID()
         worker?.stop()
         worker = nil

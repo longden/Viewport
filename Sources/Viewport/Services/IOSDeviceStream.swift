@@ -7,7 +7,7 @@ import Foundation
 /// A view-only video stream from a trusted iPhone or iPad connected over USB.
 @MainActor
 final class IOSDeviceStream: NSObject {
-    private let sampleQueue = DispatchQueue(
+    nonisolated private let sampleQueue = DispatchQueue(
         label: "com.longden.viewport.ios-device-stream",
         qos: .userInteractive
     )
@@ -15,10 +15,11 @@ final class IOSDeviceStream: NSObject {
     nonisolated private let frameDelivery =
         LatestValueDelivery<IOSDeviceFrameInput>()
 
-    private var activeSession: AVCaptureSession?
-    private var activeOutput: AVCaptureVideoDataOutput?
-    private var onFrame: ((CGImage) -> Void)?
-    private var onFailure: ((Error) -> Void)?
+    // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
+    private nonisolated(unsafe) var activeSession: AVCaptureSession?
+    private nonisolated(unsafe) var activeOutput: AVCaptureVideoDataOutput?
+    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
     func start(
         deviceID: String,
@@ -91,7 +92,7 @@ final class IOSDeviceStream: NSObject {
         }
     }
 
-    func stop() {
+    nonisolated func stop() {
         let session = activeSession
         activeSession = nil
         activeOutput = nil
