@@ -1,6 +1,7 @@
 import XCTest
 @testable import Viewport
 
+@MainActor
 final class WebViewModelTests: XCTestCase {
     func testAddsHTTPSWhenSchemeIsMissing() {
         XCTAssertEqual(
@@ -19,5 +20,14 @@ final class WebViewModelTests: XCTestCase {
     func testRejectsNonWebSchemes() {
         XCTAssertNil(WebViewModel.normalizedURL(from: "javascript:alert(1)"))
         XCTAssertNil(WebViewModel.normalizedURL(from: ""))
+    }
+
+    func testInstallsDeveloperConsoleBridgeAtDocumentStart() {
+        let model = WebViewModel()
+        let scripts = model.webView.configuration.userContentController.userScripts
+
+        XCTAssertEqual(scripts.count, 1)
+        XCTAssertEqual(scripts.first?.injectionTime, .atDocumentStart)
+        XCTAssertFalse(scripts.first?.isForMainFrameOnly ?? true)
     }
 }

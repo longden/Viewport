@@ -16,19 +16,27 @@ final class WebViewModel: ObservableObject {
     let webView: WKWebView
 
     private let dataCleaner: any WebsiteDataClearing
+    private let consoleBridge: WebConsoleBridge
+    private var consoleCaptureEnabled = false
     private var hasLoadedInitialPage = false
     private var noticeGeneration = UUID()
 
     init(
         address: String = "https://example.com",
-        dataCleaner: (any WebsiteDataClearing)? = nil
+        dataCleaner: (any WebsiteDataClearing)? = nil,
+        onConsoleMessage: @escaping WebConsoleBridge.MessageHandler = {
+            _, _, _ in
+        }
     ) {
         self.address = address
         self.dataCleaner = dataCleaner ?? WebsiteDataCleaner()
+        let consoleBridge = WebConsoleBridge(onMessage: onConsoleMessage)
+        self.consoleBridge = consoleBridge
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.isElementFullscreenEnabled = true
+        consoleBridge.install(in: configuration)
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = true
@@ -73,12 +81,24 @@ final class WebViewModel: ObservableObject {
         webView.reload()
     }
 
+    func setConsoleCaptureEnabled(_ enabled: Bool) {
+        consoleCaptureEnabled = enabled
+        consoleBridge.setEnabled(enabled, in: webView)
+    }
+
     func clearCookies() {
-        clearWebsiteData(.cookies)
+        clearWebsiteData([.cookies], notice: "Cookies cleared")
     }
 
     func clearAllWebsiteData() {
-        clearWebsiteData(.allData)
+        clearWebsiteData([.allData], notice: "Website data cleared")
+    }
+
+    func clearCookiesAndWebsiteData() {
+        clearWebsiteData(
+            [.cookies, .allData],
+            notice: "Cookies and website data cleared"
+        )
     }
 
     func navigationDidStart() {
@@ -90,6 +110,8 @@ final class WebViewModel: ObservableObject {
     func navigationDidFinish() {
         isLoading = false
         updateNavigationState()
+        // User scripts reset the page flag on each document; re-apply capture state.
+        consoleBridge.setEnabled(consoleCaptureEnabled, in: webView)
     }
 
     func navigationDidFail(_ error: Error) {
@@ -120,23 +142,21 @@ final class WebViewModel: ObservableObject {
         }
     }
 
-    private func clearWebsiteData(_ scope: WebsiteDataScope) {
-        guard !isClearingData else { return }
+    private func clearWebsiteData(
+        _ scopes: [WebsiteDataScope],
+        notice: String
+    ) {
+        guard !isClearingData, !scopes.isEmpty else { return }
         isClearingData = true
 
         Task { [weak self] in
             guard let self else { return }
 
-            await dataCleaner.clear(scope)
-            self.isClearingData = false
-
-            switch scope {
-            case .cookies:
-                self.showNotice("Cookies cleared")
-            case .allData:
-                self.showNotice("Website data cleared")
+            for scope in scopes {
+                await dataCleaner.clear(scope)
             }
-
+            self.isClearingData = false
+            self.showNotice(notice)
             self.reload()
         }
     }

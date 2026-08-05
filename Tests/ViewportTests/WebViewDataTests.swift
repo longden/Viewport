@@ -27,10 +27,29 @@ final class WebViewDataTests: XCTestCase {
         XCTAssertFalse(model.isClearingData)
     }
 
+    func testClearCookiesAndWebsiteDataClearsBothScopes() async {
+        let cleaner = RecordingWebsiteDataCleaner()
+        let model = WebViewModel(dataCleaner: cleaner)
+
+        model.clearCookiesAndWebsiteData()
+        await waitForClearCount(on: cleaner, count: 2)
+
+        XCTAssertEqual(cleaner.scopes, [.cookies, .allData])
+        XCTAssertEqual(model.noticeMessage, "Cookies and website data cleared")
+        XCTAssertFalse(model.isClearingData)
+    }
+
     private func waitForClear(
         on cleaner: RecordingWebsiteDataCleaner
     ) async {
-        for _ in 0..<20 where cleaner.scopes.isEmpty {
+        await waitForClearCount(on: cleaner, count: 1)
+    }
+
+    private func waitForClearCount(
+        on cleaner: RecordingWebsiteDataCleaner,
+        count: Int
+    ) async {
+        for _ in 0..<40 where cleaner.scopes.count < count {
             try? await Task.sleep(for: .milliseconds(5))
         }
     }
