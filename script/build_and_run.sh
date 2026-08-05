@@ -9,14 +9,17 @@ fi
 APP_NAME="Viewport"
 BUNDLE_ID="com.longden.viewport"
 MIN_SYSTEM_VERSION="15.0"
+APP_ICON_NAME="AppIcon"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+APP_ICON_SOURCE="$ROOT_DIR/$APP_ICON_NAME.icon"
 MODULE_CACHE_DIR="$ROOT_DIR/.build/swiftpm-module-cache"
 
 if [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
@@ -47,9 +50,39 @@ xcrun swift build --disable-sandbox -c "$BUILD_CONFIGURATION"
 BUILD_BINARY="$(xcrun swift build --disable-sandbox -c "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+
+if [[ ! -d "$APP_ICON_SOURCE" ]]; then
+  echo "Missing app icon at $APP_ICON_SOURCE" >&2
+  exit 1
+fi
+
+ICON_COMPILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/viewport-icon.XXXXXX")"
+cleanup_icon_compile() {
+  rm -rf "$ICON_COMPILE_DIR"
+}
+trap cleanup_icon_compile EXIT
+
+echo "Compiling app icon from $APP_ICON_NAME.icon"
+xcrun actool "$APP_ICON_SOURCE" \
+  --compile "$ICON_COMPILE_DIR" \
+  --output-format human-readable-text \
+  --notices \
+  --warnings \
+  --errors \
+  --output-partial-info-plist "$ICON_COMPILE_DIR/partial.plist" \
+  --app-icon "$APP_ICON_NAME" \
+  --include-all-app-icons \
+  --enable-on-demand-resources NO \
+  --development-region en \
+  --target-device mac \
+  --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+  --platform macosx >/dev/null
+
+cp "$ICON_COMPILE_DIR/Assets.car" "$APP_RESOURCES/Assets.car"
+cp "$ICON_COMPILE_DIR/$APP_ICON_NAME.icns" "$APP_RESOURCES/$APP_ICON_NAME.icns"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,6 +95,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>
+  <string>$APP_ICON_NAME</string>
+  <key>CFBundleIconName</key>
+  <string>$APP_ICON_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
