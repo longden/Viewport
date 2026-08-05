@@ -2,9 +2,11 @@ import AppKit
 import CoreGraphics
 import CoreText
 import Foundation
+import UniformTypeIdentifiers
 
 enum WorkspaceScreenshotError: LocalizedError {
     case noCapturablePanes
+    case paneNotCapturable(ViewerSource)
     case imageCreationFailed
     case encodingFailed
 
@@ -12,10 +14,12 @@ enum WorkspaceScreenshotError: LocalizedError {
         switch self {
         case .noCapturablePanes:
             "Nothing to capture. Open a pane that has a live view."
+        case let .paneNotCapturable(source):
+            "Nothing to capture in the \(ScreenshotPlatformLabel.title(for: source)) pane."
         case .imageCreationFailed:
-            "The combined screenshot could not be created."
+            "The screenshot could not be created."
         case .encodingFailed:
-            "The combined screenshot could not be encoded as a PNG."
+            "The screenshot could not be encoded as a PNG."
         }
     }
 }
@@ -92,6 +96,22 @@ enum ScreenshotPlatformLabel {
     }
 }
 
+enum WorkspaceScreenshotNaming {
+    static func filename(
+        source: ViewerSource? = nil,
+        fileExtension: String = "png",
+        date: Date = Date()
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let stamp = formatter.string(from: date)
+        if let source {
+            return "Viewport-\(ScreenshotPlatformLabel.title(for: source))-\(stamp).\(fileExtension)"
+        }
+        return "Viewport \(stamp).\(fileExtension)"
+    }
+}
+
 @MainActor
 struct WorkspaceScreenshotService {
     func createComposite(
@@ -100,6 +120,51 @@ struct WorkspaceScreenshotService {
         workspace: WorkspaceStore,
         includePlatformLabels: Bool
     ) async throws -> CGImage {
+        let panes = await collectPanes(
+            sources: sources,
+            web: web,
+            workspace: workspace
+        )
+        guard !panes.isEmpty else {
+            throw WorkspaceScreenshotError.noCapturablePanes
+        }
+        return try compose(panes, includePlatformLabels: includePlatformLabels)
+    }
+
+    func captureWeb(_ web: WebViewModel) async throws -> CGImage {
+        guard let image = await snapshotWeb(web) else {
+            throw WorkspaceScreenshotError.paneNotCapturable(.web)
+        }
+        return image
+    }
+
+    func captureDevice(session: WindowCaptureSession) throws -> CGImage {
+        guard let image = session.snapshotFrame() else {
+            throw WorkspaceScreenshotError.paneNotCapturable(session.source)
+        }
+        return image
+    }
+
+    func capturePane(
+        source: ViewerSource,
+        web: WebViewModel,
+        workspace: WorkspaceStore
+    ) async throws -> CGImage {
+        switch source {
+        case .web:
+            try await captureWeb(web)
+        case .android:
+            try captureDevice(session: workspace.androidCapture)
+        case .iOS:
+            try captureDevice(session: workspace.iOSCapture)
+        }
+    }
+
+    func collectPanes(
+        sources: [ViewerSource],
+        web: WebViewModel,
+        workspace: WorkspaceStore
+    ) async -> [ScreenshotPaneCapture] {
         var panes: [ScreenshotPaneCapture] = []
 
         for source in sources {
@@ -138,6 +203,13 @@ struct WorkspaceScreenshotService {
             }
         }
 
+        return panes
+    }
+
+    func compose(
+        _ panes: [ScreenshotPaneCapture],
+        includePlatformLabels: Bool
+    ) throws -> CGImage {
         guard !panes.isEmpty else {
             throw WorkspaceScreenshotError.noCapturablePanes
         }
@@ -197,12 +269,83 @@ struct WorkspaceScreenshotService {
         return result
     }
 
-    func save(_ image: CGImage) throws -> URL? {
+    /// Draws panes into a fixed canvas (for recording). Scales each strip into
+    /// equal-width slots when the source count matches `slotCount`.
+    func compose(
+        _ panes: [ScreenshotPaneCapture],
+        into canvasSize: CGSize,
+        background: CGColor = NSColor.windowBackgroundColor.cgColor
+    ) throws -> CGImage {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            throw WorkspaceScreenshotError.imageCreationFailed
+        }
+        guard !panes.isEmpty else {
+            throw WorkspaceScreenshotError.noCapturablePanes
+        }
+
+        guard let context = CGContext(
+            data: nil,
+            width: Int(canvasSize.width),
+            height: Int(canvasSize.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw WorkspaceScreenshotError.imageCreationFailed
+        }
+
+        context.setFillColor(background)
+        context.fill(CGRect(origin: .zero, size: canvasSize))
+
+        guard let layout = CompositeScreenshotLayout.frames(
+            for: panes.map {
+                CGSize(width: $0.image.width, height: $0.image.height)
+            },
+            maximumHeight: canvasSize.height,
+            includeLabels: false
+        ) else {
+            throw WorkspaceScreenshotError.imageCreationFailed
+        }
+
+        let scaleX = canvasSize.width / max(layout.canvas.width, 1)
+        let scaleY = canvasSize.height / max(layout.canvas.height, 1)
+        let scale = min(scaleX, scaleY)
+        let scaledWidth = layout.canvas.width * scale
+        let scaledHeight = layout.canvas.height * scale
+        let offsetX = (canvasSize.width - scaledWidth) / 2
+        let offsetY = (canvasSize.height - scaledHeight) / 2
+
+        for (pane, frame) in zip(panes, layout.images) {
+            let dest = CGRect(
+                x: offsetX + frame.minX * scale,
+                y: offsetY + frame.minY * scale,
+                width: frame.width * scale,
+                height: frame.height * scale
+            )
+            context.interpolationQuality = .medium
+            context.draw(
+                pane.image,
+                in: cgRect(dest, canvasHeight: canvasSize.height)
+            )
+        }
+
+        guard let result = context.makeImage() else {
+            throw WorkspaceScreenshotError.imageCreationFailed
+        }
+        return result
+    }
+
+    func save(
+        _ image: CGImage,
+        preferredName: String,
+        panelTitle: String
+    ) throws -> URL? {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = defaultFilename
-        panel.title = "Save Combined Screenshot"
+        panel.nameFieldStringValue = preferredName
+        panel.title = panelTitle
 
         guard panel.runModal() == .OK, let url = panel.url else {
             return nil
@@ -219,10 +362,27 @@ struct WorkspaceScreenshotService {
         return url
     }
 
-    private func snapshotWeb(_ web: WebViewModel) async -> CGImage? {
-        guard let snapshot = try? await web.webView.takeSnapshot(
-            configuration: nil
-        ) else {
+    func saveCombined(_ image: CGImage) throws -> URL? {
+        try save(
+            image,
+            preferredName: WorkspaceScreenshotNaming.filename(),
+            panelTitle: "Save Combined Screenshot"
+        )
+    }
+
+    func savePane(_ image: CGImage, source: ViewerSource) throws -> URL? {
+        try save(
+            image,
+            preferredName: WorkspaceScreenshotNaming.filename(source: source),
+            panelTitle: "Save \(ScreenshotPlatformLabel.title(for: source)) Screenshot"
+        )
+    }
+
+    func snapshotWeb(_ web: WebViewModel) async -> CGImage? {
+        guard web.webView.url != nil,
+              let snapshot = try? await web.webView.takeSnapshot(
+                  configuration: nil
+              ) else {
             return nil
         }
         return snapshot.cgImage(
@@ -241,11 +401,7 @@ struct WorkspaceScreenshotService {
         guard topDownFrame.height > 0, !text.isEmpty else { return }
 
         let frame = cgRect(topDownFrame, canvasHeight: canvasHeight)
-        let font = CTFontCreateUIFontForLanguage(
-            .systemEmphasized,
-            CompositeScreenshotLayout.labelFontSize,
-            nil
-        ) ?? CTFontCreateWithName(
+        let font = CTFontCreateWithName(
             "Helvetica-Bold" as CFString,
             CompositeScreenshotLayout.labelFontSize,
             nil
@@ -290,11 +446,5 @@ struct WorkspaceScreenshotService {
             width: rect.width,
             height: rect.height
         )
-    }
-
-    private var defaultFilename: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return "Viewport \(formatter.string(from: Date())).png"
     }
 }

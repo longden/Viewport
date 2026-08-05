@@ -2,8 +2,6 @@ import SwiftUI
 
 struct ViewerPane<Controls: View, Content: View>: View {
     let source: ViewerSource
-    let status: String
-    let statusStyle: StatusStyle
     @ViewBuilder let controls: Controls
     @ViewBuilder let content: Content
 
@@ -21,16 +19,6 @@ struct ViewerPane<Controls: View, Content: View>: View {
                 }
 
                 Spacer(minLength: 8)
-
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(statusStyle.color)
-                        .frame(width: 7, height: 7)
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
             }
 
             controls
@@ -59,26 +47,6 @@ struct ViewerPane<Controls: View, Content: View>: View {
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .accessibilityHidden(true)
-    }
-}
-
-enum StatusStyle {
-    case neutral
-    case active
-    case warning
-    case error
-
-    var color: Color {
-        switch self {
-        case .neutral:
-            .secondary
-        case .active:
-            .green
-        case .warning:
-            .orange
-        case .error:
-            .red
-        }
     }
 }
 

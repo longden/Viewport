@@ -102,8 +102,10 @@ final class WorkspaceStore: ObservableObject {
         trailingWeight: Double,
         persist: Bool
     ) {
-        paneWeights[leading] = max(leadingWeight, 0.01)
-        paneWeights[trailing] = max(trailingWeight, 0.01)
+        var updatedWeights = paneWeights
+        updatedWeights[leading] = max(leadingWeight, 0.01)
+        updatedWeights[trailing] = max(trailingWeight, 0.01)
+        paneWeights = updatedWeights
         if persist {
             persistPaneWeights()
         }

@@ -3,16 +3,11 @@ import SwiftUI
 struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
     @ObservedObject var deviceManager: DeviceManager
+    var onScreenshot: (() -> Void)?
     @State private var showCreateEmulator = false
 
     var body: some View {
-        ViewerPane(
-            source: session.source,
-            status: session.phase == .live
-                ? session.liveStatus
-                : session.phase.label,
-            statusStyle: statusStyle
-        ) {
+        ViewerPane(source: session.source) {
             sourcePicker
         } content: {
             ZStack {
@@ -93,20 +88,18 @@ struct CaptureViewerPane: View {
             .labelStyle(.iconOnly)
             .help("Refresh devices")
 
-            if session.phase == .live {
-                Button {
-                    session.requestInputAccess()
-                } label: {
-                    Label(
-                        session.inputAccess.label,
-                        systemImage: inputStatusIcon
-                    )
-                }
-                .labelStyle(.iconOnly)
-                .foregroundStyle(inputStatusColor)
-                .disabled(session.inputAccess == .viewOnly)
-                .help(inputStatusHelp)
+            Button {
+                onScreenshot?()
+            } label: {
+                Label("Screenshot", systemImage: "camera")
             }
+            .labelStyle(.iconOnly)
+            .disabled(!canTakeScreenshot)
+            .help(
+                canTakeScreenshot
+                    ? "Save this \(session.source.title) pane"
+                    : "Nothing to capture yet"
+            )
 
             DeviceLauncherMenu(
                 manager: deviceManager,
@@ -117,6 +110,10 @@ struct CaptureViewerPane: View {
         }
         .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var canTakeScreenshot: Bool {
+        onScreenshot != nil && session.snapshotFrame() != nil
     }
 
     private var waitingForFrameOverlay: some View {
@@ -187,52 +184,6 @@ struct CaptureViewerPane: View {
             return true
         default:
             return false
-        }
-    }
-
-    private var statusStyle: StatusStyle {
-        return switch session.phase {
-        case .live:
-            .active
-        case .failed:
-            .error
-        case .noWindow:
-            .warning
-        case .idle, .searching, .connecting:
-            .neutral
-        }
-    }
-
-    private var inputStatusIcon: String {
-        switch session.inputAccess {
-        case .ready:
-            "cursorarrow.click.2"
-        case .permissionNeeded:
-            "hand.raised"
-        case .viewOnly:
-            "eye"
-        }
-    }
-
-    private var inputStatusColor: Color {
-        switch session.inputAccess {
-        case .ready:
-            .green
-        case .permissionNeeded:
-            .orange
-        case .viewOnly:
-            .secondary
-        }
-    }
-
-    private var inputStatusHelp: String {
-        switch session.inputAccess {
-        case .ready:
-            "Direct device input is active; keyboard input follows focus"
-        case .permissionNeeded:
-            "Direct device input is unavailable"
-        case .viewOnly:
-            "Connected iPhones are view only; interact on the phone itself"
         }
     }
 

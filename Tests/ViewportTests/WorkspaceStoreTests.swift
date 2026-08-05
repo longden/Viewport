@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Viewport
 
@@ -80,6 +81,27 @@ final class WorkspaceStoreTests: XCTestCase {
         let restored = WorkspaceStore(defaults: defaults)
         XCTAssertEqual(restored.paneWeight(for: .web), 1.6)
         XCTAssertEqual(restored.paneWeight(for: .android), 0.4)
+    }
+
+    func testPaneResizePublishesOneAtomicWeightChange() {
+        let store = WorkspaceStore(defaults: defaults)
+        var updates = 0
+        let observation = store.$paneWeights
+            .dropFirst()
+            .sink { _ in updates += 1 }
+
+        store.resizePanes(
+            leading: .web,
+            leadingWeight: 1.25,
+            trailing: .android,
+            trailingWeight: 0.75,
+            persist: false
+        )
+
+        XCTAssertEqual(updates, 1)
+        XCTAssertEqual(store.paneWeight(for: .web), 1.25)
+        XCTAssertEqual(store.paneWeight(for: .android), 0.75)
+        withExtendedLifetime(observation) {}
     }
 
     func testPerformanceProfilePersists() {

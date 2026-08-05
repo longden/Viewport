@@ -4,7 +4,9 @@ struct WorkspaceSplitView: View {
     @ObservedObject var workspace: WorkspaceStore
     @ObservedObject var web: WebViewModel
     @ObservedObject var favorites: FavoritesStore
+    var onPaneScreenshot: ((ViewerSource) -> Void)?
     @State private var dragState: DividerDragState?
+    @State private var transientPaneWidths: [ViewerSource: CGFloat]?
 
     private let minimumPaneWidth: CGFloat = 190
     private let dividerWidth: CGFloat = 12
@@ -17,10 +19,11 @@ struct WorkspaceSplitView: View {
                     - dividerWidth * CGFloat(max(sources.count - 1, 0)),
                 1
             )
-            let widths = paneWidths(
+            let persistedWidths = paneWidths(
                 for: sources,
                 availableWidth: contentWidth
             )
+            let widths = transientPaneWidths ?? persistedWidths
 
             HStack(spacing: 0) {
                 ForEach(Array(sources.enumerated()), id: \.element) {
@@ -42,6 +45,10 @@ struct WorkspaceSplitView: View {
                             )
                     }
                 }
+            }
+            .onChange(of: sources) {
+                dragState = nil
+                transientPaneWidths = nil
             }
         }
     }
@@ -115,6 +122,7 @@ struct WorkspaceSplitView: View {
                         trailingWidth: widths[trailing] ?? minimumPaneWidth
                     )
                     dragState = state
+                    transientPaneWidths = widths
                 }
 
                 let combinedWidth = state.leadingWidth + state.trailingWidth
@@ -125,22 +133,42 @@ struct WorkspaceSplitView: View {
                     ),
                     combinedWidth - minimumPaneWidth
                 )
-                let combinedWeight = workspace.paneWeight(for: leading)
-                    + workspace.paneWeight(for: trailing)
+                var updatedWidths = transientPaneWidths ?? widths
+                updatedWidths[leading] = leadingWidth
+                updatedWidths[trailing] = combinedWidth - leadingWidth
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    transientPaneWidths = updatedWidths
+                }
+            }
+            .onEnded { _ in
+                guard let state = dragState else {
+                    transientPaneWidths = nil
+                    return
+                }
+                let widths = transientPaneWidths ?? widths
+                let leadingWidth = widths[state.leading] ?? state.leadingWidth
+                let trailingWidth = widths[state.trailing] ?? state.trailingWidth
+                let combinedWidth = max(leadingWidth + trailingWidth, 1)
+                let combinedWeight = workspace.paneWeight(for: state.leading)
+                    + workspace.paneWeight(for: state.trailing)
                 let leadingWeight = combinedWeight
                     * Double(leadingWidth / combinedWidth)
 
                 workspace.resizePanes(
-                    leading: leading,
+                    leading: state.leading,
                     leadingWeight: leadingWeight,
-                    trailing: trailing,
+                    trailing: state.trailing,
                     trailingWeight: combinedWeight - leadingWeight,
-                    persist: false
+                    persist: true
                 )
-            }
-            .onEnded { _ in
-                dragState = nil
-                workspace.persistPaneWeights()
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    dragState = nil
+                    transientPaneWidths = nil
+                }
             }
     }
 
@@ -148,16 +176,28 @@ struct WorkspaceSplitView: View {
     private func pane(for source: ViewerSource) -> some View {
         switch source {
         case .web:
-            WebViewerPane(model: web, favorites: favorites)
+            WebViewerPane(
+                model: web,
+                favorites: favorites,
+                onScreenshot: onPaneScreenshot.map { handler in
+                    { handler(.web) }
+                }
+            )
         case .android:
             CaptureViewerPane(
                 session: workspace.androidCapture,
-                deviceManager: workspace.androidDevices
+                deviceManager: workspace.androidDevices,
+                onScreenshot: onPaneScreenshot.map { handler in
+                    { handler(.android) }
+                }
             )
         case .iOS:
             CaptureViewerPane(
                 session: workspace.iOSCapture,
-                deviceManager: workspace.iOSDevices
+                deviceManager: workspace.iOSDevices,
+                onScreenshot: onPaneScreenshot.map { handler in
+                    { handler(.iOS) }
+                }
             )
         }
     }
