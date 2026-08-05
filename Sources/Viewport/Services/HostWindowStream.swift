@@ -11,9 +11,10 @@ final class HostWindowStream: NSObject {
     nonisolated private let frameDelivery =
         LatestValueDelivery<HostWindowFrameInput>()
 
-    private var activeStream: SCStream?
-    private var onFrame: ((CGImage) -> Void)?
-    private var onFailure: ((Error) -> Void)?
+    // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
+    private nonisolated(unsafe) var activeStream: SCStream?
+    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
     override init() {
         sampleQueue = DispatchQueue(
@@ -115,7 +116,7 @@ final class HostWindowStream: NSObject {
         }
     }
 
-    func stop() {
+    nonisolated func stop() {
         let stream = activeStream
         activeStream = nil
         onFrame = nil

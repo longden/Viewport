@@ -42,7 +42,6 @@ actor DeviceFrameClient {
     private let simctl: URL
     private let invokesSimctlThroughXcrun: Bool
     private let developerDirectory: String
-    private let iOSScreenshotURL: URL
 
     init(
         source: ViewerSource,
@@ -64,8 +63,6 @@ actor DeviceFrameClient {
             simctl = xcrun
             invokesSimctlThroughXcrun = true
         }
-        iOSScreenshotURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
 
         adb = toolchains.adb
     }
@@ -386,19 +383,21 @@ actor DeviceFrameClient {
         // Despite `simctl io help` advertising `-` for stdout, Xcode 26.5
         // treats it as a literal filename. Use an isolated temporary file,
         // which is also the compatibility path used by Simmer.
-        defer { try? FileManager.default.removeItem(at: iOSScreenshotURL) }
+        let screenshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: screenshotURL) }
 
         let result = try await runner.run(
             executable: simctl,
             arguments: simctlArguments([
                 "io", udid, "screenshot", "--type=jpeg", "--mask=ignored",
-                iOSScreenshotURL.path
+                screenshotURL.path
             ]),
             environment: processEnvironment,
             timeout: 4
         )
         guard result.exitCode == 0,
-              let data = try? Data(contentsOf: iOSScreenshotURL),
+              let data = try? Data(contentsOf: screenshotURL),
               data.starts(with: [0xFF, 0xD8]) else {
             throw CommandRunnerError.commandFailed(
                 command: "Capture iOS Simulator screen",

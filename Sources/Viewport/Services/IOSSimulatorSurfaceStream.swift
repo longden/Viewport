@@ -15,9 +15,10 @@ final class IOSSimulatorSurfaceStream {
         discard: { Unmanaged.passUnretained($0).release() }
     )
 
-    private var subscription: UnsafeMutableRawPointer?
-    private var onFrame: ((IOSurfaceRef) -> Void)?
-    private var onFailure: ((Error) -> Void)?
+    // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
+    private nonisolated(unsafe) var subscription: UnsafeMutableRawPointer?
+    private nonisolated(unsafe) var onFrame: ((IOSurfaceRef) -> Void)?
+    private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
     var isAvailable: Bool {
         ViewportHIDLoadFrameworks()
@@ -74,7 +75,7 @@ final class IOSSimulatorSurfaceStream {
         subscription = handle
     }
 
-    func stop() {
+    nonisolated func stop() {
         let handle = subscription
         subscription = nil
         onFrame = nil
