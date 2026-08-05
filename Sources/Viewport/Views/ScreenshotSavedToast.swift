@@ -49,7 +49,9 @@ struct ScreenshotSavedToast: View {
     private func copyScreenshot() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        if let image = NSImage(contentsOf: url) {
+        if ["png", "jpg", "jpeg", "gif", "tiff", "bmp"]
+            .contains(url.pathExtension.lowercased()),
+           let image = NSImage(contentsOf: url) {
             pasteboard.writeObjects([image])
         } else {
             pasteboard.setString(url.path, forType: .string)

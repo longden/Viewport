@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import Viewport
 
@@ -65,5 +66,109 @@ final class WorkspaceScreenshotTests: XCTestCase {
         XCTAssertEqual(ScreenshotPlatformLabel.title(for: .web), "Web")
         XCTAssertEqual(ScreenshotPlatformLabel.title(for: .android), "Android")
         XCTAssertEqual(ScreenshotPlatformLabel.title(for: .iOS), "iOS")
+    }
+
+    func testPaneFilenameIncludesSource() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let name = WorkspaceScreenshotNaming.filename(
+            source: .android,
+            date: date
+        )
+        XCTAssertTrue(name.hasPrefix("Viewport-Android-"))
+        XCTAssertTrue(name.hasSuffix(".png"))
+        XCTAssertTrue(name.contains(" at "))
+    }
+
+    func testCombinedFilenameOmitsSource() {
+        let name = WorkspaceScreenshotNaming.filename()
+        XCTAssertTrue(name.hasPrefix("Viewport "))
+        XCTAssertTrue(name.hasSuffix(".png"))
+    }
+
+    func testRecordingFilenameUsesMp4Extension() {
+        let name = WorkspaceScreenshotNaming.filename(fileExtension: "mp4")
+        XCTAssertTrue(name.hasSuffix(".mp4"))
+    }
+
+    func testComposeIntoFixedCanvasScalesContent() async throws {
+        let image = try XCTUnwrap(makeTestImage(width: 100, height: 200))
+        let panes = [
+            ScreenshotPaneCapture(source: .web, image: image, label: "Web"),
+            ScreenshotPaneCapture(source: .android, image: image, label: "Android")
+        ]
+        let composed = try await MainActor.run {
+            try WorkspaceScreenshotService().compose(
+                panes,
+                into: CGSize(width: 640, height: 360)
+            )
+        }
+        XCTAssertEqual(composed.width, 640)
+        XCTAssertEqual(composed.height, 360)
+    }
+
+    func testRecordingDefaults() async {
+        let maxDuration = await MainActor.run {
+            WorkspaceRecordingService.maxDuration
+        }
+        let maxHeight = await MainActor.run {
+            WorkspaceRecordingService.maximumOutputHeight
+        }
+        XCTAssertEqual(maxDuration, 5 * 60)
+        XCTAssertEqual(maxHeight, 1_080)
+    }
+
+    func testRecordingFrameRateFollowsPerformanceProfile() {
+        XCTAssertEqual(CapturePerformanceProfile.smooth.recordingFrameRate, 60)
+        XCTAssertEqual(CapturePerformanceProfile.balanced.recordingFrameRate, 30)
+        XCTAssertEqual(CapturePerformanceProfile.sharp.recordingFrameRate, 30)
+    }
+
+    func testRecordingCropUsesTopLeftWindowCoordinates() throws {
+        let rect = try XCTUnwrap(
+            WorkspaceRecordingGeometry.sourceRect(
+                windowSize: CGSize(width: 1_200, height: 800),
+                contentLayoutRect: CGRect(
+                    x: 0,
+                    y: 20,
+                    width: 1_200,
+                    height: 720
+                )
+            )
+        )
+        XCTAssertEqual(rect, CGRect(x: 0, y: 60, width: 1_200, height: 720))
+    }
+
+    func testRecordingAnchorCropConvertsFromScreenCoordinates() throws {
+        let rect = try XCTUnwrap(
+            WorkspaceRecordingGeometry.sourceRect(
+                windowFrame: CGRect(x: 100, y: 200, width: 1_200, height: 800),
+                captureRect: CGRect(x: 116, y: 216, width: 1_168, height: 700)
+            )
+        )
+        XCTAssertEqual(rect, CGRect(x: 16, y: 84, width: 1_168, height: 700))
+    }
+
+    func testRecordingOutputIsEvenAndHeightLimited() {
+        let size = WorkspaceRecordingGeometry.outputSize(
+            sourceSize: CGSize(width: 1_200, height: 800),
+            backingScale: 2,
+            maximumHeight: 1_080
+        )
+        XCTAssertEqual(size, CGSize(width: 1_620, height: 1_080))
+    }
+
+    private func makeTestImage(width: Int, height: Int) -> CGImage? {
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        context?.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context?.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context?.makeImage()
     }
 }
