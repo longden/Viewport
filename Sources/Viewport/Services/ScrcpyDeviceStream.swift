@@ -7,18 +7,25 @@ import Foundation
 import VideoToolbox
 
 /// Low-latency Android device video backed by scrcpy's MediaCodec stream.
-/// ADB is only used to install the temporary server and open the tunnel; it
-/// is not involved in delivering individual frames.
+/// ADB only installs the temporary server and opens the tunnel; frames and
+/// touch events ride persistent sockets (video + control), not per-event
+/// `adb shell` processes.
 @MainActor
 final class ScrcpyDeviceStream {
     private let runner = CommandRunner()
-    private var worker: ScrcpyStreamWorker?
-    private var forwardedPort: Int?
-    private var adb: URL?
-    private var serial: String?
+    // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
+    private nonisolated(unsafe) var worker: ScrcpyStreamWorker?
+    private nonisolated(unsafe) var forwardedPort: Int?
+    private nonisolated(unsafe) var adb: URL?
+    private nonisolated(unsafe) var serial: String?
 
     var isAvailable: Bool {
         ScrcpyInstallation.locate() != nil
+    }
+
+    /// True once the control socket is connected and accepting inject messages.
+    var hasControlConnection: Bool {
+        worker?.hasControlConnection == true
     }
 
     func start(
@@ -88,7 +95,7 @@ final class ScrcpyDeviceStream {
             "scid=\(streamID)",
             "log_level=warn",
             "audio=false",
-            "control=false",
+            "control=true",
             "cleanup=true",
             "tunnel_forward=true",
             "send_device_meta=false",
@@ -104,7 +111,7 @@ final class ScrcpyDeviceStream {
         do {
             try process.run()
         } catch {
-            await removeForward(adb: adb, serial: serial, port: port)
+            await Self.removeForward(adb: adb, serial: serial, port: port)
             throw ScrcpyStreamError.failedToLaunch(error.localizedDescription)
         }
 
@@ -122,7 +129,19 @@ final class ScrcpyDeviceStream {
         return true
     }
 
-    func stop() {
+    /// Injects a touch over scrcpy's control socket. No-op until control is up.
+    /// Coordinates are mapped into the server's announced video session size:
+    /// the server drops any event whose embedded screen size differs from the
+    /// current video size (e.g. `wm size` 1008x2244 vs the encoder's 1008x2240
+    /// after rounding to a multiple of 8).
+    func sendTouch(
+        action: AndroidMotionAction,
+        at normalizedPoint: CGPoint
+    ) {
+        worker?.sendTouch(action: action, at: normalizedPoint)
+    }
+
+    nonisolated func stop() {
         let worker = self.worker
         self.worker = nil
         let adb = self.adb
@@ -136,7 +155,7 @@ final class ScrcpyDeviceStream {
         Task {
             await worker?.waitUntilFinished()
             if let adb, let serial, let forwardedPort {
-                await self.removeForward(
+                await Self.removeForward(
                     adb: adb,
                     serial: serial,
                     port: forwardedPort
@@ -158,7 +177,7 @@ final class ScrcpyDeviceStream {
         worker?.requestStop()
         await worker?.waitUntilFinished()
         if let adb, let serial, let forwardedPort {
-            await removeForward(
+            await Self.removeForward(
                 adb: adb,
                 serial: serial,
                 port: forwardedPort
@@ -166,8 +185,12 @@ final class ScrcpyDeviceStream {
         }
     }
 
-    private func removeForward(adb: URL, serial: String, port: Int) async {
-        _ = try? await runner.run(
+    private nonisolated static func removeForward(
+        adb: URL,
+        serial: String,
+        port: Int
+    ) async {
+        _ = try? await CommandRunner().run(
             executable: adb,
             arguments: [
                 "-s", serial, "forward", "--remove", "tcp:\(port)"
@@ -363,6 +386,62 @@ struct ScrcpyVideoPacketHeader: Equatable {
     }
 }
 
+/// Binary control messages matching scrcpy's `SC_CONTROL_MSG_TYPE_*` wire format.
+enum ScrcpyControlMessage {
+    /// `SC_CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT`
+    static let injectTouchType: UInt8 = 2
+    /// `SC_POINTER_ID_GENERIC_FINGER` (`UINT64_C(-2)`)
+    static let genericFingerPointerID = UInt64(bitPattern: -2)
+
+    /// Maps a normalized point into the video session's pixel space, clamped
+    /// to valid coordinates (the server rejects points outside the frame).
+    static func sessionPoint(
+        _ normalizedPoint: CGPoint,
+        width: UInt16,
+        height: UInt16
+    ) -> (x: Int32, y: Int32) {
+        let x = (min(max(normalizedPoint.x, 0), 1) * CGFloat(width)).rounded()
+        let y = (min(max(normalizedPoint.y, 0), 1) * CGFloat(height)).rounded()
+        return (
+            x: min(Int32(x), Int32(width) - 1),
+            y: min(Int32(y), Int32(height) - 1)
+        )
+    }
+
+    static func injectTouch(
+        action: AndroidMotionAction,
+        x: Int32,
+        y: Int32,
+        screenWidth: UInt16,
+        screenHeight: UInt16
+    ) -> Data {
+        var data = Data(capacity: 32)
+        data.append(injectTouchType)
+        data.append(action.androidMotionEventAction)
+        data.appendBE(genericFingerPointerID)
+        data.appendBE(UInt32(bitPattern: x))
+        data.appendBE(UInt32(bitPattern: y))
+        data.appendBE(screenWidth)
+        data.appendBE(screenHeight)
+        // Fixed-point u16: 0xFFFF == 1.0 pressure while the finger is down.
+        data.appendBE(action == .up ? UInt16(0) : UInt16(0xFFFF))
+        data.appendBE(UInt32(0)) // actionButton
+        data.appendBE(UInt32(0)) // buttons
+        return data
+    }
+}
+
+extension AndroidMotionAction {
+    /// Android `AMOTION_EVENT_ACTION_*` values expected by scrcpy.
+    var androidMotionEventAction: UInt8 {
+        switch self {
+        case .down: 0
+        case .up: 1
+        case .move: 2
+        }
+    }
+}
+
 private final class ScrcpyStreamWorker: @unchecked Sendable {
     private let process: Process
     private let port: Int
@@ -371,9 +450,14 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     private let frameDelivery = LatestValueDelivery<CVPixelBuffer>()
     private let lock = NSLock()
     private let finishedGroup = DispatchGroup()
-    private var socketDescriptor: Int32 = -1
+    private var videoSocketDescriptor: Int32 = -1
+    private var controlSocketDescriptor: Int32 = -1
     private var stopped = false
     private var hasStarted = false
+    /// Video size announced by the server; updated on rotation. Touch events
+    /// must embed exactly this size or the server silently drops them.
+    private var sessionWidth: UInt16 = 0
+    private var sessionHeight: UInt16 = 0
 
     init(
         process: Process,
@@ -385,6 +469,17 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         self.port = port
         self.onFrame = onFrame
         self.onFailure = onFailure
+    }
+
+    var hasControlConnection: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        // Require a known session size: injects sent before the first video
+        // header would embed the wrong dimensions and be dropped server-side.
+        return controlSocketDescriptor >= 0
+            && !stopped
+            && sessionWidth > 0
+            && sessionHeight > 0
     }
 
     func start() {
@@ -416,7 +511,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         lock.unlock()
 
         frameDelivery.clear()
-        closeSocketIfNeeded()
+        closeSocketsIfNeeded()
         if process.isRunning {
             process.terminate()
         }
@@ -431,45 +526,99 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         }
     }
 
+    func sendTouch(action: AndroidMotionAction, at normalizedPoint: CGPoint) {
+        lock.lock()
+        let descriptor = controlSocketDescriptor
+        let width = sessionWidth
+        let height = sessionHeight
+        lock.unlock()
+        guard descriptor >= 0, width > 0, height > 0 else { return }
+        let point = ScrcpyControlMessage.sessionPoint(
+            normalizedPoint,
+            width: width,
+            height: height
+        )
+        let payload = ScrcpyControlMessage.injectTouch(
+            action: action,
+            x: point.x,
+            y: point.y,
+            screenWidth: width,
+            screenHeight: height
+        )
+        payload.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < payload.count {
+                let sent = Darwin.send(
+                    descriptor,
+                    base.advanced(by: offset),
+                    payload.count - offset,
+                    0
+                )
+                if sent <= 0 { return }
+                offset += sent
+            }
+        }
+    }
+
     private var isStopped: Bool {
         lock.lock()
         defer { lock.unlock() }
         return stopped
     }
 
-    private func closeSocketIfNeeded() {
+    private func closeSocketsIfNeeded() {
         lock.lock()
-        let descriptor = socketDescriptor
-        socketDescriptor = -1
+        let video = videoSocketDescriptor
+        let control = controlSocketDescriptor
+        videoSocketDescriptor = -1
+        controlSocketDescriptor = -1
         lock.unlock()
-        guard descriptor >= 0 else { return }
-        Darwin.shutdown(descriptor, SHUT_RDWR)
-        Darwin.close(descriptor)
+        for descriptor in [video, control] where descriptor >= 0 {
+            Darwin.shutdown(descriptor, SHUT_RDWR)
+            Darwin.close(descriptor)
+        }
     }
 
-    private func adoptSocket(_ descriptor: Int32) -> Bool {
+    private func adoptVideoSocket(_ descriptor: Int32) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if stopped {
             return false
         }
-        socketDescriptor = descriptor
+        videoSocketDescriptor = descriptor
+        return true
+    }
+
+    private func adoptControlSocket(_ descriptor: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopped {
+            return false
+        }
+        controlSocketDescriptor = descriptor
         return true
     }
 
     private func run() throws {
-        let (descriptor, codecData) = try connectWithRetry()
+        let (videoDescriptor, codecData) = try connectSockets()
 
         defer {
             lock.lock()
-            let shouldClose = socketDescriptor == descriptor
-            if shouldClose {
-                socketDescriptor = -1
+            let shouldCloseVideo = videoSocketDescriptor == videoDescriptor
+            if shouldCloseVideo {
+                videoSocketDescriptor = -1
             }
+            let control = controlSocketDescriptor
+            controlSocketDescriptor = -1
             lock.unlock()
-            if shouldClose {
-                Darwin.shutdown(descriptor, SHUT_RDWR)
-                Darwin.close(descriptor)
+            if shouldCloseVideo {
+                Darwin.shutdown(videoDescriptor, SHUT_RDWR)
+                Darwin.close(videoDescriptor)
+            }
+            if control >= 0 {
+                Darwin.shutdown(control, SHUT_RDWR)
+                Darwin.close(control)
             }
         }
 
@@ -489,13 +638,16 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         }
         while !isStopped {
             let header = try ScrcpyVideoPacketHeader.parse(
-                readExactly(12, from: descriptor)
+                readExactly(12, from: videoDescriptor)
             )
             switch header.kind {
-            case .session:
-                continue
+            case let .session(width, height):
+                lock.lock()
+                sessionWidth = UInt16(clamping: width)
+                sessionHeight = UInt16(clamping: height)
+                lock.unlock()
             case let .media(size, presentationTime, isConfig, isKey):
-                let payload = try readExactly(size, from: descriptor)
+                let payload = try readExactly(size, from: videoDescriptor)
                 try decoder.consume(
                     payload,
                     presentationTime: presentationTime,
@@ -506,51 +658,103 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         }
     }
 
-    private func connectWithRetry() throws -> (Int32, Data) {
+    /// Opens video then control on the same ADB forward. With `control=true`
+    /// the device-side server waits for both accepts before sending codec data.
+    private func connectSockets() throws -> (Int32, Data) {
         let deadline = ContinuousClock.now + .seconds(5)
         repeat {
             if isStopped { throw CancellationError() }
-            let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-            guard descriptor >= 0 else {
-                throw ScrcpyStreamError.connectionFailed
-            }
-            guard adoptSocket(descriptor) else {
-                Darwin.close(descriptor)
-                throw CancellationError()
-            }
+            do {
+                let video = try connectLocalPort()
+                guard adoptVideoSocket(video) else {
+                    Darwin.close(video)
+                    throw CancellationError()
+                }
 
-            var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            address.sin_family = sa_family_t(AF_INET)
-            address.sin_port = in_port_t(port).bigEndian
-            address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-            let result = withUnsafePointer(to: &address) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.connect(
-                        descriptor,
-                        $0,
-                        socklen_t(MemoryLayout<sockaddr_in>.size)
-                    )
+                let control = try connectLocalPort()
+                configureControlSocket(control)
+                guard adoptControlSocket(control) else {
+                    Darwin.close(control)
+                    throw CancellationError()
                 }
+                startControlDrain(control)
+
+                // An ADB forward can accept before the device-side server
+                // is listening. Treat an immediate EOF as a startup race
+                // and reconnect instead of abandoning the fast path.
+                let codec = try readExactly(4, from: video)
+                return (video, codec)
+            } catch is CancellationError {
+                closeSocketsIfNeeded()
+                throw CancellationError()
+            } catch {
+                closeSocketsIfNeeded()
+                if isStopped { throw CancellationError() }
+                Thread.sleep(forTimeInterval: 0.08)
+                continue
             }
-            if result == 0 {
-                do {
-                    // An ADB forward can accept before the device-side server
-                    // is listening. Treat an immediate EOF as a startup race
-                    // and reconnect instead of abandoning the fast path.
-                    let codec = try readExactly(4, from: descriptor)
-                    return (descriptor, codec)
-                } catch {
-                    closeSocketIfNeeded()
-                    if isStopped { throw CancellationError() }
-                    Thread.sleep(forTimeInterval: 0.08)
-                    continue
-                }
-            }
-            closeSocketIfNeeded()
-            Thread.sleep(forTimeInterval: 0.08)
         } while ContinuousClock.now < deadline
         throw ScrcpyStreamError.connectionFailed
+    }
+
+    private func connectLocalPort() throws -> Int32 {
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw ScrcpyStreamError.connectionFailed
+        }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                )
+            }
+        }
+        guard result == 0 else {
+            Darwin.close(descriptor)
+            throw ScrcpyStreamError.connectionFailed
+        }
+        return descriptor
+    }
+
+    /// Touch messages are only 32 bytes. Disable Nagle buffering so DOWN,
+    /// MOVE, and UP reach the device immediately instead of waiting to be
+    /// combined into a larger TCP segment.
+    private func configureControlSocket(_ descriptor: Int32) {
+        var enabled: Int32 = 1
+        withUnsafePointer(to: &enabled) { value in
+            _ = Darwin.setsockopt(
+                descriptor,
+                IPPROTO_TCP,
+                TCP_NODELAY,
+                value,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+            _ = Darwin.setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                value,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+        }
+    }
+
+    /// Discard inbound device messages so a full TCP window cannot stall injects.
+    private func startControlDrain(_ descriptor: Int32) {
+        DispatchQueue.global(qos: .utility).async {
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while true {
+                let received = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+                if received <= 0 { return }
+            }
+        }
     }
 
     private func readExactly(_ count: Int, from descriptor: Int32) throws -> Data {
@@ -772,6 +976,11 @@ private final class H264StreamDecoder: @unchecked Sendable {
         guard sessionStatus == noErr, let createdSession else {
             throw ScrcpyStreamError.decoderFailed(sessionStatus)
         }
+        VTSessionSetProperty(
+            createdSession,
+            key: kVTDecompressionPropertyKey_RealTime,
+            value: kCFBooleanTrue
+        )
         formatDescription = videoDescription
         session = createdSession
     }
@@ -845,5 +1054,28 @@ private extension Data {
         return self[start..<start + 8].reduce(UInt64(0)) {
             ($0 << 8) | UInt64($1)
         }
+    }
+
+    mutating func appendBE(_ value: UInt16) {
+        append(UInt8(value >> 8))
+        append(UInt8(value & 0xFF))
+    }
+
+    mutating func appendBE(_ value: UInt32) {
+        append(UInt8((value >> 24) & 0xFF))
+        append(UInt8((value >> 16) & 0xFF))
+        append(UInt8((value >> 8) & 0xFF))
+        append(UInt8(value & 0xFF))
+    }
+
+    mutating func appendBE(_ value: UInt64) {
+        append(UInt8((value >> 56) & 0xFF))
+        append(UInt8((value >> 48) & 0xFF))
+        append(UInt8((value >> 40) & 0xFF))
+        append(UInt8((value >> 32) & 0xFF))
+        append(UInt8((value >> 24) & 0xFF))
+        append(UInt8((value >> 16) & 0xFF))
+        append(UInt8((value >> 8) & 0xFF))
+        append(UInt8(value & 0xFF))
     }
 }

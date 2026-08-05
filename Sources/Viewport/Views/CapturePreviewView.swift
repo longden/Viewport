@@ -3,12 +3,21 @@ import IOSurface
 import SwiftUI
 
 final class CapturePreviewNSView: NSView {
+    private struct ScrollGesture {
+        var currentPoint: CGPoint
+        var pendingDeltaY: CGFloat
+        var beganDeviceTouch: Bool
+        var startedAt: TimeInterval
+    }
+
     private let displayLayer = CALayer()
     private var gestureStart: (
         point: CGPoint,
         timestamp: TimeInterval
     )?
     private var lastMoveSentAt: TimeInterval = 0
+    private var scrollGesture: ScrollGesture?
+    private var scrollEndWorkItem: DispatchWorkItem?
     weak var session: WindowCaptureSession?
 
     init(session: WindowCaptureSession) {
@@ -86,10 +95,12 @@ final class CapturePreviewNSView: NSView {
     }
 
     func clear() {
+        finishScrollGesture()
         displayLayer.contents = nil
     }
 
     override func mouseDown(with event: NSEvent) {
+        finishScrollGesture()
         window?.makeFirstResponder(self)
         guard let point = normalizedPoint(for: event) else {
             gestureStart = nil
@@ -134,24 +145,61 @@ final class CapturePreviewNSView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        guard let point = normalizedPoint(for: event) else {
+        guard let pointerPoint = normalizedPoint(for: event) else {
+            finishScrollGesture()
             super.scrollWheel(with: event)
             return
         }
 
-        let distance = min(max(abs(event.scrollingDeltaY) / 500, 0.08), 0.45)
-        let end = CGPoint(
-            x: point.x,
+        let frameHeight = max(displayLayer.frame.height, 1)
+        let deltaY = CGFloat(event.scrollingDeltaY) / frameHeight
+        guard deltaY != 0 else {
+            scheduleScrollEnd()
+            return
+        }
+
+        var gesture = scrollGesture ?? ScrollGesture(
+            // Keep room in both directions even when the pointer is near an
+            // edge of the preview. This prevents a clamped swipe becoming a tap.
+            currentPoint: CGPoint(
+                x: pointerPoint.x,
+                y: min(max(pointerPoint.y, 0.18), 0.82)
+            ),
+            pendingDeltaY: 0,
+            beganDeviceTouch: false,
+            startedAt: event.timestamp
+        )
+        gesture.pendingDeltaY += deltaY
+
+        // Ignore trackpad noise until there is enough movement to distinguish
+        // a two-finger scroll from a click. Once active, preserve every delta.
+        let activationDistance: CGFloat = 0.004
+        if !gesture.beganDeviceTouch,
+           abs(gesture.pendingDeltaY) < activationDistance {
+            scrollGesture = gesture
+            scheduleScrollEnd()
+            return
+        }
+
+        if !gesture.beganDeviceTouch {
+            session?.beginPointer(at: gesture.currentPoint)
+            gesture.beganDeviceTouch = true
+        }
+
+        let nextPoint = CGPoint(
+            x: gesture.currentPoint.x,
             y: min(max(
-                point.y + (event.scrollingDeltaY > 0 ? distance : -distance),
-                0
-            ), 1)
+                gesture.currentPoint.y + gesture.pendingDeltaY,
+                0.06
+            ), 0.94)
         )
-        session?.performGesture(
-            from: point,
-            to: end,
-            duration: 0.12
-        )
+        gesture.pendingDeltaY = 0
+        if nextPoint != gesture.currentPoint {
+            session?.movePointer(to: nextPoint)
+            gesture.currentPoint = nextPoint
+        }
+        scrollGesture = gesture
+        scheduleScrollEnd()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -186,6 +234,32 @@ final class CapturePreviewNSView: NSView {
             in: bounds,
             sourceSize: sourceSize,
             clampsToDisplayedFrame: clampsToDisplayedFrame
+        )
+    }
+
+    private func scheduleScrollEnd() {
+        scrollEndWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finishScrollGesture()
+        }
+        scrollEndWorkItem = workItem
+        // Trackpad momentum arrives immediately after the finger phase ends.
+        // Debouncing keeps both phases in one device touch.
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.12,
+            execute: workItem
+        )
+    }
+
+    private func finishScrollGesture() {
+        scrollEndWorkItem?.cancel()
+        scrollEndWorkItem = nil
+        guard let gesture = scrollGesture else { return }
+        scrollGesture = nil
+        guard gesture.beganDeviceTouch else { return }
+        session?.endPointer(
+            at: gesture.currentPoint,
+            duration: max(ProcessInfo.processInfo.systemUptime - gesture.startedAt, 0.05)
         )
     }
 }

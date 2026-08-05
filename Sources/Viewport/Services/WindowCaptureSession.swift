@@ -83,9 +83,13 @@ final class WindowCaptureSession: ObservableObject {
     deinit {
         captureTask?.cancel()
         refreshTask?.cancel()
-        MainActor.assumeIsolated {
-            stopDeviceStreams()
-        }
+        // `stop()` is nonisolated on each stream; do not use
+        // MainActor.assumeIsolated — deinit may run off the main thread.
+        hostWindowStream.stop()
+        scrcpyDeviceStream?.stop()
+        iOSDeviceStream?.stop()
+        simulatorSurfaceStream?.stop()
+        emulatorGrpcStream?.stop()
     }
 
     var selectedDevice: StreamedDevice? {
@@ -259,12 +263,19 @@ final class WindowCaptureSession: ObservableObject {
                     if case .emulatorGrpc = transport { return true }
                     return false
                 }()
+            let useScrcpyControl = !useGrpc
+                && scrcpyDeviceStream?.hasControlConnection == true
+                && {
+                    if case .scrcpy = transport { return true }
+                    return false
+                }()
             activePointer = ActivePointer(
                 deviceID: device.id,
                 start: point,
                 last: point,
                 usesLiveAndroidMotion: true,
                 usesEmulatorGrpc: useGrpc,
+                usesScrcpyControl: useScrcpyControl,
                 deviceSize: deviceSize
             )
             if useGrpc {
@@ -274,6 +285,8 @@ final class WindowCaptureSession: ObservableObject {
                     action: .down,
                     at: point
                 )
+            } else if useScrcpyControl {
+                scrcpyDeviceStream?.sendTouch(action: .down, at: point)
             } else {
                 androidInput?.motionEvent(
                     serial: device.id,
@@ -307,6 +320,8 @@ final class WindowCaptureSession: ObservableObject {
                     action: .move,
                     at: point
                 )
+            } else if activePointer.usesScrcpyControl {
+                scrcpyDeviceStream?.sendTouch(action: .move, at: point)
             } else if let androidInput {
                 androidInput.motionEvent(
                     serial: device.id,
@@ -354,6 +369,8 @@ final class WindowCaptureSession: ObservableObject {
                         action: .up,
                         at: point
                     )
+                } else if activePointer.usesScrcpyControl {
+                    scrcpyDeviceStream?.sendTouch(action: .up, at: point)
                 } else {
                     androidInput?.motionEvent(
                         serial: device.id,
@@ -823,6 +840,7 @@ private struct ActivePointer {
     var last: CGPoint
     let usesLiveAndroidMotion: Bool
     var usesEmulatorGrpc: Bool = false
+    var usesScrcpyControl: Bool = false
     var deviceSize: CGSize? = nil
 }
 
