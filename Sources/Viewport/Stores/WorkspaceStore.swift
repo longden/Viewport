@@ -13,16 +13,27 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var visibleSources: Set<ViewerSource>
     @Published private(set) var paneWeights: [ViewerSource: Double]
     @Published private(set) var performanceProfile: CapturePerformanceProfile
+    @Published private(set) var recordingQuality: RecordingQuality
     @Published private(set) var captureMode: CaptureMode
     @Published private(set) var screenshotPlatformLabelsEnabled: Bool
     @Published private(set) var highFrameRateCaptureAvailable: Bool
+    @Published private(set) var inputMirroringEnabled: Bool
+    @Published private(set) var recentDeepLinks: [String]
+    @Published private(set) var lastPushBundleID: String
+    @Published private(set) var lastPushPayloadJSON: String
 
     private let defaults: UserDefaults
     private let visibleSourcesKey: String
     private let paneWeightsKey: String
     private let performanceProfileKey: String
+    private let recordingQualityKey: String
     private let captureModeKey: String
     private let screenshotPlatformLabelsKey: String
+    private let inputMirroringKey: String
+    private let recentDeepLinksKey: String
+    private let lastPushBundleIDKey: String
+    private let lastPushPayloadJSONKey: String
+    private let automation = DeviceAutomationService()
     private var captureRefreshTask: Task<Void, Never>?
 
     init(
@@ -30,8 +41,13 @@ final class WorkspaceStore: ObservableObject {
         visibleSourcesKey: String = "visibleSources",
         paneWeightsKey: String = "paneWeights",
         performanceProfileKey: String = "capturePerformanceProfile",
+        recordingQualityKey: String = "recordingQuality",
         captureModeKey: String = "captureMode",
         screenshotPlatformLabelsKey: String = "screenshotPlatformLabelsEnabled",
+        inputMirroringKey: String = "inputMirroringEnabled",
+        recentDeepLinksKey: String = "recentDeepLinks",
+        lastPushBundleIDKey: String = "lastPushBundleID",
+        lastPushPayloadJSONKey: String = "lastPushPayloadJSON",
         androidClient: any DeviceClient = AndroidDeviceClient(),
         iOSClient: any DeviceClient = IOSSimulatorClient()
     ) {
@@ -39,8 +55,13 @@ final class WorkspaceStore: ObservableObject {
         self.visibleSourcesKey = visibleSourcesKey
         self.paneWeightsKey = paneWeightsKey
         self.performanceProfileKey = performanceProfileKey
+        self.recordingQualityKey = recordingQualityKey
         self.captureModeKey = captureModeKey
         self.screenshotPlatformLabelsKey = screenshotPlatformLabelsKey
+        self.inputMirroringKey = inputMirroringKey
+        self.recentDeepLinksKey = recentDeepLinksKey
+        self.lastPushBundleIDKey = lastPushBundleIDKey
+        self.lastPushPayloadJSONKey = lastPushPayloadJSONKey
         androidDevices = DeviceManager(client: androidClient)
         iOSDevices = DeviceManager(client: iOSClient)
 
@@ -61,6 +82,9 @@ final class WorkspaceStore: ObservableObject {
         performanceProfile = defaults.string(forKey: performanceProfileKey)
             .flatMap(CapturePerformanceProfile.init(rawValue:))
             ?? .smooth
+        recordingQuality = defaults.string(forKey: recordingQualityKey)
+            .flatMap(RecordingQuality.init(rawValue:))
+            ?? .high
         captureMode = defaults.string(forKey: captureModeKey)
             .flatMap(CaptureMode.init(rawValue:))
             ?? .direct
@@ -68,11 +92,18 @@ final class WorkspaceStore: ObservableObject {
             forKey: screenshotPlatformLabelsKey
         ) as? Bool ?? false
         highFrameRateCaptureAvailable = CGPreflightScreenCaptureAccess()
+        inputMirroringEnabled = defaults.object(forKey: inputMirroringKey)
+            as? Bool ?? false
+        recentDeepLinks = defaults.stringArray(forKey: recentDeepLinksKey) ?? []
+        lastPushBundleID = defaults.string(forKey: lastPushBundleIDKey) ?? ""
+        lastPushPayloadJSON = defaults.string(forKey: lastPushPayloadJSONKey)
+            ?? DeviceAutomationService.defaultAPNsPayloadJSON
 
         androidCapture.setPerformanceProfile(performanceProfile)
         iOSCapture.setPerformanceProfile(performanceProfile)
         androidCapture.setCaptureMode(captureMode)
         iOSCapture.setCaptureMode(captureMode)
+        configureInputMirroring()
     }
 
     deinit {
@@ -128,6 +159,12 @@ final class WorkspaceStore: ObservableObject {
         iOSCapture.setPerformanceProfile(profile)
     }
 
+    func setRecordingQuality(_ quality: RecordingQuality) {
+        guard recordingQuality != quality else { return }
+        recordingQuality = quality
+        defaults.set(quality.rawValue, forKey: recordingQualityKey)
+    }
+
     func setCaptureMode(_ mode: CaptureMode) {
         guard captureMode != mode else { return }
         captureMode = mode
@@ -141,6 +178,276 @@ final class WorkspaceStore: ObservableObject {
         guard screenshotPlatformLabelsEnabled != isEnabled else { return }
         screenshotPlatformLabelsEnabled = isEnabled
         defaults.set(isEnabled, forKey: screenshotPlatformLabelsKey)
+    }
+
+    func setInputMirroringEnabled(_ isEnabled: Bool) {
+        guard inputMirroringEnabled != isEnabled else { return }
+        inputMirroringEnabled = isEnabled
+        defaults.set(isEnabled, forKey: inputMirroringKey)
+        configureInputMirroring()
+    }
+
+    func broadcastOpenURL(_ rawURL: String) async throws {
+        _ = try await broadcastOpenURL(
+            rawURL,
+            targets: .both,
+            alsoOpenWeb: false,
+            web: nil
+        )
+    }
+
+    @discardableResult
+    func broadcastOpenURL(
+        _ rawURL: String,
+        targets: DeviceInjectionTargets,
+        alsoOpenWeb: Bool,
+        web: WebViewModel?
+    ) async throws -> DeviceInjectionResult {
+        guard let normalized = DeviceAutomationService.normalizedURL(rawURL) else {
+            throw DeviceAutomationError.commandFailed("Enter a valid URL.")
+        }
+
+        var result = DeviceInjectionResult()
+        let devices = selectedCaptureDevices(matching: targets)
+        if devices.isEmpty && !(alsoOpenWeb && isVisible(.web) && web != nil) {
+            throw DeviceAutomationError.noTarget(
+                missingTargetMessage(for: targets)
+            )
+        }
+
+        for device in devices {
+            do {
+                try await automation.openURL(normalized, on: device)
+                result.succeeded.append(device.name)
+            } catch let error as DeviceAutomationError {
+                if case .unsupported(let message) = error {
+                    result.skipped.append(message)
+                } else {
+                    result.skipped.append(
+                        "\(device.name): \(error.localizedDescription)"
+                    )
+                }
+            } catch {
+                result.skipped.append(
+                    "\(device.name): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        if alsoOpenWeb, isVisible(.web), let web {
+            web.address = normalized
+            web.loadAddress()
+            result.succeeded.append("Web")
+        }
+
+        rememberDeepLink(normalized)
+
+        if !result.didSucceed {
+            if let firstSkip = result.skipped.first {
+                throw DeviceAutomationError.commandFailed(firstSkip)
+            }
+            throw DeviceAutomationError.noTarget(
+                missingTargetMessage(for: targets)
+            )
+        }
+        return result
+    }
+
+    @discardableResult
+    func broadcastPush(
+        payloadJSON: String,
+        bundleID: String
+    ) async throws -> DeviceInjectionResult {
+        let devices = selectedCaptureDevices(matching: .iOS)
+            .filter { $0.kind == .iOSSimulator }
+        guard !devices.isEmpty else {
+            throw DeviceAutomationError.noTarget(
+                "Show iOS and select a Simulator. Push injection does not work on physical iPhones."
+            )
+        }
+
+        var result = DeviceInjectionResult()
+        for device in devices {
+            do {
+                try await automation.sendPush(
+                    payloadJSON: payloadJSON,
+                    bundleID: bundleID,
+                    on: device
+                )
+                result.succeeded.append(device.name)
+            } catch let error as DeviceAutomationError {
+                if case .unsupported(let message) = error {
+                    result.skipped.append(message)
+                } else {
+                    throw error
+                }
+            }
+        }
+
+        if result.didSucceed {
+            setLastPushBundleID(bundleID)
+            setLastPushPayloadJSON(payloadJSON)
+        }
+
+        if !result.didSucceed {
+            if let firstSkip = result.skipped.first {
+                throw DeviceAutomationError.commandFailed(firstSkip)
+            }
+            throw DeviceAutomationError.noTarget(
+                "Show iOS and select a Simulator. Push injection does not work on physical iPhones."
+            )
+        }
+        return result
+    }
+
+    @discardableResult
+    func broadcastLocalNotification(
+        title: String,
+        body: String,
+        tag: String
+    ) async throws -> DeviceInjectionResult {
+        let devices = selectedCaptureDevices(matching: .android)
+        guard !devices.isEmpty else {
+            throw DeviceAutomationError.noTarget(
+                "Show Android and select a device or emulator."
+            )
+        }
+
+        var result = DeviceInjectionResult()
+        for device in devices {
+            do {
+                try await automation.postLocalNotification(
+                    title: title,
+                    body: body,
+                    tag: tag,
+                    on: device
+                )
+                result.succeeded.append(device.name)
+            } catch {
+                result.skipped.append(
+                    "\(device.name): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        if !result.didSucceed {
+            if let firstSkip = result.skipped.first {
+                throw DeviceAutomationError.commandFailed(firstSkip)
+            }
+            throw DeviceAutomationError.noTarget(
+                "Show Android and select a device or emulator."
+            )
+        }
+        return result
+    }
+
+    func setLastPushBundleID(_ bundleID: String) {
+        let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastPushBundleID = trimmed
+        defaults.set(trimmed, forKey: lastPushBundleIDKey)
+    }
+
+    func setLastPushPayloadJSON(_ json: String) {
+        lastPushPayloadJSON = json
+        defaults.set(json, forKey: lastPushPayloadJSONKey)
+    }
+
+    var hasAndroidInjectionTarget: Bool {
+        isVisible(.android) && androidCapture.selectedDevice != nil
+    }
+
+    var hasIOSSimulatorInjectionTarget: Bool {
+        isVisible(.iOS) && iOSCapture.selectedDevice?.kind == .iOSSimulator
+    }
+
+    var hasPhysicalIOSSelected: Bool {
+        isVisible(.iOS) && iOSCapture.selectedDevice?.kind == .iOSDevice
+    }
+
+    func broadcastAppearance(_ appearance: DeviceAppearance) async throws {
+        try await broadcast { try await automation.setAppearance(appearance, on: $0) }
+    }
+
+    func broadcastFontScale(_ scale: DeviceFontScale) async throws {
+        try await broadcast { try await automation.setFontScale(scale, on: $0) }
+    }
+
+    func broadcastCleanStatusBar() async throws {
+        try await broadcast { try await automation.applyCleanStatusBar(on: $0) }
+    }
+
+    func broadcastClearStatusBar() async throws {
+        try await broadcast { try await automation.clearStatusBar(on: $0) }
+    }
+
+    private func rememberDeepLink(_ url: String) {
+        var updated = recentDeepLinks.filter { $0 != url }
+        updated.insert(url, at: 0)
+        if updated.count > 8 {
+            updated = Array(updated.prefix(8))
+        }
+        recentDeepLinks = updated
+        defaults.set(updated, forKey: recentDeepLinksKey)
+    }
+
+    private func missingTargetMessage(
+        for targets: DeviceInjectionTargets
+    ) -> String {
+        switch targets {
+        case .android:
+            "Show Android and select a device or emulator."
+        case .iOS:
+            "Show iOS and select a Simulator (or device for view-only)."
+        default:
+            "Show Android and/or iOS and select a device in each pane."
+        }
+    }
+
+    private func broadcast(
+        _ work: (StreamedDevice) async throws -> Void
+    ) async throws {
+        let devices = selectedCaptureDevices()
+        guard !devices.isEmpty else {
+            throw DeviceAutomationError.noTarget()
+        }
+        var lastError: Error?
+        var succeeded = 0
+        for device in devices {
+            do {
+                try await work(device)
+                succeeded += 1
+            } catch {
+                lastError = error
+            }
+        }
+        if succeeded == 0, let lastError { throw lastError }
+    }
+
+    private func selectedCaptureDevices(
+        matching targets: DeviceInjectionTargets = .both
+    ) -> [StreamedDevice] {
+        var devices: [StreamedDevice] = []
+        if targets.contains(.android),
+           isVisible(.android),
+           let device = androidCapture.selectedDevice {
+            devices.append(device)
+        }
+        if targets.contains(.iOS),
+           isVisible(.iOS),
+           let device = iOSCapture.selectedDevice {
+            devices.append(device)
+        }
+        return devices
+    }
+
+    private func configureInputMirroring() {
+        if inputMirroringEnabled {
+            androidCapture.mirrorTarget = iOSCapture
+            iOSCapture.mirrorTarget = androidCapture
+        } else {
+            androidCapture.mirrorTarget = nil
+            iOSCapture.mirrorTarget = nil
+        }
     }
 
     func requestHighFrameRateCapture() {
