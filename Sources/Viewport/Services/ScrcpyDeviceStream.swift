@@ -23,15 +23,60 @@ final class ScrcpyDeviceStream {
         ScrcpyInstallation.locate() != nil
     }
 
-    /// True once the control socket is connected and accepting inject messages.
+    /// True once the control socket is connected. Touch also needs a known
+    /// video session size (see `hasTouchControl`).
     var hasControlConnection: Bool {
         worker?.hasControlConnection == true
+    }
+
+    /// Ready for touch injects: control socket up and session size known.
+    var hasTouchControl: Bool {
+        worker?.hasTouchControl == true
+    }
+
+    /// Injects a touch over scrcpy's control socket. No-op until control is up.
+    /// Coordinates are mapped into the server's announced video session size:
+    /// the server drops any event whose embedded screen size differs from the
+    /// current video size (e.g. `wm size` 1008x2244 vs the encoder's 1008x2240
+    /// after rounding to a multiple of 8).
+    func sendTouch(action: AndroidMotionAction, at normalizedPoint: CGPoint) {
+        worker?.sendTouch(action: action, at: normalizedPoint)
+    }
+
+    /// Injects an Android keycode down+up over the control socket.
+    @discardableResult
+    func sendKeycode(_ keycode: Int32, metastate: UInt32 = 0) -> Bool {
+        guard let worker, worker.hasControlConnection else { return false }
+        worker.sendControl(
+            ScrcpyControlMessage.injectKeycode(
+                action: 0,
+                keycode: keycode,
+                metastate: metastate
+            )
+        )
+        worker.sendControl(
+            ScrcpyControlMessage.injectKeycode(
+                action: 1,
+                keycode: keycode,
+                metastate: metastate
+            )
+        )
+        return true
+    }
+
+    /// Injects UTF-8 text over the control socket.
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard let worker, worker.hasControlConnection,
+              !text.isEmpty else { return false }
+        worker.sendControl(ScrcpyControlMessage.injectText(text))
+        return true
     }
 
     func start(
         serial: String,
         profile: CapturePerformanceProfile,
-        onFrame: @escaping @MainActor @Sendable (CGImage) -> Void,
+        onFrame: @escaping @MainActor @Sendable (CVPixelBuffer) -> Void,
         onFailure: @escaping @MainActor @Sendable (Error) -> Void
     ) async throws -> Bool {
         await stopAndWait()
@@ -99,7 +144,10 @@ final class ScrcpyDeviceStream {
             "cleanup=true",
             "tunnel_forward=true",
             "send_device_meta=false",
-            "send_dummy_byte=false",
+            // Required with adb forward: the server writes 0x00 on the first
+            // socket so the client can detect the real accept (adb otherwise
+            // accepts early and EOF's). Viewport reads that byte before codec.
+            "send_dummy_byte=true",
             "video_codec=h264",
             "max_size=\(maximumDimension)",
             "max_fps=\(profile.targetFrameRate)",
@@ -127,18 +175,6 @@ final class ScrcpyDeviceStream {
         self.serial = serial
         worker.start()
         return true
-    }
-
-    /// Injects a touch over scrcpy's control socket. No-op until control is up.
-    /// Coordinates are mapped into the server's announced video session size:
-    /// the server drops any event whose embedded screen size differs from the
-    /// current video size (e.g. `wm size` 1008x2244 vs the encoder's 1008x2240
-    /// after rounding to a multiple of 8).
-    func sendTouch(
-        action: AndroidMotionAction,
-        at normalizedPoint: CGPoint
-    ) {
-        worker?.sendTouch(action: action, at: normalizedPoint)
     }
 
     nonisolated func stop() {
@@ -388,6 +424,10 @@ struct ScrcpyVideoPacketHeader: Equatable {
 
 /// Binary control messages matching scrcpy's `SC_CONTROL_MSG_TYPE_*` wire format.
 enum ScrcpyControlMessage {
+    /// `SC_CONTROL_MSG_TYPE_INJECT_KEYCODE`
+    static let injectKeycodeType: UInt8 = 0
+    /// `SC_CONTROL_MSG_TYPE_INJECT_TEXT`
+    static let injectTextType: UInt8 = 1
     /// `SC_CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT`
     static let injectTouchType: UInt8 = 2
     /// `SC_POINTER_ID_GENERIC_FINGER` (`UINT64_C(-2)`)
@@ -406,6 +446,30 @@ enum ScrcpyControlMessage {
             x: min(Int32(x), Int32(width) - 1),
             y: min(Int32(y), Int32(height) - 1)
         )
+    }
+
+    static func injectKeycode(
+        action: UInt8,
+        keycode: Int32,
+        repeatCount: UInt32 = 0,
+        metastate: UInt32 = 0
+    ) -> Data {
+        var data = Data(capacity: 14)
+        data.append(injectKeycodeType)
+        data.append(action)
+        data.appendBE(UInt32(bitPattern: keycode))
+        data.appendBE(repeatCount)
+        data.appendBE(metastate)
+        return data
+    }
+
+    static func injectText(_ text: String) -> Data {
+        let utf8 = Array(text.utf8.prefix(300))
+        var data = Data(capacity: 5 + utf8.count)
+        data.append(injectTextType)
+        data.appendBE(UInt32(utf8.count))
+        data.append(contentsOf: utf8)
+        return data
     }
 
     static func injectTouch(
@@ -445,7 +509,7 @@ extension AndroidMotionAction {
 private final class ScrcpyStreamWorker: @unchecked Sendable {
     private let process: Process
     private let port: Int
-    private let onFrame: @MainActor @Sendable (CGImage) -> Void
+    private let onFrame: @MainActor @Sendable (CVPixelBuffer) -> Void
     private let onFailure: @MainActor @Sendable (Error) -> Void
     private let frameDelivery = LatestValueDelivery<CVPixelBuffer>()
     private let lock = NSLock()
@@ -462,7 +526,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     init(
         process: Process,
         port: Int,
-        onFrame: @escaping @MainActor @Sendable (CGImage) -> Void,
+        onFrame: @escaping @MainActor @Sendable (CVPixelBuffer) -> Void,
         onFailure: @escaping @MainActor @Sendable (Error) -> Void
     ) {
         self.process = process
@@ -474,12 +538,63 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     var hasControlConnection: Bool {
         lock.lock()
         defer { lock.unlock() }
-        // Require a known session size: injects sent before the first video
-        // header would embed the wrong dimensions and be dropped server-side.
+        return controlSocketDescriptor >= 0 && !stopped
+    }
+
+    var hasTouchControl: Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return controlSocketDescriptor >= 0
             && !stopped
             && sessionWidth > 0
             && sessionHeight > 0
+    }
+
+    func sendControl(_ payload: Data) {
+        lock.lock()
+        let descriptor = controlSocketDescriptor
+        lock.unlock()
+        guard descriptor >= 0 else { return }
+        writeControl(payload, to: descriptor)
+    }
+
+    func sendTouch(action: AndroidMotionAction, at normalizedPoint: CGPoint) {
+        lock.lock()
+        let descriptor = controlSocketDescriptor
+        let width = sessionWidth
+        let height = sessionHeight
+        lock.unlock()
+        guard descriptor >= 0, width > 0, height > 0 else { return }
+        let point = ScrcpyControlMessage.sessionPoint(
+            normalizedPoint,
+            width: width,
+            height: height
+        )
+        let payload = ScrcpyControlMessage.injectTouch(
+            action: action,
+            x: point.x,
+            y: point.y,
+            screenWidth: width,
+            screenHeight: height
+        )
+        writeControl(payload, to: descriptor)
+    }
+
+    private func writeControl(_ payload: Data, to descriptor: Int32) {
+        payload.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < payload.count {
+                let sent = Darwin.send(
+                    descriptor,
+                    base.advanced(by: offset),
+                    payload.count - offset,
+                    0
+                )
+                if sent <= 0 { return }
+                offset += sent
+            }
+        }
     }
 
     func start() {
@@ -522,41 +637,6 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
             DispatchQueue.global(qos: .utility).async {
                 _ = self.finishedGroup.wait(timeout: .now() + 3)
                 continuation.resume()
-            }
-        }
-    }
-
-    func sendTouch(action: AndroidMotionAction, at normalizedPoint: CGPoint) {
-        lock.lock()
-        let descriptor = controlSocketDescriptor
-        let width = sessionWidth
-        let height = sessionHeight
-        lock.unlock()
-        guard descriptor >= 0, width > 0, height > 0 else { return }
-        let point = ScrcpyControlMessage.sessionPoint(
-            normalizedPoint,
-            width: width,
-            height: height
-        )
-        let payload = ScrcpyControlMessage.injectTouch(
-            action: action,
-            x: point.x,
-            y: point.y,
-            screenWidth: width,
-            screenHeight: height
-        )
-        payload.withUnsafeBytes { bytes in
-            guard let base = bytes.baseAddress else { return }
-            var offset = 0
-            while offset < payload.count {
-                let sent = Darwin.send(
-                    descriptor,
-                    base.advanced(by: offset),
-                    payload.count - offset,
-                    0
-                )
-                if sent <= 0 { return }
-                offset += sent
             }
         }
     }
@@ -627,12 +707,10 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
             throw ScrcpyStreamError.unsupportedCodec(codec)
         }
 
-        let converter = ScrcpyFrameConverter()
         let decoder = H264StreamDecoder { [frameDelivery, onFrame] pixelBuffer in
             frameDelivery.submit(pixelBuffer) { buffer in
-                guard let image = converter.image(from: buffer) else { return }
                 Task { @MainActor in
-                    onFrame(image)
+                    onFrame(buffer)
                 }
             }
         }
@@ -671,6 +749,14 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
                     throw CancellationError()
                 }
 
+                // ADB forward accepts before the device server is listening.
+                // The dummy byte (send_dummy_byte=true) is how we detect a real
+                // accept; EOF means retry.
+                let dummy = try readExactly(1, from: video)
+                guard dummy.first == 0x00 else {
+                    throw ScrcpyStreamError.malformedPacket
+                }
+
                 let control = try connectLocalPort()
                 configureControlSocket(control)
                 guard adoptControlSocket(control) else {
@@ -679,9 +765,6 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
                 }
                 startControlDrain(control)
 
-                // An ADB forward can accept before the device-side server
-                // is listening. Treat an immediate EOF as a startup race
-                // and reconnect instead of abandoning the fast path.
                 let codec = try readExactly(4, from: video)
                 return (video, codec)
             } catch is CancellationError {
@@ -1029,15 +1112,6 @@ enum ScrcpyH264AnnexB {
             output.append(unit)
         }
         return output
-    }
-}
-
-private final class ScrcpyFrameConverter: @unchecked Sendable {
-    private let context = CIContext(options: [.cacheIntermediates: false])
-
-    func image(from pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        return context.createCGImage(image, from: image.extent)
     }
 }
 

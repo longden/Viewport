@@ -90,6 +90,32 @@ final class ScrcpyProtocolTests: XCTestCase {
         )
     }
 
+    func testSerializesInjectKeycodeLikeScrcpy() {
+        let expected = Data([
+            ScrcpyControlMessage.injectKeycodeType,
+            0x01, // UP
+            0x00, 0x00, 0x00, 0x42, // ENTER
+            0x00, 0x00, 0x00, 0x05, // repeat
+            0x00, 0x00, 0x00, 0x41 // metastate
+        ])
+        XCTAssertEqual(
+            ScrcpyControlMessage.injectKeycode(
+                action: 1,
+                keycode: 66,
+                repeatCount: 5,
+                metastate: 0x41
+            ),
+            expected
+        )
+    }
+
+    func testSerializesInjectTextWithLengthPrefix() {
+        let payload = ScrcpyControlMessage.injectText("hi")
+        XCTAssertEqual(payload[0], ScrcpyControlMessage.injectTextType)
+        XCTAssertEqual(Array(payload[1..<5]), [0, 0, 0, 2])
+        XCTAssertEqual(Array(payload[5...]), Array("hi".utf8))
+    }
+
     func testSessionPointMapsIntoVideoSizeAndClamps() {
         // The server encodes at sizes rounded to multiples of 8 (1008x2240
         // for a 1008x2244 panel) and drops events embedding any other size,
