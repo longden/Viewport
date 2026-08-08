@@ -4,15 +4,24 @@ struct WebViewerPane: View {
     @ObservedObject var model: WebViewModel
     @ObservedObject var favorites: FavoritesStore
     var onScreenshot: (() -> Void)?
+    var onCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
+    /// Composite recording squares the live web clip so it matches device panes.
+    var squareContentCorners: Bool = false
     @FocusState private var addressIsFocused: Bool
 
+    private var contentCornerRadius: CGFloat {
+        squareContentCorners ? 0 : 16
+    }
+
     var body: some View {
-        ViewerPane(source: .web) {
+        ViewerPane(
+            source: .web,
+            contentCornerRadius: contentCornerRadius
+        ) {
             addressBar
         } content: {
             ZStack(alignment: .bottom) {
-                WebContentView(model: model)
-                    .background(.background)
+                viewportContent
 
                 if let message = model.noticeMessage ?? model.errorMessage {
                     Text(message)
@@ -20,10 +29,59 @@ struct WebViewerPane: View {
                         .lineLimit(2)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(.regularMaterial, in: Capsule())
+                        .glassEffect(.regular, in: Capsule())
                         .padding(12)
                 }
             }
+        }
+    }
+
+    private var viewportContent: some View {
+        GeometryReader { proxy in
+            let preset = model.viewportPreset
+            let scale = preset.scaleFitting(in: proxy.size)
+            let layoutSize = preset.fittedLayoutSize(in: proxy.size)
+
+            ZStack {
+                Color.primary.opacity(preset.size == nil ? 0 : 0.035)
+
+                Group {
+                    if let target = preset.size {
+                        WebContentView(model: model)
+                            .frame(width: target.width, height: target.height)
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: contentCornerRadius,
+                                    style: .continuous
+                                )
+                            )
+                            .scaleEffect(scale, anchor: .center)
+                            .frame(width: layoutSize.width, height: layoutSize.height)
+                            .background {
+                                webCaptureAnchor
+                            }
+                    } else {
+                        WebContentView(model: model)
+                            .frame(
+                                width: proxy.size.width,
+                                height: proxy.size.height
+                            )
+                            .background {
+                                webCaptureAnchor
+                            }
+                    }
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+    }
+
+    @ViewBuilder
+    private var webCaptureAnchor: some View {
+        if let onCaptureTargetChange {
+            WorkspaceRecordingAnchor(onTargetChange: onCaptureTargetChange)
         }
     }
 
@@ -54,6 +112,8 @@ struct WebViewerPane: View {
                     .disabled(!model.canGoForward)
                 }
                 .labelStyle(.iconOnly)
+
+                viewportPresetPicker
 
                 Spacer(minLength: 0)
 
@@ -110,6 +170,31 @@ struct WebViewerPane: View {
             }
         }
         .controlSize(.small)
+    }
+
+    private var viewportPresetPicker: some View {
+        Menu {
+            ForEach(WebViewportPreset.Category.allCases, id: \.self) { category in
+                Section(category.title) {
+                    ForEach(WebViewportPreset.presets(in: category)) { preset in
+                        Button {
+                            model.setViewportPreset(preset)
+                        } label: {
+                            if model.viewportPreset == preset {
+                                Label(preset.menuLabel, systemImage: "checkmark")
+                            } else {
+                                Text(preset.menuLabel)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(model.viewportPreset.menuLabel, systemImage: model.viewportPreset.systemImage)
+        }
+        .labelStyle(.titleAndIcon)
+        .fixedSize(horizontal: true, vertical: false)
+        .help("Match a device or desktop CSS viewport")
     }
 
     private var clearDataMenu: some View {
