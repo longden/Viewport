@@ -44,23 +44,30 @@ enum WorkspaceRecordingError: LocalizedError {
 @MainActor
 final class WorkspaceRecordingService: ObservableObject {
     static let maxDuration: TimeInterval = 5 * 60
-    static let maximumOutputHeight: CGFloat = 1_080
 
     @Published private(set) var isRecording = false
     @Published private(set) var startedAt: Date?
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var lastSavedURL: URL?
+    /// Squared for composite capture so the web pane matches device frames.
+    @Published private(set) var squareWebContentCorners = false
 
     private var stream: SCStream?
     private var streamOutput: WorkspaceRecordingStreamOutput?
     private var writer: ScreenCaptureRecordingWriter?
+    private var compositeEngine: CompositeRecordingEngine?
     private var temporaryURL: URL?
     private var elapsedTask: Task<Void, Never>?
     private var isStopping = false
     private var captureTarget: WorkspaceRecordingTarget?
+    private var webCaptureTarget: WorkspaceRecordingTarget?
 
     func updateCaptureTarget(_ target: WorkspaceRecordingTarget?) {
         captureTarget = target
+    }
+
+    func updateWebCaptureTarget(_ target: WorkspaceRecordingTarget?) {
+        webCaptureTarget = target
     }
 
     func start(
@@ -74,6 +81,122 @@ final class WorkspaceRecordingService: ObservableObject {
             throw WorkspaceRecordingError.nothingToRecord
         }
 
+        if workspace.recordingQuality == .composite {
+            try await startComposite(web: web, workspace: workspace)
+            return
+        }
+
+        try await startWindowCapture(web: web, workspace: workspace)
+    }
+
+    private func startComposite(
+        web: WebViewModel,
+        workspace: WorkspaceStore
+    ) async throws {
+        // Square the live web clip before ScreenCaptureKit samples it so the
+        // first composite frames aren't rounded while device panes are not.
+        squareWebContentCorners = true
+        defer {
+            if !isRecording {
+                squareWebContentCorners = false
+            }
+        }
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let quality = workspace.recordingQuality
+        var sources: [ViewerSource] = []
+        var sourceSizes: [CGSize] = []
+        let resolvedWebTarget = webCaptureTarget
+            ?? WebPaneCaptureGeometry.target(for: web.webView)
+
+        for source in workspace.orderedVisibleSources {
+            switch source {
+            case .web:
+                guard web.webView.url != nil else { continue }
+                guard let target = resolvedWebTarget else {
+                    throw WorkspaceRecordingError.windowUnavailable
+                }
+                let size = WorkspaceRecordingGeometry.outputSize(
+                    sourceSize: target.sourceRect.size,
+                    backingScale: target.backingScale,
+                    maximumHeight: quality.maximumOutputHeight
+                )
+                sources.append(.web)
+                sourceSizes.append(size)
+            case .android:
+                if let frame = workspace.androidCapture.liveRecordingFrame() {
+                    sources.append(.android)
+                    sourceSizes.append(frame.size)
+                } else if let image = workspace.androidCapture.snapshotFrame() {
+                    sources.append(.android)
+                    sourceSizes.append(
+                        CGSize(width: image.width, height: image.height)
+                    )
+                }
+            case .iOS:
+                if let frame = workspace.iOSCapture.liveRecordingFrame() {
+                    sources.append(.iOS)
+                    sourceSizes.append(frame.size)
+                } else if let image = workspace.iOSCapture.snapshotFrame() {
+                    sources.append(.iOS)
+                    sourceSizes.append(
+                        CGSize(width: image.width, height: image.height)
+                    )
+                }
+            }
+        }
+
+        guard !sources.isEmpty else {
+            throw WorkspaceRecordingError.nothingToRecord
+        }
+
+        if sources.contains(.web) {
+            guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+                throw WorkspaceRecordingError.permissionRequired
+            }
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Viewport-Recording-\(UUID().uuidString).mp4")
+        try? FileManager.default.removeItem(at: url)
+
+        let engine: CompositeRecordingEngine
+        do {
+            engine = try CompositeRecordingEngine(
+                sources: sources,
+                sourceSizes: sourceSizes,
+                outputURL: url,
+                quality: quality
+            )
+        } catch {
+            throw WorkspaceRecordingError.writerSetupFailed
+        }
+
+        do {
+            try await engine.start(
+                workspace: workspace,
+                webCaptureTarget: sources.contains(.web) ? resolvedWebTarget : nil
+            )
+        } catch {
+            engine.cancel()
+            throw error
+        }
+
+        compositeEngine = engine
+        temporaryURL = url
+        startedAt = Date()
+        elapsed = 0
+        isRecording = true
+        isStopping = false
+        lastSavedURL = nil
+        startElapsedTimer()
+    }
+
+    private func startWindowCapture(
+        web: WebViewModel,
+        workspace: WorkspaceStore
+    ) async throws {
         // Preserve the existing call shape while recording the already-rendered
         // WKWebView and device previews together.
         _ = web
@@ -105,23 +228,28 @@ final class WorkspaceRecordingService: ObservableObject {
             throw WorkspaceRecordingError.windowUnavailable
         }
 
+        let quality = workspace.recordingQuality
         let outputSize = WorkspaceRecordingGeometry.outputSize(
             sourceSize: sourceRect.size,
             backingScale: target?.backingScale ?? appWindow.backingScaleFactor,
-            maximumHeight: Self.maximumOutputHeight
+            maximumHeight: quality.maximumOutputHeight
         )
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Viewport-Recording-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: url)
 
-        let frameRate = workspace.performanceProfile.recordingFrameRate
+        let frameRate = quality.frameRate
         let writer: ScreenCaptureRecordingWriter
         do {
             writer = try ScreenCaptureRecordingWriter(
                 outputURL: url,
                 width: Int(outputSize.width),
                 height: Int(outputSize.height),
-                framesPerSecond: frameRate
+                framesPerSecond: frameRate,
+                bitRate: quality.bitRate(
+                    width: Int(outputSize.width),
+                    height: Int(outputSize.height)
+                )
             )
         } catch {
             throw WorkspaceRecordingError.writerSetupFailed
@@ -136,14 +264,13 @@ final class WorkspaceRecordingService: ObservableObject {
             value: 1,
             timescale: frameRate
         )
-        configuration.queueDepth = 6
+        configuration.queueDepth = quality.queueDepth
         configuration.showsCursor = false
         configuration.capturesAudio = false
-        // NV12 keeps frames in the encoder's native 4:2:0 layout: ~2.7x less
-        // bandwidth than BGRA and no per-frame RGB-to-YUV conversion. Output
-        // dimensions are already rounded to even values, keeping the chroma
-        // plane aligned.
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        configuration.pixelFormat = quality.pixelFormat
+        configuration.captureResolution = quality.captureResolution
+        // Keep colour accurate for the high-quality / original path.
+        configuration.colorSpaceName = CGColorSpace.sRGB
 
         let stream = SCStream(
             filter: SCContentFilter(desktopIndependentWindow: captureWindow),
@@ -191,24 +318,32 @@ final class WorkspaceRecordingService: ObservableObject {
 
         let stream = self.stream
         let writer = self.writer
+        let compositeEngine = self.compositeEngine
         let temporaryURL = self.temporaryURL
         self.stream = nil
         streamOutput = nil
         self.writer = nil
+        self.compositeEngine = nil
         self.temporaryURL = nil
 
         if let stream {
             try? await stream.stopCapture()
         }
 
-        guard let writer, let temporaryURL else {
+        let completed: Bool
+        if let compositeEngine {
+            completed = await compositeEngine.stop()
+        } else if let writer {
+            completed = await writer.finish()
+        } else {
             resetSessionState()
             throw WorkspaceRecordingError.finalizeFailed
         }
 
-        let completed = await writer.finish()
-        guard completed else {
-            try? FileManager.default.removeItem(at: temporaryURL)
+        guard completed, let temporaryURL else {
+            if let temporaryURL {
+                try? FileManager.default.removeItem(at: temporaryURL)
+            }
             resetSessionState()
             throw WorkspaceRecordingError.finalizeFailed
         }
@@ -230,13 +365,16 @@ final class WorkspaceRecordingService: ObservableObject {
         elapsedTask?.cancel()
         elapsedTask = nil
         let stream = self.stream
+        let compositeEngine = self.compositeEngine
         self.stream = nil
         streamOutput = nil
+        self.compositeEngine = nil
 
         Task {
             try? await stream?.stopCapture()
         }
         writer?.cancel()
+        compositeEngine?.cancel()
         if let temporaryURL {
             try? FileManager.default.removeItem(at: temporaryURL)
         }
@@ -263,11 +401,13 @@ final class WorkspaceRecordingService: ObservableObject {
         stream = nil
         streamOutput = nil
         writer = nil
+        compositeEngine = nil
         temporaryURL = nil
         startedAt = nil
         elapsed = 0
         isStopping = false
         isRecording = false
+        squareWebContentCorners = false
     }
 
     private func presentSavePanel(for temporaryURL: URL) throws -> URL? {
@@ -492,10 +632,10 @@ private final class ScreenCaptureRecordingWriter: @unchecked Sendable {
         outputURL: URL,
         width: Int,
         height: Int,
-        framesPerSecond: Int32
+        framesPerSecond: Int32,
+        bitRate: Int
     ) throws {
         writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        let bitRate = max(5_000_000, width * height * 6)
         let settings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: width,
