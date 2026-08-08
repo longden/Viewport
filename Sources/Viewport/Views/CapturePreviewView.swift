@@ -1,4 +1,5 @@
 import AppKit
+import CoreVideo
 import IOSurface
 import SwiftUI
 
@@ -87,6 +88,13 @@ final class CapturePreviewNSView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = surface
+        CATransaction.commit()
+    }
+
+    func display(pixelBuffer: CVPixelBuffer) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.contents = pixelBuffer
         CATransaction.commit()
     }
 

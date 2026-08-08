@@ -125,24 +125,30 @@ actor AndroidDeviceInput {
 
     private static func androidKeyCode(for event: NSEvent) -> String? {
         switch event.keyCode {
-        case 36, 76:
-            "KEYCODE_ENTER"
-        case 48:
-            "KEYCODE_TAB"
-        case 51, 117:
-            "KEYCODE_DEL"
-        case 53:
-            "KEYCODE_ESCAPE"
-        case 123:
-            "KEYCODE_DPAD_LEFT"
-        case 124:
-            "KEYCODE_DPAD_RIGHT"
-        case 125:
-            "KEYCODE_DPAD_DOWN"
-        case 126:
-            "KEYCODE_DPAD_UP"
-        default:
-            nil
+        case 36, 76: "KEYCODE_ENTER"
+        case 48: "KEYCODE_TAB"
+        case 51, 117: "KEYCODE_DEL"
+        case 53: "KEYCODE_ESCAPE"
+        case 123: "KEYCODE_DPAD_LEFT"
+        case 124: "KEYCODE_DPAD_RIGHT"
+        case 125: "KEYCODE_DPAD_DOWN"
+        case 126: "KEYCODE_DPAD_UP"
+        default: nil
+        }
+    }
+
+    /// Android `KeyEvent` keycode integers used by scrcpy injects.
+    nonisolated static func androidKeycodeValue(for event: NSEvent) -> Int32? {
+        switch event.keyCode {
+        case 36, 76: 66 // ENTER
+        case 48: 61 // TAB
+        case 51, 117: 67 // DEL
+        case 53: 111 // ESCAPE
+        case 123: 21 // DPAD_LEFT
+        case 124: 22 // DPAD_RIGHT
+        case 125: 20 // DPAD_DOWN
+        case 126: 19 // DPAD_UP
+        default: nil
         }
     }
 

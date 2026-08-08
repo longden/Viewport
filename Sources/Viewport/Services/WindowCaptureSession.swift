@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CoreGraphics
+import CoreVideo
 import Foundation
 import ImageIO
 import IOSurface
@@ -32,6 +33,24 @@ enum CaptureTransport: Equatable {
     case windowStream(frameRate: Int)
     case simulatorSurface
     case emulatorGrpc(frameRate: Int)
+
+    /// Compact name for the device picker, e.g. `Pixel 7 (H.264)`.
+    var shortLabel: String {
+        switch self {
+        case .direct:
+            "ADB"
+        case .usbDevice:
+            "USB"
+        case .scrcpy:
+            "H.264"
+        case .windowStream:
+            "Window"
+        case .simulatorSurface:
+            "Surface"
+        case .emulatorGrpc:
+            "gRPC"
+        }
+    }
 }
 
 @MainActor
@@ -59,6 +78,10 @@ final class WindowCaptureSession: ObservableObject {
     private var captureMode: CaptureMode = .direct
     private var usesHostWindowStream = false
     private var activePointer: ActivePointer?
+    /// When set, pointer gestures are also forwarded to this session using the
+    /// same normalized coordinates. Must not form a cycle that re-mirrors.
+    weak var mirrorTarget: WindowCaptureSession?
+    private var isMirroringInput = false
     private let simulatorSurfaceStream: IOSSimulatorSurfaceStream?
     private let emulatorGrpcStream: AndroidEmulatorGrpcStream?
 
@@ -168,6 +191,11 @@ final class WindowCaptureSession: ObservableObject {
         framePresenter.latestFrame
     }
 
+    /// Prefers GPU-backed surfaces for composite recording.
+    func liveRecordingFrame() -> LiveCaptureFrame? {
+        framePresenter.liveFrame
+    }
+
     func refreshWindows() {
         refreshTask?.cancel()
         let generation = UUID()
@@ -196,17 +224,16 @@ final class WindowCaptureSession: ObservableObject {
                     return
                 }
 
-                let shouldRestart: Bool
-                if case .failed = phase {
-                    shouldRestart = true
-                } else {
-                    shouldRestart = false
-                }
-                if selected.id != previousSelection
-                    || captureTask == nil
-                    || shouldRestart {
-                    selectDevice(selected.id)
-                }
+                // Always re-run the capture strategy chain (Direct → … → ADB)
+                // so refresh recovers from sticky fallbacks like screencap
+                // polling after scrcpy/gRPC failed mid-session.
+                selectedDeviceID = selected.id
+                refreshInputAccess()
+                startCapture(
+                    deviceID: selected.id,
+                    preservingCurrentFrame: previousSelection == selected.id
+                        && phase == .live
+                )
             } catch {
                 guard !Task.isCancelled,
                       refreshGeneration == generation else {
@@ -252,6 +279,7 @@ final class WindowCaptureSession: ObservableObject {
                 usesLiveAndroidMotion: false
             )
             iOSInput.touchDown(at: point, udid: device.id)
+            forwardMirrorBegin(at: point)
             return
         }
 
@@ -264,7 +292,7 @@ final class WindowCaptureSession: ObservableObject {
                     return false
                 }()
             let useScrcpyControl = !useGrpc
-                && scrcpyDeviceStream?.hasControlConnection == true
+                && scrcpyDeviceStream?.hasTouchControl == true
                 && {
                     if case .scrcpy = transport { return true }
                     return false
@@ -295,6 +323,7 @@ final class WindowCaptureSession: ObservableObject {
                     at: point
                 )
             }
+            forwardMirrorBegin(at: point)
         }
     }
 
@@ -307,6 +336,7 @@ final class WindowCaptureSession: ObservableObject {
 
         if source == .iOS, let iOSInput {
             iOSInput.touchMove(to: point, udid: device.id)
+            forwardMirrorMove(to: point)
             return
         }
 
@@ -330,6 +360,7 @@ final class WindowCaptureSession: ObservableObject {
                     at: point
                 )
             }
+            forwardMirrorMove(to: point)
         }
     }
 
@@ -354,6 +385,7 @@ final class WindowCaptureSession: ObservableObject {
                     preservingCurrentFrame: true
                 )
             }
+            forwardMirrorEnd(at: point, duration: duration)
             return
         }
 
@@ -379,6 +411,7 @@ final class WindowCaptureSession: ObservableObject {
                         at: point
                     )
                 }
+                forwardMirrorEnd(at: point, duration: duration)
                 return
             }
             if let androidInput {
@@ -402,7 +435,29 @@ final class WindowCaptureSession: ObservableObject {
                     }
                 }
             }
+            forwardMirrorEnd(at: point, duration: duration)
         }
+    }
+
+    private func forwardMirrorBegin(at point: CGPoint) {
+        guard let mirrorTarget, !isMirroringInput else { return }
+        mirrorTarget.isMirroringInput = true
+        mirrorTarget.beginPointer(at: point)
+        mirrorTarget.isMirroringInput = false
+    }
+
+    private func forwardMirrorMove(to point: CGPoint) {
+        guard let mirrorTarget, !isMirroringInput else { return }
+        mirrorTarget.isMirroringInput = true
+        mirrorTarget.movePointer(to: point)
+        mirrorTarget.isMirroringInput = false
+    }
+
+    private func forwardMirrorEnd(at point: CGPoint, duration: TimeInterval) {
+        guard let mirrorTarget, !isMirroringInput else { return }
+        mirrorTarget.isMirroringInput = true
+        mirrorTarget.endPointer(at: point, duration: duration)
+        mirrorTarget.isMirroringInput = false
     }
 
     func performGesture(
@@ -473,11 +528,30 @@ final class WindowCaptureSession: ObservableObject {
     func postKeyboardEvent(_ event: NSEvent) -> Bool {
         guard let device = selectedDevice else { return false }
         guard device.supportsInput else { return false }
-        if source == .android, let androidInput {
-            Task {
-                await androidInput.key(serial: device.id, event: event)
+        if source == .android {
+            if case .scrcpy = transport,
+               let stream = scrcpyDeviceStream,
+               stream.hasControlConnection {
+                if let keycode = AndroidDeviceInput.androidKeycodeValue(for: event) {
+                    if event.type == .keyDown {
+                        _ = stream.sendKeycode(keycode)
+                    }
+                    return true
+                }
+                if event.type == .keyDown,
+                   let text = event.characters,
+                   !text.isEmpty,
+                   stream.sendText(text) {
+                    return true
+                }
             }
-            return true
+            if let androidInput {
+                Task {
+                    await androidInput.key(serial: device.id, event: event)
+                }
+                return true
+            }
+            return false
         }
         if source == .iOS, let iOSInput {
             return iOSInput.sendKey(event, udid: device.id)
@@ -571,7 +645,7 @@ final class WindowCaptureSession: ObservableObject {
         do {
             try simulatorSurfaceStream.start(
                 deviceID: deviceID,
-                frameRate: performanceProfile.targetFrameRate
+                frameRate: 60
             ) {
                 [weak self] surface in
                 guard let self, selectedDeviceID == deviceID else { return }
@@ -633,9 +707,9 @@ final class WindowCaptureSession: ObservableObject {
             let started = try await scrcpyDeviceStream.start(
                 serial: deviceID,
                 profile: performanceProfile
-            ) { [weak self] image in
+            ) { [weak self] pixelBuffer in
                 guard let self, selectedDeviceID == deviceID else { return }
-                display(image)
+                display(pixelBuffer: pixelBuffer)
             } onFailure: { [weak self] _ in
                 guard let self, selectedDeviceID == deviceID else { return }
                 startPollingCapture(
@@ -663,9 +737,9 @@ final class WindowCaptureSession: ObservableObject {
                 deviceID: deviceID,
                 profile: performanceProfile
             ) {
-                [weak self] image in
+                [weak self] pixelBuffer in
                 guard let self, selectedDeviceID == deviceID else { return }
-                display(image)
+                display(pixelBuffer: pixelBuffer)
             } onFailure: { [weak self] error in
                 guard let self, selectedDeviceID == deviceID else { return }
                 phase = .failed(error.localizedDescription)
@@ -817,6 +891,15 @@ final class WindowCaptureSession: ObservableObject {
 
     private func display(surface: IOSurfaceRef) {
         if let changedSize = framePresenter.display(surface: surface) {
+            capturedFrameSize = changedSize
+        }
+        if phase != .live {
+            phase = .live
+        }
+    }
+
+    private func display(pixelBuffer: CVPixelBuffer) {
+        if let changedSize = framePresenter.display(pixelBuffer: pixelBuffer) {
             capturedFrameSize = changedSize
         }
         if phase != .live {

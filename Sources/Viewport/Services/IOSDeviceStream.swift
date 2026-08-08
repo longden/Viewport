@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -11,20 +10,19 @@ final class IOSDeviceStream: NSObject {
         label: "com.longden.viewport.ios-device-stream",
         qos: .userInteractive
     )
-    nonisolated private let frameConverter = IOSDeviceFrameConverter()
     nonisolated private let frameDelivery =
         LatestValueDelivery<IOSDeviceFrameInput>()
 
     // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
     private nonisolated(unsafe) var activeSession: AVCaptureSession?
     private nonisolated(unsafe) var activeOutput: AVCaptureVideoDataOutput?
-    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
     func start(
         deviceID: String,
         profile: CapturePerformanceProfile,
-        onFrame: @escaping (CGImage) -> Void,
+        onFrame: @escaping (CVPixelBuffer) -> Void,
         onFailure: @escaping (Error) -> Void
     ) async throws {
         stop()
@@ -159,13 +157,12 @@ extension IOSDeviceStream: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         frameDelivery.submit(
             IOSDeviceFrameInput(output: videoOutput, pixelBuffer: pixelBuffer)
-        ) { [weak self, frameConverter] input in
-            guard let image = frameConverter.image(from: input.pixelBuffer) else {
-                return
-            }
+        ) { [weak self] input in
             Task { @MainActor [weak self] in
-                guard let self, self.activeOutput === input.output else { return }
-                self.onFrame?(image)
+                guard let self, self.activeOutput === input.output else {
+                    return
+                }
+                self.onFrame?(input.pixelBuffer)
             }
         }
     }
@@ -191,15 +188,6 @@ private enum IOSDeviceStreamError: LocalizedError {
         case .cannotStartCapture:
             "The connected iPhone stream could not be started."
         }
-    }
-}
-
-private final class IOSDeviceFrameConverter: @unchecked Sendable {
-    private let context = CIContext(options: [.cacheIntermediates: false])
-
-    func image(from pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        return context.createCGImage(image, from: image.extent)
     }
 }
 
