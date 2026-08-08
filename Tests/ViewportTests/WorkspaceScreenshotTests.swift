@@ -1,4 +1,6 @@
 import CoreGraphics
+import CoreVideo
+import ScreenCaptureKit
 import XCTest
 @testable import Viewport
 
@@ -110,17 +112,81 @@ final class WorkspaceScreenshotTests: XCTestCase {
         let maxDuration = await MainActor.run {
             WorkspaceRecordingService.maxDuration
         }
-        let maxHeight = await MainActor.run {
-            WorkspaceRecordingService.maximumOutputHeight
-        }
         XCTAssertEqual(maxDuration, 5 * 60)
-        XCTAssertEqual(maxHeight, 1_080)
     }
 
-    func testRecordingFrameRateFollowsPerformanceProfile() {
-        XCTAssertEqual(CapturePerformanceProfile.smooth.recordingFrameRate, 60)
-        XCTAssertEqual(CapturePerformanceProfile.balanced.recordingFrameRate, 30)
-        XCTAssertEqual(CapturePerformanceProfile.sharp.recordingFrameRate, 30)
+    func testRecordingQualityPresets() {
+        // High must match the original recorder: 60 fps, BGRA, 1080p,
+        // bitrate max(5_000_000, w * h * 6).
+        XCTAssertEqual(RecordingQuality.high.frameRate, 60)
+        XCTAssertEqual(RecordingQuality.high.maximumOutputHeight, 1_080)
+        XCTAssertEqual(
+            RecordingQuality.high.pixelFormat,
+            kCVPixelFormatType_32BGRA
+        )
+        XCTAssertEqual(
+            RecordingQuality.high.bitRate(width: 1_920, height: 1_080),
+            1_920 * 1_080 * 6
+        )
+        XCTAssertEqual(
+            RecordingQuality.high.bitRate(width: 640, height: 360),
+            5_000_000
+        )
+        XCTAssertEqual(RecordingQuality.high.captureResolution, .best)
+        XCTAssertTrue(RecordingQuality.high.usesWindowCapture)
+
+        XCTAssertEqual(RecordingQuality.smooth.frameRate, 30)
+        XCTAssertEqual(RecordingQuality.smooth.maximumOutputHeight, 720)
+        XCTAssertEqual(
+            RecordingQuality.smooth.pixelFormat,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            RecordingQuality.smooth.bitRate(width: 1_280, height: 720),
+            1_280 * 720 * 2
+        )
+        XCTAssertEqual(RecordingQuality.smooth.captureResolution, .nominal)
+        XCTAssertTrue(RecordingQuality.smooth.usesWindowCapture)
+
+        XCTAssertEqual(RecordingQuality.composite.frameRate, 60)
+        XCTAssertEqual(RecordingQuality.composite.maximumOutputHeight, 1_080)
+        XCTAssertEqual(
+            RecordingQuality.composite.pixelFormat,
+            kCVPixelFormatType_32BGRA
+        )
+        XCTAssertFalse(RecordingQuality.composite.usesWindowCapture)
+        XCTAssertEqual(
+            RecordingQuality.composite.bitRate(width: 1_920, height: 1_080),
+            RecordingQuality.high.bitRate(width: 1_920, height: 1_080)
+        )
+
+        XCTAssertNotEqual(
+            RecordingQuality.high.pixelFormat,
+            RecordingQuality.smooth.pixelFormat
+        )
+        XCTAssertNotEqual(
+            RecordingQuality.high.frameRate,
+            RecordingQuality.smooth.frameRate
+        )
+        XCTAssertNotEqual(
+            RecordingQuality.high.maximumOutputHeight,
+            RecordingQuality.smooth.maximumOutputHeight
+        )
+    }
+
+    func testCompositeRecordingLayoutUsesEvenDimensions() throws {
+        let canvas = try XCTUnwrap(
+            CompositeRecordingLayout.outputCanvas(
+                sourceSizes: [
+                    CGSize(width: 390, height: 844),
+                    CGSize(width: 1080, height: 2400)
+                ],
+                maximumHeight: 1_080
+            )
+        )
+        XCTAssertEqual(Int(canvas.width) % 2, 0)
+        XCTAssertEqual(Int(canvas.height) % 2, 0)
+        XCTAssertLessThanOrEqual(canvas.height, 1_080)
     }
 
     func testRecordingCropUsesTopLeftWindowCoordinates() throws {

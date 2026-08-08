@@ -103,18 +103,6 @@ enum CapturePerformanceProfile: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Workspace recording cadence. Balanced/Sharp stream device content at
-    /// 30/20 fps, so encoding the workspace at 60 fps would waste cycles on
-    /// duplicate frames.
-    var recordingFrameRate: Int32 {
-        switch self {
-        case .smooth:
-            60
-        case .balanced, .sharp:
-            30
-        }
-    }
-
     var scrcpyVideoBitRate: Int {
         switch self {
         case .smooth:
