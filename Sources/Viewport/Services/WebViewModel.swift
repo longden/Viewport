@@ -12,11 +12,14 @@ final class WebViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var noticeMessage: String?
     @Published private(set) var isClearingData = false
+    @Published private(set) var viewportPreset: WebViewportPreset
 
     let webView: WKWebView
 
     private let dataCleaner: any WebsiteDataClearing
     private let consoleBridge: WebConsoleBridge
+    private let defaults: UserDefaults
+    private let viewportPresetKey: String
     private var consoleCaptureEnabled = false
     private var hasLoadedInitialPage = false
     private var noticeGeneration = UUID()
@@ -24,14 +27,22 @@ final class WebViewModel: ObservableObject {
     init(
         address: String = "https://example.com",
         dataCleaner: (any WebsiteDataClearing)? = nil,
+        defaults: UserDefaults = .standard,
+        viewportPresetKey: String = "webViewportPreset",
         onConsoleMessage: @escaping WebConsoleBridge.MessageHandler = {
             _, _, _ in
         }
     ) {
         self.address = address
         self.dataCleaner = dataCleaner ?? WebsiteDataCleaner()
+        self.defaults = defaults
+        self.viewportPresetKey = viewportPresetKey
         let consoleBridge = WebConsoleBridge(onMessage: onConsoleMessage)
         self.consoleBridge = consoleBridge
+
+        viewportPreset = WebViewportPreset.resolved(
+            rawValue: defaults.string(forKey: viewportPresetKey)
+        ) ?? .fillPane
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -41,6 +52,14 @@ final class WebViewModel: ObservableObject {
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = true
         webView.underPageBackgroundColor = .clear
+        applyViewportPreset(viewportPreset, reloadIfNeeded: false)
+    }
+
+    func setViewportPreset(_ preset: WebViewportPreset) {
+        guard preset != viewportPreset else { return }
+        viewportPreset = preset
+        defaults.set(preset.rawValue, forKey: viewportPresetKey)
+        applyViewportPreset(preset, reloadIfNeeded: hasLoadedInitialPage)
     }
 
     var currentURL: URL? {
@@ -140,6 +159,23 @@ final class WebViewModel: ObservableObject {
            title != pageTitle {
             title = pageTitle
         }
+    }
+
+    private func applyViewportPreset(
+        _ preset: WebViewportPreset,
+        reloadIfNeeded: Bool
+    ) {
+        let previousAgent = webView.customUserAgent
+        webView.customUserAgent = preset.customUserAgent
+        webView.configuration.defaultWebpagePreferences.preferredContentMode =
+            preset.prefersMobileContent ? .mobile : .desktop
+
+        guard reloadIfNeeded,
+              previousAgent != preset.customUserAgent,
+              webView.url != nil else {
+            return
+        }
+        webView.reload()
     }
 
     private func clearWebsiteData(

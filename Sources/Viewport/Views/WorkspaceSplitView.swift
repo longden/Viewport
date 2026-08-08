@@ -5,6 +5,8 @@ struct WorkspaceSplitView: View {
     @ObservedObject var web: WebViewModel
     @ObservedObject var favorites: FavoritesStore
     var onPaneScreenshot: ((ViewerSource) -> Void)?
+    var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
+    var squareWebContentCorners: Bool = false
     @State private var dragState: DividerDragState?
     @State private var transientPaneWidths: [ViewerSource: CGFloat]?
 
@@ -181,7 +183,9 @@ struct WorkspaceSplitView: View {
                 favorites: favorites,
                 onScreenshot: onPaneScreenshot.map { handler in
                     { handler(.web) }
-                }
+                },
+                onCaptureTargetChange: onWebCaptureTargetChange,
+                squareContentCorners: squareWebContentCorners
             )
         case .android:
             CaptureViewerPane(
