@@ -14,9 +14,15 @@ struct ContentView: View {
     @State private var exportErrorTitle = "Export Failed"
     @State private var savedExportURL: URL?
     @State private var showHelp = false
-    @State private var showScreenshotSettings = false
+    @State private var showSettings = false
+    @State private var showDeviceInjector = false
     @AppStorage("developerLogsVisible") private var showDeveloperLogs = false
+    @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.system.rawValue
     @State private var dismissExportTask: Task<Void, Never>?
+
+    private var preferredAppearance: ColorScheme? {
+        (AppAppearance(rawValue: appearanceRaw) ?? .system).colorScheme
+    }
 
     init() {
         let developerLogs = DeveloperLogStore()
@@ -52,149 +58,11 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.22), value: savedExportURL)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                Menu {
-                    Picker(
-                        "Capture mode",
-                        selection: Binding(
-                            get: { workspace.captureMode },
-                            set: { workspace.setCaptureMode($0) }
-                        )
-                    ) {
-                        ForEach(CaptureMode.allCases) { mode in
-                            Label {
-                                VStack(alignment: .leading) {
-                                    Text(mode.title)
-                                    Text(mode.detail)
-                                }
-                            } icon: {
-                                Image(systemName: mode.systemImage)
-                            }
-                            .tag(mode)
-                        }
-                    }
-                    .disabled(recording.isRecording)
-
-                    Divider()
-
-                    Picker(
-                        "Streaming performance",
-                        selection: Binding(
-                            get: { workspace.performanceProfile },
-                            set: { workspace.setPerformanceProfile($0) }
-                        )
-                    ) {
-                        ForEach(CapturePerformanceProfile.allCases) { profile in
-                            Label {
-                                VStack(alignment: .leading) {
-                                    Text(profile.title)
-                                    Text(profile.detail)
-                                }
-                            } icon: {
-                                Image(systemName: profile.systemImage)
-                            }
-                            .tag(profile)
-                        }
-                    }
-
-                    if workspace.captureMode == .classic {
-                        Divider()
-
-                        if workspace.highFrameRateCaptureAvailable {
-                            Label(
-                                "Fast window capture enabled",
-                                systemImage: "checkmark.circle"
-                            )
-                        } else {
-                            Button {
-                                workspace.requestHighFrameRateCapture()
-                            } label: {
-                                Label(
-                                    "Enable fast Simulator capture…",
-                                    systemImage: "rectangle.inset.filled.and.person.filled"
-                                )
-                            }
-                            .help(
-                                "If Screen Recording already lists Viewport, toggle it off and on after a rebuild, then return here."
-                            )
-                        }
-                    }
-
-                    Divider()
-
-                    Toggle("Developer logs", isOn: $showDeveloperLogs)
-
-                    Divider()
-
-                    Button("Screenshot settings…") {
-                        showScreenshotSettings = true
-                    }
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("Viewport settings")
-
-                Button {
-                    showHelp = true
-                } label: {
-                    Label("Help", systemImage: "questionmark.circle")
-                }
-                .help("Check Android setup and create an emulator")
+                workspaceUtilityToolbar
             }
 
             ToolbarItemGroup(placement: .principal) {
-                ControlGroup {
-                    Button {
-                        refreshAll()
-                    } label: {
-                        Label(
-                            "Refresh all clients",
-                            systemImage: "arrow.clockwise"
-                        )
-                        .labelStyle(.iconOnly)
-                        .frame(minWidth: 24, minHeight: 24)
-                        .contentShape(Rectangle())
-                    }
-                    .help("Refresh all clients (⇧⌘R)")
-
-                    Button {
-                        takeCombinedScreenshot()
-                    } label: {
-                        Group {
-                            if isTakingScreenshot {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Label(
-                                    "Combined screenshot",
-                                    systemImage: "camera.viewfinder"
-                                )
-                            }
-                        }
-                        .labelStyle(.iconOnly)
-                        .frame(minWidth: 24, minHeight: 24)
-                        .contentShape(Rectangle())
-                    }
-                    .disabled(isTakingScreenshot || recording.isRecording)
-                    .help("Save all visible clients in one row")
-
-                    Button {
-                        toggleRecording()
-                    } label: {
-                        Label(
-                            recording.isRecording ? "Stop recording" : "Record",
-                            systemImage: recording.isRecording
-                                ? "stop.circle.fill"
-                                : "record.circle"
-                        )
-                        .labelStyle(.iconOnly)
-                        .frame(minWidth: 24, minHeight: 24)
-                        .contentShape(Rectangle())
-                        .foregroundStyle(recording.isRecording ? .red : .primary)
-                    }
-                    .help(recordingHelp)
-                }
-                .controlSize(.regular)
-                .fixedSize()
+                workspaceActionToolbar
             }
 
             ToolbarItem(placement: .primaryAction) {
@@ -204,8 +72,12 @@ struct ContentView: View {
         .sheet(isPresented: $showHelp) {
             HelpSheet(androidDevices: workspace.androidDevices)
         }
-        .sheet(isPresented: $showScreenshotSettings) {
-            ScreenshotSettingsSheet(workspace: workspace)
+        .preferredColorScheme(preferredAppearance)
+        .sheet(isPresented: $showSettings) {
+            SettingsSheet(workspace: workspace)
+        }
+        .sheet(isPresented: $showDeviceInjector) {
+            DeviceInjectorSheet(workspace: workspace, web: web)
         }
         .alert(
             exportErrorTitle,
@@ -293,6 +165,181 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var workspaceUtilityToolbar: some View {
+        Menu {
+                Picker(
+                    "Capture mode",
+                    selection: Binding(
+                        get: { workspace.captureMode },
+                        set: { workspace.setCaptureMode($0) }
+                    )
+                ) {
+                    ForEach(CaptureMode.allCases) { mode in
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(mode.title)
+                                Text(mode.detail)
+                            }
+                        } icon: {
+                            Image(systemName: mode.systemImage)
+                        }
+                        .tag(mode)
+                    }
+                }
+                .disabled(recording.isRecording)
+
+                Divider()
+
+                Picker(
+                    "Streaming performance",
+                    selection: Binding(
+                        get: { workspace.performanceProfile },
+                        set: { workspace.setPerformanceProfile($0) }
+                    )
+                ) {
+                    ForEach(CapturePerformanceProfile.allCases) { profile in
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(profile.title)
+                                Text(profile.detail)
+                            }
+                        } icon: {
+                            Image(systemName: profile.systemImage)
+                        }
+                        .tag(profile)
+                    }
+                }
+
+                Divider()
+
+                Picker(
+                    "Recording quality",
+                    selection: Binding(
+                        get: { workspace.recordingQuality },
+                        set: { workspace.setRecordingQuality($0) }
+                    )
+                ) {
+                    ForEach(RecordingQuality.allCases) { quality in
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(quality.title)
+                                Text(quality.detail)
+                            }
+                        } icon: {
+                            Image(systemName: quality.systemImage)
+                        }
+                        .tag(quality)
+                    }
+                }
+                .disabled(recording.isRecording)
+
+                if workspace.captureMode == .classic {
+                    Divider()
+
+                    if workspace.highFrameRateCaptureAvailable {
+                        Label(
+                            "Fast window capture enabled",
+                            systemImage: "checkmark.circle"
+                        )
+                    } else {
+                        Button {
+                            workspace.requestHighFrameRateCapture()
+                        } label: {
+                            Label(
+                                "Enable fast Simulator capture…",
+                                systemImage: "rectangle.inset.filled.and.person.filled"
+                            )
+                        }
+                        .help(
+                            "If Screen Recording already lists Viewport, toggle it off and on after a rebuild, then return here."
+                        )
+                    }
+                }
+
+                Divider()
+
+                Toggle("Developer logs", isOn: $showDeveloperLogs)
+
+                Divider()
+
+                Button("Settings…") {
+                    showSettings = true
+                }
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+        }
+        .help("Viewport settings")
+
+        DeviceToolsMenu(
+            workspace: workspace,
+            showInjector: $showDeviceInjector
+        )
+
+        Button {
+            showHelp = true
+        } label: {
+            Label("Help", systemImage: "questionmark.circle")
+        }
+        .help("Check Android setup and create an emulator")
+    }
+
+    private var workspaceActionToolbar: some View {
+        ControlGroup {
+            Button {
+                refreshAll()
+            } label: {
+                Label(
+                    "Refresh all clients",
+                    systemImage: "arrow.clockwise"
+                )
+                .labelStyle(.iconOnly)
+                .frame(minWidth: 24, minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .help("Refresh all clients (⇧⌘R)")
+
+            Button {
+                takeCombinedScreenshot()
+            } label: {
+                Group {
+                    if isTakingScreenshot {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label(
+                            "Combined screenshot",
+                            systemImage: "camera.viewfinder"
+                        )
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .frame(minWidth: 24, minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .disabled(isTakingScreenshot || recording.isRecording)
+            .help("Save all visible clients in one row")
+
+            Button {
+                toggleRecording()
+            } label: {
+                Label(
+                    recording.isRecording ? "Stop recording" : "Record",
+                    systemImage: recording.isRecording
+                        ? "stop.circle.fill"
+                        : "record.circle"
+                )
+                .labelStyle(.iconOnly)
+                .frame(minWidth: 24, minHeight: 24)
+                .contentShape(Rectangle())
+                .foregroundStyle(recording.isRecording ? .red : .primary)
+            }
+            .help(recordingHelp)
+        }
+        .controlSize(.regular)
+        .fixedSize()
+    }
+
+    @ViewBuilder
     private var workspaceLayout: some View {
         if showDeveloperLogs {
             ResizableDeveloperConsoleLayout {
@@ -310,7 +357,11 @@ struct ContentView: View {
             workspace: workspace,
             web: web,
             favorites: favorites,
-            onPaneScreenshot: takePaneScreenshot
+            onPaneScreenshot: takePaneScreenshot,
+            onWebCaptureTargetChange: { target in
+                recording.updateWebCaptureTarget(target)
+            },
+            squareWebContentCorners: recording.squareWebContentCorners
         )
         .background {
             WorkspaceRecordingAnchor { target in

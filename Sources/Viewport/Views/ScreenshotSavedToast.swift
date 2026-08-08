@@ -35,15 +35,12 @@ struct ScreenshotSavedToast: View {
         }
         .padding(12)
         .frame(minWidth: 280, maxWidth: 360, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(
-            cornerRadius: 12,
-            style: .continuous
-        ))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.primary.opacity(0.08))
-        }
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+        // Liquid Glass provides its own rim light and shadow; the old
+        // material + stroke + shadow stack would double up on top of it.
+        .glassEffect(
+            .regular,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
     }
 
     private func copyScreenshot() {

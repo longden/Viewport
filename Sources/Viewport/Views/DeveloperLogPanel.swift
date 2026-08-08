@@ -102,7 +102,8 @@ struct DeveloperLogPanel: View {
 
             Spacer(minLength: 0)
         }
-        .controlSize(.small)
+        .controlSize(.regular)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var statusLabel: some View {
@@ -137,6 +138,7 @@ struct DeveloperLogPanel: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .scrollEdgeEffectStyle(.soft, for: .top)
 
                 if entries.isEmpty {
                     VStack(alignment: .leading, spacing: 5) {

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ViewerPane<Controls: View, Content: View>: View {
     let source: ViewerSource
+    var contentCornerRadius: CGFloat = 16
     @ViewBuilder let controls: Controls
     @ViewBuilder let content: Content
 
@@ -23,7 +24,12 @@ struct ViewerPane<Controls: View, Content: View>: View {
 
             controls
             content
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: contentCornerRadius,
+                        style: .continuous
+                    )
+                )
         }
         .padding(12)
         .background {
