@@ -11,7 +11,7 @@ enum CaptureMode: String, CaseIterable, Identifiable {
         case .direct:
             "Direct"
         case .classic:
-            "Classic"
+            "Legacy"
         }
     }
 
