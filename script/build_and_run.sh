@@ -8,7 +8,7 @@ if [[ "$MODE" == "--debug" || "$MODE" == "debug" ]]; then
 fi
 APP_NAME="Viewport"
 BUNDLE_ID="com.longden.viewport"
-MIN_SYSTEM_VERSION="15.0"
+MIN_SYSTEM_VERSION="26.0"
 APP_ICON_NAME="AppIcon"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "Viewport",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v26)
     ],
     products: [
         .executable(name: "Viewport", targets: ["Viewport"])
