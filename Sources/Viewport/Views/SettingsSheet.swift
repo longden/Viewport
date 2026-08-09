@@ -93,6 +93,42 @@ struct SettingsSheet: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                Button {
+                    workspace.setDeviceBezelsEnabled(!workspace.deviceBezelsEnabled)
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(
+                            systemName: workspace.deviceBezelsEnabled
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(
+                            workspace.deviceBezelsEnabled
+                                ? Color.accentColor
+                                : Color.secondary
+                        )
+                        .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Show device bezels")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(
+                                "Optional geometric phone chassis around device panes and combined PNG export (not vendor skin assets). Off by default for max pixels."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             Section("Diagnostics") {
@@ -119,6 +155,46 @@ struct SettingsSheet: View {
                                 .foregroundStyle(.primary)
                             Text(
                                 "Estimates frames per second from live capture delivery."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Section("Android") {
+                Button {
+                    workspace.setPreferHeadlessAndroidEmulators(
+                        !workspace.preferHeadlessAndroidEmulators
+                    )
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(
+                            systemName: workspace.preferHeadlessAndroidEmulators
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(
+                            workspace.preferHeadlessAndroidEmulators
+                                ? Color.accentColor
+                                : Color.secondary
+                        )
+                        .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Launch emulators headless")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(
+                                "Starts Android emulators with -no-window and an explicit gRPC port for direct capture."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)

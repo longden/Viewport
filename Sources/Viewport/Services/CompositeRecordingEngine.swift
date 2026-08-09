@@ -17,6 +17,8 @@ final class CompositeRecordingEngine: @unchecked Sendable {
     private let compositor: PaneFrameCompositor
     private let frameInterval: CFTimeInterval
     private let sources: [ViewerSource]
+    /// Parallel to `sources`: device panes point at their live frame slot; web is `nil`.
+    private let deviceFrameSlots: [LatestLiveFrameSlot?]
     private let layoutImages: [CGRect]
     private let quality: RecordingQuality
 
@@ -47,10 +49,12 @@ final class CompositeRecordingEngine: @unchecked Sendable {
     init(
         sources: [ViewerSource],
         sourceSizes: [CGSize],
+        deviceFrameSlots: [LatestLiveFrameSlot?],
         outputURL: URL,
         quality: RecordingQuality
     ) throws {
         guard sources.count == sourceSizes.count,
+              sources.count == deviceFrameSlots.count,
               !sources.isEmpty,
               let layout = CompositeScreenshotLayout.frames(
                 for: sourceSizes,
@@ -71,6 +75,7 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         let offsetY = (CGFloat(height) - scaledHeight) / 2
 
         self.sources = sources
+        self.deviceFrameSlots = deviceFrameSlots
         self.layoutImages = layout.images.map { frame in
             CGRect(
                 x: offsetX + frame.minX * scale,
@@ -101,8 +106,10 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         workspace: WorkspaceStore,
         webCaptureTarget: WorkspaceRecordingTarget?
     ) async throws {
-        let androidSlot = workspace.androidCapture.recordingFrameSlot
-        let iosSlot = workspace.iOSCapture.recordingFrameSlot
+        // `workspace` is only used to keep the existing call shape; pane slots
+        // were already captured in `deviceFrameSlots` at init.
+        _ = workspace
+        let paneSlots = deviceFrameSlots
 
         let alreadyRunning = stateQueue.sync { () -> Bool in
             guard !isRunning else { return true }
@@ -146,11 +153,9 @@ final class CompositeRecordingEngine: @unchecked Sendable {
                 guard let self else { return }
                 let sleepNanos = UInt64(max(frameInterval, 1 / 120) * 1_000_000_000)
                 while !Task.isCancelled {
-                    // Read latest device / web frames off MainActor.
-                    self.tick(
-                        androidFrame: androidSlot.load(),
-                        iosFrame: iosSlot.load()
-                    )
+                    // Read latest frames for every active pane off MainActor.
+                    let deviceFrames = paneSlots.map { $0?.load() }
+                    self.tick(deviceFrames: deviceFrames)
                     try? await Task.sleep(nanoseconds: sleepNanos)
                 }
             }
@@ -221,10 +226,7 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         try? FileManager.default.removeItem(at: temporaryURL)
     }
 
-    private func tick(
-        androidFrame: LiveCaptureFrame?,
-        iosFrame: LiveCaptureFrame?
-    ) {
+    private func tick(deviceFrames: [LiveCaptureFrame?]) {
         let snapshot = stateQueue.sync { () -> (
             running: Bool,
             start: CFTimeInterval,
@@ -259,10 +261,8 @@ final class CompositeRecordingEngine: @unchecked Sendable {
             switch source {
             case .web:
                 frame = stateQueue.sync { self.webFrame }
-            case .android:
-                frame = androidFrame
-            case .iOS:
-                frame = iosFrame
+            case .android, .iOS:
+                frame = index < deviceFrames.count ? deviceFrames[index] : nil
             }
             guard let frame else { continue }
             switch frame {

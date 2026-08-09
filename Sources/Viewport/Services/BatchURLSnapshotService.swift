@@ -31,7 +31,7 @@ struct BatchURLSnapshotProgress: Equatable {
 
 @MainActor
 final class BatchURLSnapshotService {
-    /// Delay after load settles before capturing panes.
+    /// Delay after load settles before capturing the web pane.
     var settleDelay: Duration = .milliseconds(900)
     /// Max time to wait for the web pane to finish loading.
     var loadTimeout: Duration = .seconds(20)
@@ -63,7 +63,6 @@ final class BatchURLSnapshotService {
         urls: [URL],
         web: WebViewModel,
         workspace: WorkspaceStore,
-        includePlatformLabels: Bool,
         alsoOpenOnDevices: Bool,
         outputDirectory: URL,
         onProgress: (BatchURLSnapshotProgress) -> Void
@@ -130,12 +129,7 @@ final class BatchURLSnapshotService {
             try await Task.sleep(for: settleDelay)
             try Task.checkCancellation()
 
-            let image = try await screenshots.createComposite(
-                sources: workspace.orderedVisibleSources,
-                web: web,
-                workspace: workspace,
-                includePlatformLabels: includePlatformLabels
-            )
+            let image = try await screenshots.captureWeb(web)
 
             let fileURL = outputDirectory.appendingPathComponent(
                 Self.filename(for: url, index: offset + 1)

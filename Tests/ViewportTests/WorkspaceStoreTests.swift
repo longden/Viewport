@@ -113,6 +113,56 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(restored.performanceProfile, .sharp)
     }
 
+    func testCanAddSecondAndroidPaneAndPersistLayout() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(store.orderedVisiblePanes.count, 3)
+        XCTAssertTrue(store.addPane(.android))
+        XCTAssertEqual(store.paneCount(of: .android), 2)
+        XCTAssertEqual(store.orderedVisiblePanes.count, 4)
+        XCTAssertFalse(store.addPane(.iOS))
+
+        let restored = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(restored.paneCount(of: .android), 2)
+        XCTAssertEqual(restored.orderedVisiblePanes.count, 4)
+    }
+
+    func testRemoveExtraPaneKeepsPrimary() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertTrue(store.addPane(.iOS))
+        XCTAssertTrue(store.removeExtraPane(.iOS))
+        XCTAssertEqual(store.paneCount(of: .iOS), 1)
+        XCTAssertTrue(store.isVisible(.iOS))
+    }
+
+    func testRemovePaneByIDOnlyRemovesExtraSlot() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertTrue(store.addPane(.android))
+        let extraID = store.orderedVisiblePanes.first {
+            $0.source == ViewerSource.android.rawValue && $0.slot >= 1
+        }?.id
+        XCTAssertNotNil(extraID)
+        let primaryID = store.orderedVisiblePanes.first {
+            $0.source == ViewerSource.android.rawValue && $0.slot == 0
+        }?.id
+        XCTAssertNotNil(primaryID)
+
+        XCTAssertFalse(store.removePane(id: primaryID!))
+        XCTAssertEqual(store.paneCount(of: .android), 2)
+
+        XCTAssertTrue(store.removePane(id: extraID!))
+        XCTAssertEqual(store.paneCount(of: .android), 1)
+        XCTAssertTrue(store.isVisible(.android))
+    }
+
+    func testHidingPlatformRemovesAllItsPanes() {
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertTrue(store.addPane(.android))
+        store.setVisible(false, for: .android)
+        XCTAssertEqual(store.paneCount(of: .android), 0)
+        XCTAssertFalse(store.isVisible(.android))
+        XCTAssertEqual(store.orderedVisiblePanes.count, 2)
+    }
+
     func testCaptureModeDefaultsToDirect() {
         let store = WorkspaceStore(defaults: defaults)
         XCTAssertEqual(store.captureMode, .direct)

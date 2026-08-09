@@ -38,7 +38,7 @@ struct BatchURLSnapshotSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Batch URL snapshots")
                     .font(.title3.weight(.semibold))
-                Text("Load each URL, wait for settle, then save a multi-pane screenshot.")
+                Text("Load each URL in the web pane, wait for settle, then save a web screenshot.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -141,7 +141,6 @@ struct BatchURLSnapshotSheet: View {
                     urls: urls,
                     web: web,
                     workspace: workspace,
-                    includePlatformLabels: workspace.screenshotPlatformLabelsEnabled,
                     alsoOpenOnDevices: alsoOpenOnDevices,
                     outputDirectory: folder
                 ) { update in

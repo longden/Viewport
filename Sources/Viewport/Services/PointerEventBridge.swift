@@ -29,7 +29,7 @@ final class PointerEventBridge {
         }
     }
 
-    private func handle(
+    func handle(
         source: ViewerSource,
         phase: PointerEventPhase,
         point: CGPoint,

@@ -77,10 +77,23 @@ enum CompositeScreenshotLayout {
     }
 }
 
-struct ScreenshotPaneCapture {
+struct ScreenshotPaneCapture: Identifiable {
+    let id: UUID
     let source: ViewerSource
     let image: CGImage
     let label: String
+
+    init(
+        id: UUID = UUID(),
+        source: ViewerSource,
+        image: CGImage,
+        label: String
+    ) {
+        self.id = id
+        self.source = source
+        self.image = image
+        self.label = label
+    }
 }
 
 enum ScreenshotPlatformLabel {
@@ -118,12 +131,33 @@ struct WorkspaceScreenshotService {
         sources: [ViewerSource],
         web: WebViewModel,
         workspace: WorkspaceStore,
-        includePlatformLabels: Bool
+        includePlatformLabels: Bool,
+        includeDeviceBezels: Bool = false
     ) async throws -> CGImage {
         let panes = await collectPanes(
             sources: sources,
             web: web,
-            workspace: workspace
+            workspace: workspace,
+            includeDeviceBezels: includeDeviceBezels
+        )
+        guard !panes.isEmpty else {
+            throw WorkspaceScreenshotError.noCapturablePanes
+        }
+        return try compose(panes, includePlatformLabels: includePlatformLabels)
+    }
+
+    func createComposite(
+        sources: [PaneGridNode],
+        web: WebViewModel,
+        workspace: WorkspaceStore,
+        includePlatformLabels: Bool,
+        includeDeviceBezels: Bool = false
+    ) async throws -> CGImage {
+        let panes = await collectPanes(
+            nodes: sources,
+            web: web,
+            workspace: workspace,
+            includeDeviceBezels: includeDeviceBezels
         )
         guard !panes.isEmpty else {
             throw WorkspaceScreenshotError.noCapturablePanes
@@ -163,7 +197,8 @@ struct WorkspaceScreenshotService {
     func collectPanes(
         sources: [ViewerSource],
         web: WebViewModel,
-        workspace: WorkspaceStore
+        workspace: WorkspaceStore,
+        includeDeviceBezels: Bool = false
     ) async -> [ScreenshotPaneCapture] {
         var panes: [ScreenshotPaneCapture] = []
 
@@ -179,25 +214,98 @@ struct WorkspaceScreenshotService {
                     )
                 )
             case .android:
-                guard let image = workspace.androidCapture.snapshotFrame() else {
-                    continue
+                if let image = framed(
+                    workspace.androidCapture.snapshotFrame(),
+                    includeDeviceBezels: includeDeviceBezels
+                ) {
+                    panes.append(
+                        ScreenshotPaneCapture(
+                            source: .android,
+                            image: image,
+                            label: ScreenshotPlatformLabel.title(for: .android)
+                        )
+                    )
                 }
+                if workspace.paneCount(of: .android) > 1,
+                   let image = framed(
+                    workspace.androidCaptureSecondary.snapshotFrame(),
+                    includeDeviceBezels: includeDeviceBezels
+                   ) {
+                    panes.append(
+                        ScreenshotPaneCapture(
+                            source: .android,
+                            image: image,
+                            label: "Android 2"
+                        )
+                    )
+                }
+            case .iOS:
+                if let image = framed(
+                    workspace.iOSCapture.snapshotFrame(),
+                    includeDeviceBezels: includeDeviceBezels
+                ) {
+                    panes.append(
+                        ScreenshotPaneCapture(
+                            source: .iOS,
+                            image: image,
+                            label: ScreenshotPlatformLabel.title(for: .iOS)
+                        )
+                    )
+                }
+                if workspace.paneCount(of: .iOS) > 1,
+                   let image = framed(
+                    workspace.iOSCaptureSecondary.snapshotFrame(),
+                    includeDeviceBezels: includeDeviceBezels
+                   ) {
+                    panes.append(
+                        ScreenshotPaneCapture(
+                            source: .iOS,
+                            image: image,
+                            label: "iOS 2"
+                        )
+                    )
+                }
+            }
+        }
+
+        return panes
+    }
+
+    func collectPanes(
+        nodes: [PaneGridNode],
+        web: WebViewModel,
+        workspace: WorkspaceStore,
+        includeDeviceBezels: Bool = false
+    ) async -> [ScreenshotPaneCapture] {
+        var panes: [ScreenshotPaneCapture] = []
+
+        for node in nodes {
+            guard let source = node.viewerSource else { continue }
+            switch source {
+            case .web:
+                guard let image = await snapshotWeb(web) else { continue }
                 panes.append(
                     ScreenshotPaneCapture(
-                        source: .android,
+                        source: .web,
                         image: image,
-                        label: ScreenshotPlatformLabel.title(for: .android)
+                        label: ScreenshotPlatformLabel.title(for: .web)
                     )
                 )
-            case .iOS:
-                guard let image = workspace.iOSCapture.snapshotFrame() else {
+            case .android, .iOS:
+                guard let session = workspace.captureSession(for: node),
+                      let image = framed(
+                        session.snapshotFrame(),
+                        includeDeviceBezels: includeDeviceBezels
+                      ) else {
                     continue
                 }
+                let base = ScreenshotPlatformLabel.title(for: source)
+                let label = node.slot >= 1 ? "\(base) \(node.slot + 1)" : base
                 panes.append(
                     ScreenshotPaneCapture(
-                        source: .iOS,
+                        source: source,
                         image: image,
-                        label: ScreenshotPlatformLabel.title(for: .iOS)
+                        label: label
                     )
                 )
             }
@@ -206,19 +314,45 @@ struct WorkspaceScreenshotService {
         return panes
     }
 
+    private func framed(
+        _ image: CGImage?,
+        includeDeviceBezels: Bool
+    ) -> CGImage? {
+        guard let image else { return nil }
+        guard includeDeviceBezels else { return image }
+        return DeviceBezelRenderer.draw(image: image) ?? image
+    }
+
     func compose(
         _ panes: [ScreenshotPaneCapture],
         includePlatformLabels: Bool
+    ) throws -> CGImage {
+        try compose(
+            panes,
+            labeledPaneIDs: includePlatformLabels
+                ? Set(panes.map(\.id))
+                : []
+        )
+    }
+
+    /// Composes panes side-by-side. Label names are drawn for IDs in
+    /// `labeledPaneIDs`. Pass `reserveLabelBand: true` to keep the band even
+    /// when no names are selected (stable layout for annotation).
+    func compose(
+        _ panes: [ScreenshotPaneCapture],
+        labeledPaneIDs: Set<UUID>,
+        reserveLabelBand: Bool = false
     ) throws -> CGImage {
         guard !panes.isEmpty else {
             throw WorkspaceScreenshotError.noCapturablePanes
         }
 
+        let includeLabelBand = reserveLabelBand || !labeledPaneIDs.isEmpty
         guard let layout = CompositeScreenshotLayout.frames(
             for: panes.map {
                 CGSize(width: $0.image.width, height: $0.image.height)
             },
-            includeLabels: includePlatformLabels
+            includeLabels: includeLabelBand
         ),
         let context = CGContext(
             data: nil,
@@ -237,9 +371,10 @@ struct WorkspaceScreenshotService {
             CGRect(origin: .zero, size: layout.canvas)
         )
 
-        if includePlatformLabels {
-            context.setFillColor(CGColor.black)
-            for frame in layout.labels {
+        if includeLabelBand {
+            for (pane, frame) in zip(panes, layout.labels)
+            where labeledPaneIDs.contains(pane.id) {
+                context.setFillColor(CGColor.black)
                 context.fill(cgRect(frame, canvasHeight: layout.canvas.height))
             }
         }
@@ -252,8 +387,9 @@ struct WorkspaceScreenshotService {
             )
         }
 
-        if includePlatformLabels {
-            for (pane, frame) in zip(panes, layout.labels) {
+        if includeLabelBand {
+            for (pane, frame) in zip(panes, layout.labels)
+            where labeledPaneIDs.contains(pane.id) {
                 drawLabel(
                     pane.label,
                     in: frame,

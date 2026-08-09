@@ -27,7 +27,7 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
     ) async throws {
         await stop()
 
-        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+        guard ScreenRecordingPermission.requestAccess() else {
             throw WorkspaceRecordingError.permissionRequired
         }
 

@@ -5,14 +5,23 @@ import SwiftUI
 struct DeviceToolsMenu: View {
     @ObservedObject var workspace: WorkspaceStore
     @Binding var showInjector: Bool
+    @Binding var showLocation: Bool
     @Binding var showNetworkOverlay: Bool
     @Binding var showOverlayDiff: Bool
     @Binding var showBatchSnapshots: Bool
+    @Binding var showInteractionMacros: Bool
+    @Binding var showBuildPlay: Bool
     @State private var isBusy = false
     @State private var statusMessage: String?
 
     var body: some View {
         Menu {
+            Section("Build") {
+                Button("Build & Play…") {
+                    showBuildPlay = true
+                }
+            }
+
             Section("Appearance") {
                 ForEach(DeviceAppearance.allCases) { appearance in
                     Button("\(appearance.title) on all devices") {
@@ -50,9 +59,55 @@ struct DeviceToolsMenu: View {
                 .disabled(isBusy)
             }
 
+            Section("Clipboard") {
+                Button("Paste Mac clipboard to devices") {
+                    run {
+                        try await workspace.pasteClipboardToFocusedDevice()
+                    }
+                }
+                .disabled(isBusy)
+
+                Button("Copy from Android") {
+                    run {
+                        _ = try await workspace.copyClipboardFromDevice(source: .android)
+                    }
+                }
+                .disabled(isBusy || !workspace.hasAndroidInjectionTarget)
+
+                Button("Copy from iOS") {
+                    run {
+                        _ = try await workspace.copyClipboardFromDevice(source: .iOS)
+                    }
+                }
+                .disabled(isBusy || !workspace.hasIOSSimulatorInjectionTarget)
+            }
+
+            Section("Location") {
+                Button("Set location…") {
+                    showLocation = true
+                }
+            }
+
             Section("Inject") {
                 Button("Open URL & Push…") {
                     showInjector = true
+                }
+            }
+
+            Section("Compare") {
+                Toggle(
+                    "Mirror input across devices",
+                    isOn: Binding(
+                        get: { workspace.inputMirroringEnabled },
+                        set: { workspace.setInputMirroringEnabled($0) }
+                    )
+                )
+                .help(
+                    "Replay taps and scrolls from any device pane onto every other visible device pane."
+                )
+
+                Button("Interaction macros…") {
+                    showInteractionMacros = true
                 }
             }
 
@@ -67,17 +122,6 @@ struct DeviceToolsMenu: View {
                     Button("Batch URL snapshots…") {
                         showBatchSnapshots = true
                     }
-
-                    Toggle(
-                        "Mirror input across devices",
-                        isOn: Binding(
-                            get: { workspace.inputMirroringEnabled },
-                            set: { workspace.setInputMirroringEnabled($0) }
-                        )
-                    )
-                    .help(
-                        "Replay taps and scrolls from one device pane onto the other visible device pane."
-                    )
 
                     Toggle(
                         "Synchronized scrolling (prototype)",
@@ -102,7 +146,7 @@ struct DeviceToolsMenu: View {
         } label: {
             Label("Device tools", systemImage: "wrench.and.screwdriver")
         }
-        .help("Appearance, status bars, inject, and optional experimental compare tools")
+        .help("Appearance, status bars, inject, compare tools, and optional experimental helpers")
         .disabled(isBusy)
     }
 
