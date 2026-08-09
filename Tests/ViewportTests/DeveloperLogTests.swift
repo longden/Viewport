@@ -30,6 +30,22 @@ final class LogLineDecoderTests: XCTestCase {
         )
         XCTAssertEqual(decoder.append(Data("discarded\nnext\n".utf8)), ["next"])
     }
+
+    func testCompactsConsumedPrefixInsteadOfShiftingEveryLine() {
+        var decoder = LogLineDecoder(
+            maximumLineBytes: 64,
+            compactionThreshold: 8
+        )
+
+        XCTAssertEqual(decoder.append(Data("aa\nbb\ncc\n".utf8)), ["aa", "bb", "cc"])
+        XCTAssertEqual(decoder.consumedByteCount, 0)
+        XCTAssertTrue(decoder.bufferedData.isEmpty)
+
+        XCTAssertEqual(decoder.append(Data("partial".utf8)), [])
+        XCTAssertEqual(decoder.bufferedData, Data("partial".utf8))
+        XCTAssertEqual(decoder.append(Data("-line\n".utf8)), ["partial-line"])
+        XCTAssertEqual(decoder.consumedByteCount, 0)
+    }
 }
 
 @MainActor
