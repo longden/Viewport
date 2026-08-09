@@ -63,6 +63,7 @@ final class WindowCaptureSession: ObservableObject {
     @Published private(set) var inputAccess: InputAccessPhase
     @Published private(set) var capturedFrameSize: CGSize?
     @Published private(set) var transport: CaptureTransport = .direct
+    @Published private(set) var framesPerSecond: Double = 0
 
     private let frameClient: DeviceFrameClient
     private let hostWindowStream: HostWindowStream
@@ -73,7 +74,11 @@ final class WindowCaptureSession: ObservableObject {
     private var captureTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = UUID()
-    private let framePresenter = CaptureFramePresenter()
+    private let framePresenter: CaptureFramePresenter
+    /// Readable from composite encode without hopping to MainActor.
+    nonisolated let recordingFrameSlot: LatestLiveFrameSlot
+    private let frameRateMeter = FrameRateMeter()
+    private var fpsPublishTask: Task<Void, Never>?
     private var performanceProfile: CapturePerformanceProfile = .smooth
     private var captureMode: CaptureMode = .direct
     private var usesHostWindowStream = false
@@ -82,6 +87,8 @@ final class WindowCaptureSession: ObservableObject {
     /// same normalized coordinates. Must not form a cycle that re-mirrors.
     weak var mirrorTarget: WindowCaptureSession?
     private var isMirroringInput = false
+    /// Optional sink for sync-scroll prototypes.
+    var pointerEventSink: ((PointerEventPhase, CGPoint, TimeInterval?) -> Void)?
     private let simulatorSurfaceStream: IOSSimulatorSurfaceStream?
     private let emulatorGrpcStream: AndroidEmulatorGrpcStream?
 
@@ -89,6 +96,9 @@ final class WindowCaptureSession: ObservableObject {
         self.source = source
         let frameClient = DeviceFrameClient(source: source)
         self.frameClient = frameClient
+        let presenter = CaptureFramePresenter()
+        framePresenter = presenter
+        recordingFrameSlot = presenter.recordingFrameSlot
         hostWindowStream = HostWindowStream()
         scrcpyDeviceStream = source == .android ? ScrcpyDeviceStream() : nil
         iOSDeviceStream = source == .iOS ? IOSDeviceStream() : nil
@@ -106,6 +116,7 @@ final class WindowCaptureSession: ObservableObject {
     deinit {
         captureTask?.cancel()
         refreshTask?.cancel()
+        fpsPublishTask?.cancel()
         // `stop()` is nonisolated on each stream; do not use
         // MainActor.assumeIsolated — deinit may run off the main thread.
         hostWindowStream.stop()
@@ -192,8 +203,9 @@ final class WindowCaptureSession: ObservableObject {
     }
 
     /// Prefers GPU-backed surfaces for composite recording.
-    func liveRecordingFrame() -> LiveCaptureFrame? {
-        framePresenter.liveFrame
+    /// Safe off MainActor — reads the presenter's thread-safe slot.
+    nonisolated func liveRecordingFrame() -> LiveCaptureFrame? {
+        recordingFrameSlot.load()
     }
 
     func refreshWindows() {
@@ -259,6 +271,10 @@ final class WindowCaptureSession: ObservableObject {
     func stopCapture() {
         captureTask?.cancel()
         captureTask = nil
+        fpsPublishTask?.cancel()
+        fpsPublishTask = nil
+        frameRateMeter.reset()
+        framesPerSecond = 0
         activePointer = nil
         usesHostWindowStream = false
         transport = .direct
@@ -270,6 +286,9 @@ final class WindowCaptureSession: ObservableObject {
 
     func beginPointer(at point: CGPoint) {
         guard let device = selectedDevice, device.supportsInput else { return }
+        if !isMirroringInput {
+            pointerEventSink?(.began, point, nil)
+        }
 
         if source == .iOS, let iOSInput {
             activePointer = ActivePointer(
@@ -333,6 +352,9 @@ final class WindowCaptureSession: ObservableObject {
               device.id == activePointer.deviceID else { return }
         activePointer.last = point
         self.activePointer = activePointer
+        if !isMirroringInput {
+            pointerEventSink?(.moved, point, nil)
+        }
 
         if source == .iOS, let iOSInput {
             iOSInput.touchMove(to: point, udid: device.id)
@@ -374,6 +396,9 @@ final class WindowCaptureSession: ObservableObject {
         self.activePointer = nil
         let start = activePointer.start
         let distance = hypot(point.x - start.x, point.y - start.y)
+        if !isMirroringInput {
+            pointerEventSink?(.ended, point, duration)
+        }
 
         if source == .iOS, let iOSInput {
             iOSInput.touchUp(at: point, udid: device.id)
@@ -782,10 +807,10 @@ final class WindowCaptureSession: ObservableObject {
                 deviceName: device.name,
                 profile: performanceProfile,
                 contentAspect: device.pixelSize
-            ) { [weak self] image in
+            ) { [weak self] pixelBuffer in
                 guard let self, selectedDeviceID == deviceID else { return }
                 usesHostWindowStream = true
-                display(image)
+                display(pixelBuffer: pixelBuffer)
             } onFailure: { [weak self] _ in
                 guard let self,
                       selectedDeviceID == deviceID,
@@ -884,6 +909,7 @@ final class WindowCaptureSession: ObservableObject {
         ) {
             capturedFrameSize = changedSize
         }
+        noteFrameDelivered()
         if phase != .live {
             phase = .live
         }
@@ -893,6 +919,7 @@ final class WindowCaptureSession: ObservableObject {
         if let changedSize = framePresenter.display(surface: surface) {
             capturedFrameSize = changedSize
         }
+        noteFrameDelivered()
         if phase != .live {
             phase = .live
         }
@@ -902,8 +929,24 @@ final class WindowCaptureSession: ObservableObject {
         if let changedSize = framePresenter.display(pixelBuffer: pixelBuffer) {
             capturedFrameSize = changedSize
         }
+        noteFrameDelivered()
         if phase != .live {
             phase = .live
+        }
+    }
+
+    private func noteFrameDelivered() {
+        frameRateMeter.record()
+        if fpsPublishTask == nil {
+            fpsPublishTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self else { return }
+                self.fpsPublishTask = nil
+                let fps = self.frameRateMeter.framesPerSecond
+                if abs(self.framesPerSecond - fps) > 0.4 {
+                    self.framesPerSecond = fps
+                }
+            }
         }
     }
 
