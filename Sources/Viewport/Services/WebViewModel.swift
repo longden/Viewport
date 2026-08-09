@@ -113,6 +113,35 @@ final class WebViewModel: ObservableObject {
         )
     }
 
+    func setMockGeolocation(latitude: Double, longitude: Double) {
+        let lat = String(format: "%.6f", latitude)
+        let lon = String(format: "%.6f", longitude)
+        webView.evaluateJavaScript(
+            """
+            (function() {
+              const coords = {
+                latitude: \(lat),
+                longitude: \(lon),
+                accuracy: 10,
+                altitude: null,
+                altitudeAccuracy: null,
+                heading: null,
+                speed: null
+              };
+              const position = { coords, timestamp: Date.now() };
+              navigator.geolocation.getCurrentPosition = function(success) {
+                if (success) success(position);
+              };
+              navigator.geolocation.watchPosition = function(success) {
+                if (success) success(position);
+                return 0;
+              };
+            })();
+            """,
+            completionHandler: nil
+        )
+    }
+
     func setConsoleCaptureEnabled(_ enabled: Bool) {
         consoleCaptureEnabled = enabled
         consoleBridge.setEnabled(enabled, in: webView)

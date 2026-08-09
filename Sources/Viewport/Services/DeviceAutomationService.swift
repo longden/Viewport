@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum DeviceAppearance: String, CaseIterable, Identifiable {
@@ -12,6 +13,35 @@ enum DeviceAppearance: String, CaseIterable, Identifiable {
         case .dark: "Dark"
         }
     }
+}
+
+enum DeviceOrientation: String, CaseIterable, Identifiable {
+    case portrait
+    case landscape
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .portrait: "Portrait"
+        case .landscape: "Landscape"
+        }
+    }
+
+    /// Android `settings put system user_rotation` value (0 = portrait, 1 = landscape).
+    var androidUserRotation: String {
+        switch self {
+        case .portrait: "0"
+        case .landscape: "1"
+        }
+    }
+}
+
+struct DeviceLocationCoordinate: Codable, Equatable, Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let latitude: Double
+    let longitude: Double
 }
 
 enum DeviceFontScale: String, CaseIterable, Identifiable {
@@ -46,6 +76,8 @@ enum DeviceAutomationError: LocalizedError {
     case noTarget(String = "No device is selected in that pane.")
     case unsupported(String)
     case commandFailed(String)
+    /// iOS Simulator menu automation needs Privacy → Accessibility for Viewport.
+    case accessibilityRequired(String)
 
     var errorDescription: String? {
         switch self {
@@ -55,7 +87,16 @@ enum DeviceAutomationError: LocalizedError {
             message
         case let .commandFailed(message):
             message
+        case let .accessibilityRequired(message):
+            message
         }
+    }
+
+    var isAccessibilityRequired: Bool {
+        if case .accessibilityRequired = self {
+            return true
+        }
+        return false
     }
 }
 
@@ -322,6 +363,231 @@ actor DeviceAutomationService {
         }
     }
 
+    func setClipboard(_ text: String, on device: StreamedDevice) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            let shell = [
+                "cmd", "clipboard", "set", "--user", "0",
+                Self.shellSingleQuoted(text)
+            ].joined(separator: " ")
+            try await runADB(
+                serial: device.id,
+                arguments: ["shell", shell],
+                label: "Set clipboard"
+            )
+            try await runADB(
+                serial: device.id,
+                arguments: ["shell", "input", "keyevent", "279"],
+                label: "Paste"
+            )
+        case .iOSSimulator:
+            guard let data = text.data(using: .utf8) else {
+                throw DeviceAutomationError.commandFailed(
+                    "Clipboard text must be UTF-8."
+                )
+            }
+            try await runXcrun(
+                arguments: ["simctl", "pbcopy", device.id],
+                standardInput: data,
+                label: "Set clipboard"
+            )
+            try await runAppleScript(
+                """
+                tell application "Simulator" to activate
+                delay 0.05
+                tell application "System Events" to keystroke "v" using {command down}
+                """,
+                label: "Paste"
+            )
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Clipboard sync works on Simulator and Android only."
+            )
+        }
+    }
+
+    func getClipboard(from device: StreamedDevice) async throws -> String {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            guard let adb else {
+                throw DeviceAutomationError.commandFailed("adb is not available.")
+            }
+            let result = try await runner.run(
+                executable: adb,
+                arguments: ["-s", device.id, "shell", "cmd", "clipboard", "get"],
+                timeout: 12
+            )
+            guard result.exitCode == 0 else {
+                throw DeviceAutomationError.unsupported(
+                    "Clipboard read is not supported on this Android build."
+                )
+            }
+            let text = result.standardOutput.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !text.isEmpty else {
+                throw DeviceAutomationError.commandFailed(
+                    "Android clipboard is empty."
+                )
+            }
+            return text
+        case .iOSSimulator:
+            let result = try await runXcrunData(
+                arguments: ["simctl", "pbpaste", device.id],
+                label: "Get clipboard"
+            )
+            let text = String(decoding: result, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                throw DeviceAutomationError.commandFailed(
+                    "Simulator clipboard is empty."
+                )
+            }
+            return text
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Clipboard read works on Simulator and Android only."
+            )
+        }
+    }
+
+    func setOrientation(
+        _ orientation: DeviceOrientation,
+        on device: StreamedDevice
+    ) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: [
+                    "shell", "settings", "put", "system",
+                    "accelerometer_rotation", "0"
+                ],
+                label: "Lock rotation"
+            )
+            try await runADB(
+                serial: device.id,
+                arguments: [
+                    "shell", "settings", "put", "system",
+                    "user_rotation", orientation.androidUserRotation
+                ],
+                label: "Set orientation"
+            )
+        case .iOSSimulator:
+            try await setIOSSimulatorOrientation(orientation, device: device)
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Orientation control works on Simulator and Android only."
+            )
+        }
+    }
+
+    func rotateClockwise(on device: StreamedDevice) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+                label: "Lock rotation"
+            )
+            let current = try await androidUserRotation(serial: device.id)
+            let next = (current + 1) % 4
+            try await runADB(
+                serial: device.id,
+                arguments: [
+                    "shell", "settings", "put", "system",
+                    "user_rotation", String(next)
+                ],
+                label: "Rotate"
+            )
+        case .iOSSimulator:
+            try await ensureSimulatorAccessibility()
+            try await runIOSSimulatorRotateLeft(device: device)
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Rotation works on Simulator and Android only."
+            )
+        }
+    }
+
+    /// Stops the guest shown in a pane (headless/windowed AVD or Simulator).
+    /// Physical devices are left alone — only the live view is closed by the caller.
+    func terminateGuest(_ device: StreamedDevice) async throws {
+        switch device.kind {
+        case .androidEmulator:
+            try await runADB(
+                serial: device.id,
+                arguments: ["emu", "kill"],
+                label: "Stop emulator"
+            )
+        case .iOSSimulator:
+            try await runXcrun(
+                arguments: ["simctl", "shutdown", device.id],
+                label: "Shut down Simulator"
+            )
+        case .androidDevice, .iOSDevice:
+            return
+        }
+    }
+
+    func setLocation(
+        latitude: Double,
+        longitude: Double,
+        on device: StreamedDevice
+    ) async throws {
+        try Self.validateCoordinate(latitude: latitude, longitude: longitude)
+
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: Self.androidGeoFixArguments(
+                    latitude: latitude,
+                    longitude: longitude
+                ),
+                label: "Set location"
+            )
+        case .iOSSimulator:
+            try await runXcrun(
+                arguments: [
+                    "simctl", "location", device.id, "set",
+                    Self.iosLocationArgument(latitude: latitude, longitude: longitude)
+                ],
+                label: "Set location"
+            )
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Location spoofing works on Simulator and Android emulators only."
+            )
+        }
+    }
+
+    func startGPXPlayback(
+        _ gpxURL: URL,
+        on device: StreamedDevice
+    ) async throws {
+        switch device.kind {
+        case .iOSSimulator:
+            try await runXcrun(
+                arguments: [
+                    "simctl", "location", device.id, "start", gpxURL.path
+                ],
+                label: "GPX playback"
+            )
+        case .androidEmulator, .androidDevice:
+            let coordinate = try Self.firstGPXCoordinate(from: gpxURL)
+            try await setLocation(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude,
+                on: device
+            )
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "GPX playback works on Simulator and Android emulators only."
+            )
+        }
+    }
+
     nonisolated static func normalizedURL(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -396,6 +662,59 @@ actor DeviceAutomationService {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    nonisolated static func androidGeoFixArguments(
+        latitude: Double,
+        longitude: Double
+    ) -> [String] {
+        [
+            "emu", "geo", "fix",
+            formattedCoordinate(longitude),
+            formattedCoordinate(latitude)
+        ]
+    }
+
+    nonisolated static func iosLocationArgument(
+        latitude: Double,
+        longitude: Double
+    ) -> String {
+        "\(formattedCoordinate(latitude)),\(formattedCoordinate(longitude))"
+    }
+
+    nonisolated static func validateCoordinate(
+        latitude: Double,
+        longitude: Double
+    ) throws {
+        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+            throw DeviceAutomationError.commandFailed(
+                "Latitude must be between -90 and 90, longitude between -180 and 180."
+            )
+        }
+    }
+
+    nonisolated static func formattedCoordinate(_ value: Double) -> String {
+        String(format: "%.6f", value)
+    }
+
+    nonisolated static func firstGPXCoordinate(from url: URL) throws -> (
+        latitude: Double,
+        longitude: Double
+    ) {
+        let data = try Data(contentsOf: url)
+        let collector = GPXFirstCoordinateParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = collector
+        // abortParsing() after the first point makes parse() return false — ignore that.
+        _ = parser.parse()
+        guard let latitude = collector.latitude,
+              let longitude = collector.longitude else {
+            throw DeviceAutomationError.commandFailed(
+                "Could not find a track point in the GPX file."
+            )
+        }
+        try validateCoordinate(latitude: latitude, longitude: longitude)
+        return (latitude, longitude)
+    }
+
     private static let androidDemoModeCommands: [[String]] = [
         [
             "shell", "am", "broadcast",
@@ -456,12 +775,14 @@ actor DeviceAutomationService {
 
     private func runXcrun(
         arguments: [String],
+        standardInput: Data? = nil,
         label: String
     ) async throws {
         let result = try await runner.run(
             executable: xcrun,
             arguments: arguments,
             environment: developerEnvironment,
+            standardInput: standardInput,
             timeout: 12
         )
         guard result.exitCode == 0 else {
@@ -475,6 +796,193 @@ actor DeviceAutomationService {
         }
     }
 
+    private func runXcrunData(
+        arguments: [String],
+        label: String
+    ) async throws -> Data {
+        let result = try await runner.runData(
+            executable: xcrun,
+            arguments: arguments,
+            environment: developerEnvironment,
+            timeout: 12
+        )
+        guard result.exitCode == 0 else {
+            throw DeviceAutomationError.commandFailed(
+                Self.cleanMessage(
+                    stdout: String(decoding: result.standardOutput, as: UTF8.self),
+                    stderr: String(decoding: result.standardError, as: UTF8.self),
+                    fallback: "\(label) failed."
+                )
+            )
+        }
+        return result.standardOutput
+    }
+
+    private func androidUserRotation(serial: String) async throws -> Int {
+        guard let adb else {
+            throw DeviceAutomationError.commandFailed("adb is not available.")
+        }
+        let result = try await runner.run(
+            executable: adb,
+            arguments: [
+                "-s", serial, "shell", "settings", "get", "system", "user_rotation"
+            ],
+            timeout: 12
+        )
+        return Int(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+            ?? 0
+    }
+
+    private func setIOSSimulatorOrientation(
+        _ orientation: DeviceOrientation,
+        device: StreamedDevice
+    ) async throws {
+        try await ensureSimulatorAccessibility()
+        let wantLandscape = orientation == .landscape
+        // Portrait vs landscape is an aspect check; one rotate flips between them
+        // (including upside-down / opposite-landscape variants).
+        guard let isLandscape = try await iosSimulatorWindowIsLandscape(device: device) else {
+            // Can't read window size (Accessibility / missing window). Only best-effort
+            // rotate when landscape is requested so we don't flip an already-portrait sim.
+            if wantLandscape {
+                try await runIOSSimulatorRotateLeft(device: device)
+            }
+            return
+        }
+        if isLandscape == wantLandscape {
+            return
+        }
+        try await runIOSSimulatorRotateLeft(device: device)
+    }
+
+    private func ensureSimulatorAccessibility() async throws {
+        let trusted = await MainActor.run {
+            AccessibilityPermission.requestTrustIfNeeded()
+        }
+        guard trusted else {
+            await MainActor.run {
+                AccessibilityPermission.openSystemSettings()
+            }
+            throw DeviceAutomationError.accessibilityRequired(
+                "Allow Viewport in System Settings → Privacy & Security → Accessibility, then try Rotate again."
+            )
+        }
+    }
+
+    private func runIOSSimulatorRotateLeft(device: StreamedDevice) async throws {
+        let escapedName = Self.appleScriptEscaped(device.name)
+        try await runAppleScript(
+            """
+            tell application "Simulator" to activate
+            delay 0.05
+            tell application "System Events"
+                tell process "Simulator"
+                    set frontmost to true
+                    \(Self.appleScriptRaiseSimulatorWindow(escapedName: escapedName))
+                    click menu item "Rotate Left" of menu "Device" of menu bar 1
+                end tell
+            end tell
+            """,
+            label: "Rotate Simulator"
+        )
+    }
+
+    /// Returns whether the Simulator window for `device` is currently landscape-shaped.
+    private func iosSimulatorWindowIsLandscape(device: StreamedDevice) async throws -> Bool? {
+        let escapedName = Self.appleScriptEscaped(device.name)
+        let output = try await runAppleScript(
+            """
+            tell application "System Events"
+                tell process "Simulator"
+                    \(Self.appleScriptResolveSimulatorWindow(escapedName: escapedName))
+                    if targetWindow is missing value then return ""
+                    set windowSize to size of targetWindow
+                    return ((item 1 of windowSize) as text) & "," & ((item 2 of windowSize) as text)
+                end tell
+            end tell
+            """,
+            label: "Query Simulator orientation"
+        )
+        let parts = output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2 else { return nil }
+        return parts[0] > parts[1]
+    }
+
+    /// Runs AppleScript in-process so Accessibility trust attaches to Viewport,
+    /// not a detached `/usr/bin/osascript` helper that never shows in the list.
+    @discardableResult
+    private func runAppleScript(_ script: String, label: String) async throws -> String {
+        let outcome: (Bool, String) = await MainActor.run {
+            let appleScript = NSAppleScript(source: script)
+            var errorInfo: NSDictionary?
+            let result = appleScript?.executeAndReturnError(&errorInfo)
+            if let errorInfo {
+                let message = [
+                    errorInfo[NSAppleScript.errorMessage] as? String,
+                    errorInfo[NSAppleScript.errorBriefMessage] as? String
+                ]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty }
+                return (false, message ?? "\(label) failed.")
+            }
+            let output = result?.stringValue ?? ""
+            return (true, output)
+        }
+
+        guard outcome.0 else {
+            if !AccessibilityPermission.isTrusted {
+                throw DeviceAutomationError.accessibilityRequired(
+                    "Allow Viewport in System Settings → Privacy & Security → Accessibility, then try Rotate again."
+                )
+            }
+            throw DeviceAutomationError.commandFailed(
+                Self.cleanMessage(
+                    stdout: "",
+                    stderr: outcome.1,
+                    fallback: "\(label) failed. Ensure Simulator is running and Accessibility is allowed for Viewport."
+                )
+            )
+        }
+        return outcome.1
+    }
+
+    nonisolated static func appleScriptEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Raises the Simulator window matching `escapedName`, falling back to the
+    /// frontmost Simulator window when title suffixes prevent an exact match.
+    nonisolated static func appleScriptRaiseSimulatorWindow(escapedName: String) -> String {
+        """
+        set matchedWindows to (every window whose name contains "\(escapedName)")
+        if (count of matchedWindows) > 0 then
+            perform action "AXRaise" of item 1 of matchedWindows
+            delay 0.05
+        else if (count of windows) > 0 then
+            perform action "AXRaise" of front window
+            delay 0.05
+        end if
+        """
+    }
+
+    /// Resolves `targetWindow` by device name, then frontmost Simulator window.
+    nonisolated static func appleScriptResolveSimulatorWindow(escapedName: String) -> String {
+        """
+        set targetWindow to missing value
+        set matchedWindows to (every window whose name contains "\(escapedName)")
+        if (count of matchedWindows) > 0 then
+            set targetWindow to item 1 of matchedWindows
+        else if (count of windows) > 0 then
+            set targetWindow to front window
+        end if
+        """
+    }
+
     nonisolated static func cleanMessage(
         stdout: String,
         stderr: String,
@@ -485,5 +993,39 @@ actor DeviceAutomationService {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         return lines.last.map { String($0) } ?? fallback
+    }
+}
+
+/// Finds the first GPX waypoint / track / route point via XML parsing.
+private final class GPXFirstCoordinateParser: NSObject, XMLParserDelegate {
+    private static let pointLocalNames: Set<String> = ["wpt", "trkpt", "rtept"]
+
+    private(set) var latitude: Double?
+    private(set) var longitude: Double?
+    private var finished = false
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        guard !finished else { return }
+        let localName = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        guard Self.pointLocalNames.contains(localName) else { return }
+
+        let latRaw = attributeDict["lat"] ?? attributeDict.first { $0.key.hasSuffix(":lat") }?.value
+        let lonRaw = attributeDict["lon"] ?? attributeDict.first { $0.key.hasSuffix(":lon") }?.value
+        guard let latRaw,
+              let lonRaw,
+              let lat = Double(latRaw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let lon = Double(lonRaw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return
+        }
+        latitude = lat
+        longitude = lon
+        finished = true
+        parser.abortParsing()
     }
 }
