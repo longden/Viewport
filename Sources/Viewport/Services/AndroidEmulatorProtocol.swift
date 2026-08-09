@@ -261,7 +261,11 @@ enum EmulatorProtobuf {
         payload.append(literalHeader(":authority", "127.0.0.1"))
         payload.append(literalHeader("content-type", "application/grpc"))
         payload.append(literalHeader("te", "trailers"))
-        payload.append(literalHeader("authorization", authorization))
+        // Emulator 37+ plain `-grpc` accepts unauthenticated localhost calls.
+        // Only attach Bearer when discovery / console auth provided a token.
+        if !authorization.isEmpty {
+            payload.append(literalHeader("authorization", authorization))
+        }
         payload.append(literalHeader("user-agent", "viewport-grpc/1.0"))
 
         var flags: UInt8 = 0x4

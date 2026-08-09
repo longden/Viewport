@@ -32,16 +32,19 @@ struct AndroidDeviceClient: DeviceClient {
     private let emulator: URL?
     private let adb: URL?
     private let sdkURL: URL
+    private let defaults: UserDefaults
 
     init(
         runner: CommandRunner = CommandRunner(),
-        toolchains: ToolchainLocator = ToolchainLocator()
+        toolchains: ToolchainLocator = ToolchainLocator(),
+        defaults: UserDefaults = .standard
     ) {
         self.runner = runner
         sdkURL = toolchains.androidSDK
         androidCLI = toolchains.androidCLI
         emulator = toolchains.androidEmulator
         adb = toolchains.adb
+        self.defaults = defaults
     }
 
     func listDevices() async throws -> [LaunchableDevice] {
@@ -61,6 +64,24 @@ struct AndroidDeviceClient: DeviceClient {
 
     func launch(_ device: LaunchableDevice) async throws {
         guard device.source == .android else { return }
+
+        let preferHeadless = defaults.object(
+            forKey: AndroidEmulatorLaunchArguments.preferHeadlessUserDefaultsKey
+        ) as? Bool ?? true
+        let runningEmulatorCount = await countRunningEmulators()
+        let emulatorArguments = AndroidEmulatorLaunchArguments.make(
+            avdName: device.id,
+            preferHeadless: preferHeadless,
+            runningEmulatorCount: runningEmulatorCount
+        )
+
+        if preferHeadless, let emulator {
+            try await runner.launchDetached(
+                executable: emulator,
+                arguments: emulatorArguments
+            )
+            return
+        }
 
         if let androidCLI {
             try await runner.launchDetached(
@@ -82,7 +103,7 @@ struct AndroidDeviceClient: DeviceClient {
 
         try await runner.launchDetached(
             executable: emulator,
-            arguments: ["-avd", device.id]
+            arguments: emulatorArguments
         )
     }
 
@@ -287,6 +308,21 @@ struct AndroidDeviceClient: DeviceClient {
             names.insert(name)
         }
         return names
+    }
+
+    private func countRunningEmulators() async -> Int {
+        guard let adb,
+              let devicesResult = try? await runner.run(
+                executable: adb,
+                arguments: ["devices"]
+              ),
+              devicesResult.exitCode == 0 else {
+            return 0
+        }
+
+        return Self.parseADBDevices(devicesResult.standardOutput)
+            .filter { $0.isOnline && $0.isEmulator }
+            .count
     }
 }
 

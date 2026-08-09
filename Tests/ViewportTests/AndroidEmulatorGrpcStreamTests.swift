@@ -92,6 +92,78 @@ final class AndroidEmulatorGrpcStreamTests: XCTestCase {
         XCTAssertEqual(values["grpc.token"], "abc/def+ghi==")
     }
 
+    func testDiscoveryWithoutTokenStillYieldsEndpoint() {
+        // Emulator 37+ plain `-grpc` publishes port but no token.
+        let values = EmulatorGrpcDiscovery.parseINI(
+            """
+            port.serial=5554
+            grpc.port=8554
+            avd.name=FlowTester Resizable 2
+            """
+        )
+        XCTAssertNil(values["grpc.token"])
+        XCTAssertEqual(values["grpc.port"], "8554")
+    }
+
+    func testHeadersFrameOmitsEmptyAuthorization() {
+        let withAuth = EmulatorProtobuf.headersFrame(
+            streamID: 1,
+            path: "/android.emulation.control.EmulatorController/streamScreenshot",
+            authorization: "Bearer secret",
+            endStream: false
+        )
+        let withoutAuth = EmulatorProtobuf.headersFrame(
+            streamID: 1,
+            path: "/android.emulation.control.EmulatorController/streamScreenshot",
+            authorization: "",
+            endStream: false
+        )
+        XCTAssertGreaterThan(withAuth.count, withoutAuth.count)
+    }
+
+    @MainActor
+    func testGrpcStartsWithoutTokenUsingMockWorker() async throws {
+        final class MockWorker: EmulatorGrpcWorking, @unchecked Sendable {
+            let onFrame: @Sendable (CGImage) -> Void
+            init(onFrame: @escaping @Sendable (CGImage) -> Void) {
+                self.onFrame = onFrame
+            }
+            func start() async throws {
+                let colorSpace = CGColorSpaceCreateDeviceRGB()
+                let context = CGContext(
+                    data: nil,
+                    width: 8,
+                    height: 8,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 32,
+                    space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                )
+                let image = context!.makeImage()!
+                onFrame(image)
+            }
+            func stop() {}
+            func sendTouch(x: Int32, y: Int32, isDown: Bool) {}
+        }
+
+        let stream = AndroidEmulatorGrpcStream(
+            endpointProvider: { _ in
+                EmulatorGrpcEndpoint(port: 8554, token: nil)
+            },
+            workerFactory: { configuration, onFrame, _ in
+                XCTAssertEqual(configuration.authorization, "")
+                XCTAssertEqual(configuration.port, 8554)
+                return MockWorker(onFrame: onFrame)
+            }
+        )
+        let started = try await stream.start(
+            serial: "emulator-5554",
+            profile: .smooth
+        ) { _ in } onFailure: { _ in }
+        XCTAssertTrue(started)
+        stream.stop()
+    }
+
     @MainActor
     func testGrpcScreenshotStreamWhenRequested() async throws {
         guard ProcessInfo.processInfo.environment[

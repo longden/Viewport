@@ -68,11 +68,10 @@ final class AndroidEmulatorGrpcStream {
         stop()
         let generation = UUID()
         self.generation = generation
-        // Modern emulators require `authorization: Bearer <grpc.token>` from the
-        // Studio/emulator discovery file. Without it, streamScreenshot returns
-        // UNAUTHENTICATED and the pane would otherwise hang on Connecting.
-        guard let endpoint = endpointProvider(serial),
-              let token = endpoint.token else {
+        // Emulator 37+ with plain `-grpc` publishes a port but no `grpc.token`
+        // (JWT is opt-in via `-grpc-use-jwt`). Require only a reachable endpoint.
+        // When a token is present (Studio / `-grpc-use-token`), send Bearer auth.
+        guard let endpoint = endpointProvider(serial) else {
             return false
         }
 
@@ -83,22 +82,28 @@ final class AndroidEmulatorGrpcStream {
         // over localhost gRPC (1080×1920×4 ≈ 8 MB/frame).
         let maxDimension = min(profile.maximumDisplayDimension ?? 1_024, 1_280)
         let firstFrame = FirstFrameGate()
+        let authorization: String
+        if let token = endpoint.token, !token.isEmpty {
+            authorization = "Bearer \(token)"
+        } else {
+            authorization = ""
+        }
         let configuration = EmulatorGrpcWorkerConfiguration(
             host: "127.0.0.1",
             port: endpoint.port,
-            authorization: "Bearer \(token)",
+            authorization: authorization,
             maxDimension: maxDimension,
             targetFPS: profile.targetFrameRate
         )
         let worker = workerFactory(configuration, { [weak self] image in
             firstFrame.fulfill()
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 guard let self, self.generation == generation else { return }
                 self.onFrame?(image)
             }
         }, { [weak self] error in
             firstFrame.fail(error)
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 guard let self,
                       self.generation == generation,
                       self.worker != nil else { return }
@@ -178,6 +183,7 @@ final class AndroidEmulatorGrpcStream {
         if let discovered = EmulatorGrpcDiscovery.endpoint(consolePort: console) {
             return discovered
         }
+        // Plain `-grpc` (no JWT / use-token) accepts localhost without a Bearer.
         return EmulatorGrpcEndpoint(port: fallbackPort, token: nil)
     }
 }
