@@ -7,6 +7,7 @@ struct WebViewerPane: View {
     var onCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     /// Composite recording squares the live web clip so it matches device panes.
     var squareContentCorners: Bool = false
+    var showNetworkOverlay: Bool = false
     @FocusState private var addressIsFocused: Bool
 
     private var contentCornerRadius: CGFloat {
@@ -23,6 +24,16 @@ struct WebViewerPane: View {
             ZStack(alignment: .bottom) {
                 viewportContent
 
+                if showNetworkOverlay {
+                    HStack {
+                        Spacer()
+                        WebNetworkOverlayPanel(model: model.networkOverlay)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(true)
+                }
+
                 if let message = model.noticeMessage ?? model.errorMessage {
                     Text(message)
                         .font(.caption)
@@ -32,6 +43,12 @@ struct WebViewerPane: View {
                         .glassEffect(.regular, in: Capsule())
                         .padding(12)
                 }
+            }
+            .onChange(of: showNetworkOverlay) { _, enabled in
+                model.networkOverlay.setEnabled(enabled)
+            }
+            .onAppear {
+                model.networkOverlay.setEnabled(showNetworkOverlay)
             }
         }
     }
