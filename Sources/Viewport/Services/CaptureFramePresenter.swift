@@ -43,17 +43,54 @@ enum LiveCaptureFrame: @unchecked Sendable {
     }
 }
 
+/// Thread-safe latest-frame slot for composite encode off the MainActor.
+final class LatestLiveFrameSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frame: LiveCaptureFrame?
+
+    func store(_ frame: LiveCaptureFrame?) {
+        lock.lock()
+        self.frame = frame
+        lock.unlock()
+    }
+
+    func load() -> LiveCaptureFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frame
+    }
+
+    func clear() {
+        store(nil)
+    }
+}
+
 @MainActor
 final class CaptureFramePresenter {
+    /// Updated on every display; readable from the encode loop without MainActor.
+    nonisolated let recordingFrameSlot = LatestLiveFrameSlot()
+
     private weak var previewView: CapturePreviewNSView?
     /// Cached CGImage for screenshots. Produced lazily from the live buffer /
     /// surface so streaming never pays for a GPU→CPU readback.
-    private var cachedSnapshot: CGImage?
-    private var latestPixelBuffer: CVPixelBuffer?
-    private var latestSurface: IOSurfaceRef?
+    // Cleared from `deinit` / `clearStoredFrames()` off the MainActor.
+    private nonisolated(unsafe) var cachedSnapshot: CGImage?
+    private nonisolated(unsafe) var latestPixelBuffer: CVPixelBuffer?
+    private nonisolated(unsafe) var latestSurface: IOSurfaceRef?
     private(set) var frameSize: CGSize?
 
     private let snapshotContext = CIContext(options: [.cacheIntermediates: false])
+
+    deinit {
+        // Release retained surfaces without hopping to MainActor.
+        cachedSnapshot = nil
+        latestPixelBuffer = nil
+        if let surface = latestSurface {
+            Unmanaged.passUnretained(surface).release()
+            latestSurface = nil
+        }
+        recordingFrameSlot.clear()
+    }
 
     var latestFrame: CGImage? {
         if let cachedSnapshot { return cachedSnapshot }
@@ -66,7 +103,7 @@ final class CaptureFramePresenter {
             return image
         }
         if let surface = latestSurface,
-           let image = CGImage.viewportImage(from: surface) {
+           let image = snapshotImage(from: surface) {
             cachedSnapshot = image
             return image
         }
@@ -108,8 +145,9 @@ final class CaptureFramePresenter {
         let size = sourceSize
             ?? CGSize(width: image.width, height: image.height)
         let changedSize = updateSize(size)
-        clearStoredFrames()
+        releaseStoredFrames()
         cachedSnapshot = image
+        publishRecordingFrame(.image(image))
         previewView?.display(image)
         return changedSize
     }
@@ -121,9 +159,10 @@ final class CaptureFramePresenter {
             height: IOSurfaceGetHeight(surface)
         )
         let changedSize = updateSize(size)
-        clearStoredFrames()
+        releaseStoredFrames()
         latestSurface = Unmanaged.passUnretained(surface).retain()
             .takeUnretainedValue()
+        publishRecordingFrame(.surface(BorrowedIOSurface(surface)))
         previewView?.display(surface: surface)
         return changedSize
     }
@@ -138,18 +177,29 @@ final class CaptureFramePresenter {
             height: CVPixelBufferGetHeight(pixelBuffer)
         )
         let changedSize = updateSize(size)
-        clearStoredFrames()
+        releaseStoredFrames()
         latestPixelBuffer = pixelBuffer
         if let surface = CVPixelBufferGetIOSurface(pixelBuffer)?
             .takeUnretainedValue() {
+            publishRecordingFrame(.surface(BorrowedIOSurface(surface)))
             previewView?.display(surface: surface)
         } else {
+            publishRecordingFrame(.pixelBuffer(pixelBuffer))
             previewView?.display(pixelBuffer: pixelBuffer)
         }
         return changedSize
     }
 
+    private func publishRecordingFrame(_ frame: LiveCaptureFrame) {
+        recordingFrameSlot.store(frame)
+    }
+
     private func clearStoredFrames() {
+        releaseStoredFrames()
+        recordingFrameSlot.clear()
+    }
+
+    private func releaseStoredFrames() {
         cachedSnapshot = nil
         latestPixelBuffer = nil
         if let surface = latestSurface {
@@ -164,10 +214,22 @@ final class CaptureFramePresenter {
         previewView?.sourceSizeDidChange()
         return size
     }
+
+    /// Prefer Core Image's IOSurface path; fall back to a CPU copy only if CI fails.
+    private func snapshotImage(from surface: IOSurfaceRef) -> CGImage? {
+        let ciImage = CIImage(ioSurface: surface)
+        if let image = snapshotContext.createCGImage(
+            ciImage,
+            from: ciImage.extent
+        ) {
+            return image
+        }
+        return CGImage.viewportImageFromCPUCopy(from: surface)
+    }
 }
 
 private extension CGImage {
-    static func viewportImage(from surface: IOSurfaceRef) -> CGImage? {
+    static func viewportImageFromCPUCopy(from surface: IOSurfaceRef) -> CGImage? {
         let width = IOSurfaceGetWidth(surface)
         let height = IOSurfaceGetHeight(surface)
         guard width > 0, height > 0 else { return nil }
