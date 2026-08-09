@@ -20,7 +20,8 @@ struct SettingsSheet: View {
             Divider()
             footer
         }
-        .frame(minWidth: 420, minHeight: 320)
+        .frame(minWidth: 560, idealWidth: 600, minHeight: 560, idealHeight: 600)
+        .presentationSizing(.form)
     }
 
     private var header: some View {
@@ -28,9 +29,9 @@ struct SettingsSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Settings")
                     .font(.title3.weight(.semibold))
-                Text("Appearance and screenshot options.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Text("Appearance, screenshots, and experimental tools.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
             }
             Spacer()
             Button("Cancel") {
@@ -79,6 +80,88 @@ struct SettingsSheet: View {
                                 .foregroundStyle(.primary)
                             Text(
                                 "Adds a caption above each pane: Web, Android, or iOS."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Section("Diagnostics") {
+                Button {
+                    workspace.setPerfHUDEnabled(!workspace.perfHUDEnabled)
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(
+                            systemName: workspace.perfHUDEnabled
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(
+                            workspace.perfHUDEnabled
+                                ? Color.accentColor
+                                : Color.secondary
+                        )
+                        .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Show FPS HUD on device panes")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(
+                                "Estimates frames per second from live capture delivery."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Section("Experiment") {
+                Button {
+                    workspace.setExperimentalFeaturesEnabled(
+                        !workspace.experimentalFeaturesEnabled
+                    )
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(
+                            systemName: workspace.experimentalFeaturesEnabled
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(
+                            workspace.experimentalFeaturesEnabled
+                                ? Color.accentColor
+                                : Color.secondary
+                        )
+                        .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(
+                                workspace.experimentalFeaturesEnabled
+                                    ? "On"
+                                    : "Off"
+                            )
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+                            Text(
+                                "Show unfinished tools under Experimental in the Device tools menu. They still need refining."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
