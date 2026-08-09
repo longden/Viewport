@@ -113,17 +113,14 @@ final class AndroidEmulatorProtocolTests: XCTestCase {
             endStream: true
         )
         let split = 7
-        let first = HTTP2FrameDecoder().push(encoded.prefix(split))
-        XCTAssertTrue(first.frames.isEmpty)
-        XCTAssertEqual(first.remainder.count, split)
+        var decoder = HTTP2FrameDecoder()
+        let first = decoder.push(Data(encoded.prefix(split)))
+        XCTAssertTrue(first.isEmpty)
 
-        let completed = HTTP2FrameDecoder().push(
-            first.remainder + encoded.dropFirst(split)
-        )
-        XCTAssertEqual(completed.frames.count, 1)
-        XCTAssertEqual(completed.frames[0].streamID, 3)
-        XCTAssertEqual(completed.frames[0].payload, Data([1, 2, 3]))
-        XCTAssertTrue(completed.remainder.isEmpty)
+        let completed = decoder.push(Data(encoded.dropFirst(split)))
+        XCTAssertEqual(completed.count, 1)
+        XCTAssertEqual(completed[0].streamID, 3)
+        XCTAssertEqual(completed[0].payload, Data([1, 2, 3]))
     }
 
     func testGrpcMessagePrefixesCompressionAndLength() {

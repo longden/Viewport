@@ -28,9 +28,14 @@ struct WebNetworkEntry: Identifiable, Equatable {
         self.transferSize = transferSize
         self.timestamp = timestamp
     }
+
+    /// Soft identity for Resource Timing merges (URL + rough start bucket).
+    var dedupeKey: String {
+        "\(method.uppercased())|\(url)|\(Int((durationMS ?? 0).rounded()))"
+    }
 }
 
-/// Web-first network overlay fed by Resource Timing + fetch hooks.
+/// Web-first network overlay fed by Resource Timing + fetch/XHR hooks.
 @MainActor
 final class WebNetworkOverlayModel: ObservableObject {
     @Published private(set) var entries: [WebNetworkEntry] = []
@@ -60,16 +65,26 @@ final class WebNetworkOverlayModel: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool) {
-        guard enabled != isEnabled else { return }
+        guard enabled != isEnabled else {
+            if enabled {
+                reapplyEnabledFlag()
+            }
+            return
+        }
         isEnabled = enabled
-        let script =
-            "window.__viewportNetworkOverlayEnabled = \(enabled ? "true" : "false");"
-        webView?.evaluateJavaScript(script, completionHandler: nil)
+        reapplyEnabledFlag()
         if !enabled {
             entries = []
         } else {
             refreshFromPerformance()
         }
+    }
+
+    /// Re-push the enabled flag after navigations reset document-start scripts.
+    func reapplyEnabledFlag() {
+        let script =
+            "window.__viewportNetworkOverlayEnabled = \(isEnabled ? "true" : "false");"
+        webView?.evaluateJavaScript(script, completionHandler: nil)
     }
 
     func clear() {
@@ -98,10 +113,7 @@ final class WebNetworkOverlayModel: ObservableObject {
             durationMS: payload["durationMS"] as? Double,
             transferSize: payload["transferSize"] as? Int
         )
-        entries.insert(entry, at: 0)
-        if entries.count > maximumEntries {
-            entries = Array(entries.prefix(maximumEntries))
-        }
+        insert(entry)
     }
 
     private func merge(_ rows: [[String: Any]]) {
@@ -116,11 +128,26 @@ final class WebNetworkOverlayModel: ObservableObject {
             )
         }
         guard !mapped.isEmpty else { return }
-        var combined = mapped + entries
+        var seen = Set(entries.map(\.dedupeKey))
+        var combined = entries
+        for entry in mapped where !seen.contains(entry.dedupeKey) {
+            seen.insert(entry.dedupeKey)
+            combined.insert(entry, at: 0)
+        }
         if combined.count > maximumEntries {
             combined = Array(combined.prefix(maximumEntries))
         }
         entries = combined
+    }
+
+    private func insert(_ entry: WebNetworkEntry) {
+        if let existing = entries.firstIndex(where: { $0.dedupeKey == entry.dedupeKey }) {
+            entries.remove(at: existing)
+        }
+        entries.insert(entry, at: 0)
+        if entries.count > maximumEntries {
+            entries = Array(entries.prefix(maximumEntries))
+        }
     }
 
     private static let performanceDumpScript = """
@@ -128,7 +155,7 @@ final class WebNetworkOverlayModel: ObservableObject {
       const entries = performance.getEntriesByType('resource').slice(-80);
       return entries.map((entry) => ({
         url: entry.name || '',
-        method: 'GET',
+        method: (entry.initiatorType === 'xmlhttprequest' ? 'XHR' : 'GET'),
         status: null,
         durationMS: entry.duration || 0,
         transferSize: entry.transferSize || 0
@@ -150,17 +177,26 @@ final class WebNetworkOverlayModel: ObservableObject {
           window.webkit.messageHandlers.viewportNetworkOverlay.postMessage(payload);
         } catch (_) {}
       };
+      const resolveRequest = (args) => {
+        let method = 'GET';
+        let url = '';
+        try {
+          const input = args[0];
+          const init = args[1];
+          if (typeof input === 'string') url = input;
+          else if (input && input.url) {
+            url = input.url;
+            if (input.method) method = input.method;
+          }
+          if (init && init.method) method = init.method;
+        } catch (_) {}
+        return { method, url };
+      };
       if (window.fetch) {
         const original = window.fetch.bind(window);
         window.fetch = async (...args) => {
           const started = performance.now();
-          let method = 'GET';
-          let url = '';
-          try {
-            if (typeof args[0] === 'string') url = args[0];
-            else if (args[0] && args[0].url) url = args[0].url;
-            if (args[1] && args[1].method) method = args[1].method;
-          } catch (_) {}
+          const { method, url } = resolveRequest(args);
           try {
             const response = await original(...args);
             post({
@@ -181,6 +217,30 @@ final class WebNetworkOverlayModel: ObservableObject {
             });
             throw error;
           }
+        };
+      }
+      if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+        const open = window.XMLHttpRequest.prototype.open;
+        const send = window.XMLHttpRequest.prototype.send;
+        window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          this.__viewportMethod = method || 'GET';
+          this.__viewportURL = typeof url === 'string' ? url : String(url || '');
+          return open.call(this, method, url, ...rest);
+        };
+        window.XMLHttpRequest.prototype.send = function(...args) {
+          const started = performance.now();
+          const method = this.__viewportMethod || 'GET';
+          const url = this.__viewportURL || '';
+          this.addEventListener('loadend', () => {
+            post({
+              url,
+              method,
+              status: this.status || 0,
+              durationMS: performance.now() - started,
+              transferSize: null
+            });
+          });
+          return send.apply(this, args);
         };
       }
     })();

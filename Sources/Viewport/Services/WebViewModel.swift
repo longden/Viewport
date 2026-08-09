@@ -142,8 +142,9 @@ final class WebViewModel: ObservableObject {
     func navigationDidFinish() {
         isLoading = false
         updateNavigationState()
-        // User scripts reset the page flag on each document; re-apply capture state.
+        // User scripts reset page flags on each document; re-apply capture state.
         consoleBridge.setEnabled(consoleCaptureEnabled, in: webView)
+        networkOverlay.reapplyEnabledFlag()
     }
 
     func navigationDidFail(_ error: Error) {

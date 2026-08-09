@@ -34,9 +34,10 @@ struct SettingsSheet: View {
                         .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Cancel") {
+            Button("Close") {
                 dismiss()
             }
+            .keyboardShortcut(.cancelAction)
         }
         .padding(16)
     }
@@ -153,15 +154,13 @@ struct SettingsSheet: View {
                         .padding(.top, 2)
 
                         VStack(alignment: .leading, spacing: 4) {
+                            Text("Experimental compare tools")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
                             Text(
                                 workspace.experimentalFeaturesEnabled
-                                    ? "On"
-                                    : "Off"
-                            )
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(.primary)
-                            Text(
-                                "Show unfinished tools under Experimental in the Device tools menu. They still need refining."
+                                    ? "On — unfinished tools appear under Experimental in Device tools."
+                                    : "Off — unfinished compare tools stay hidden. They still need refining."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)

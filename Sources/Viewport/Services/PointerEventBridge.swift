@@ -13,7 +13,9 @@ final class PointerEventBridge {
     weak var workspace: WorkspaceStore?
     weak var web: WebViewModel?
 
-    private var gestureStarts: [ViewerSource: CGPoint] = [:]
+    private var lastPoint: [ViewerSource: CGPoint] = [:]
+    /// Maps normalized pane Y delta into CSS pixels (prototype scale).
+    private let scrollScale: CGFloat = 900
 
     func install(on session: WindowCaptureSession) {
         let source = session.source
@@ -34,17 +36,27 @@ final class PointerEventBridge {
         duration: TimeInterval?
     ) {
         _ = duration
-        guard workspace?.synchronizedScrollingEnabled == true else { return }
+        guard workspace?.synchronizedScrollingEnabled == true,
+              workspace?.isVisible(.web) == true else { return }
+
         switch phase {
         case .began:
-            gestureStarts[source] = point
+            lastPoint[source] = point
         case .moved:
-            break
+            guard let previous = lastPoint[source] else {
+                lastPoint[source] = point
+                return
+            }
+            lastPoint[source] = point
+            let deltaY = (point.y - previous.y) * scrollScale
+            if abs(deltaY) > 0.5 {
+                web?.scrollBy(deltaY: deltaY)
+            }
         case .ended:
-            defer { gestureStarts[source] = nil }
-            guard let start = gestureStarts[source] else { return }
-            let deltaY = (point.y - start.y) * 900
-            if abs(deltaY) > 8 {
+            defer { lastPoint[source] = nil }
+            guard let previous = lastPoint[source] else { return }
+            let deltaY = (point.y - previous.y) * scrollScale
+            if abs(deltaY) > 0.5 {
                 web?.scrollBy(deltaY: deltaY)
             }
         }

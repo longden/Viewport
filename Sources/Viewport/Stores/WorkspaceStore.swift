@@ -119,6 +119,19 @@ final class WorkspaceStore: ObservableObject {
         lastPushPayloadJSON = defaults.string(forKey: lastPushPayloadJSONKey)
             ?? DeviceAutomationService.defaultAPNsPayloadJSON
 
+        // Experimental-gated prototypes must not stay active when the gate is off,
+        // even if older defaults left mirroring/sync flags set.
+        if !experimentalFeaturesEnabled {
+            if inputMirroringEnabled {
+                inputMirroringEnabled = false
+                defaults.set(false, forKey: inputMirroringKey)
+            }
+            if synchronizedScrollingEnabled {
+                synchronizedScrollingEnabled = false
+                defaults.set(false, forKey: synchronizedScrollingKey)
+            }
+        }
+
         androidCapture.setPerformanceProfile(performanceProfile)
         iOSCapture.setPerformanceProfile(performanceProfile)
         androidCapture.setCaptureMode(captureMode)

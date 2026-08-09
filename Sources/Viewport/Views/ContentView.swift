@@ -87,9 +87,16 @@ struct ContentView: View {
             showNetworkOverlay = false
             showOverlayDiff = false
             showBatchSnapshots = false
-            showDeviceInjector = false
+            // Injector is promoted out of Experimental; leave its sheet alone.
+            web.networkOverlay.setEnabled(false)
             workspace.setInputMirroringEnabled(false)
             workspace.setSynchronizedScrollingEnabled(false)
+        }
+        .onChange(of: showNetworkOverlay) { _, enabled in
+            // Disable even when the web pane is unmounted (no WebViewerPane onChange).
+            if !enabled {
+                web.networkOverlay.setEnabled(false)
+            }
         }
         .sheet(isPresented: $showDeviceInjector) {
             DeviceInjectorSheet(workspace: workspace, web: web)
@@ -193,196 +200,31 @@ struct ContentView: View {
 
     @ViewBuilder
     private var workspaceUtilityToolbar: some View {
-        Menu {
-                Picker(
-                    "Capture mode",
-                    selection: Binding(
-                        get: { workspace.captureMode },
-                        set: { workspace.setCaptureMode($0) }
-                    )
-                ) {
-                    ForEach(CaptureMode.allCases) { mode in
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text(mode.title)
-                                Text(mode.detail)
-                            }
-                        } icon: {
-                            Image(systemName: mode.systemImage)
-                        }
-                        .tag(mode)
-                    }
-                }
-                .disabled(recording.isRecording)
-
-                Divider()
-
-                Picker(
-                    "Streaming performance",
-                    selection: Binding(
-                        get: { workspace.performanceProfile },
-                        set: { workspace.setPerformanceProfile($0) }
-                    )
-                ) {
-                    ForEach(CapturePerformanceProfile.allCases) { profile in
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text(profile.title)
-                                Text(profile.detail)
-                            }
-                        } icon: {
-                            Image(systemName: profile.systemImage)
-                        }
-                        .tag(profile)
-                    }
-                }
-
-                Divider()
-
-                Picker(
-                    "Recording quality",
-                    selection: Binding(
-                        get: { workspace.recordingQuality },
-                        set: { workspace.setRecordingQuality($0) }
-                    )
-                ) {
-                    ForEach(RecordingQuality.allCases) { quality in
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text(quality.title)
-                                Text(quality.detail)
-                            }
-                        } icon: {
-                            Image(systemName: quality.systemImage)
-                        }
-                        .tag(quality)
-                    }
-                }
-                .disabled(recording.isRecording)
-
-                if workspace.captureMode == .classic {
-                    Divider()
-
-                    if workspace.highFrameRateCaptureAvailable {
-                        Label(
-                            "Fast window capture enabled",
-                            systemImage: "checkmark.circle"
-                        )
-                    } else {
-                        Button {
-                            workspace.requestHighFrameRateCapture()
-                        } label: {
-                            Label(
-                                "Enable fast Simulator capture…",
-                                systemImage: "rectangle.inset.filled.and.person.filled"
-                            )
-                        }
-                        .help(
-                            "If Screen Recording already lists Viewport, toggle it off and on after a rebuild, then return here."
-                        )
-                    }
-                }
-
-                Divider()
-
-                Toggle("Developer logs", isOn: $showDeveloperLogs)
-
-                Divider()
-
-                Button {
-                    exportBugReport()
-                } label: {
-                    Label(
-                        isExportingBugReport
-                            ? "Preparing bug report…"
-                            : "Report a bug…",
-                        systemImage: "ladybug"
-                    )
-                }
-                .disabled(
-                    isExportingBugReport
-                        || isTakingScreenshot
-                        || recording.isRecording
-                )
-
-                Button("Settings…") {
-                    showSettings = true
-                }
-        } label: {
-            Label("Settings", systemImage: "gearshape")
-        }
-        .help("Viewport settings")
-
-        DeviceToolsMenu(
+        WorkspaceUtilityToolbar(
             workspace: workspace,
-            showInjector: $showDeviceInjector,
+            recording: recording,
+            showDeveloperLogs: $showDeveloperLogs,
+            showSettings: $showSettings,
+            showHelp: $showHelp,
+            showDeviceInjector: $showDeviceInjector,
             showNetworkOverlay: $showNetworkOverlay,
             showOverlayDiff: $showOverlayDiff,
-            showBatchSnapshots: $showBatchSnapshots
+            showBatchSnapshots: $showBatchSnapshots,
+            isExportingBugReport: isExportingBugReport,
+            isTakingScreenshot: isTakingScreenshot,
+            onExportBugReport: exportBugReport
         )
-
-        Button {
-            showHelp = true
-        } label: {
-            Label("Help", systemImage: "questionmark.circle")
-        }
-        .help("Check Android setup and create an emulator")
     }
 
     private var workspaceActionToolbar: some View {
-        ControlGroup {
-            Button {
-                refreshAll()
-            } label: {
-                Label(
-                    "Refresh all clients",
-                    systemImage: "arrow.clockwise"
-                )
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 24, minHeight: 24)
-                .contentShape(Rectangle())
-            }
-            .help("Refresh all clients (⇧⌘R)")
-
-            Button {
-                takeCombinedScreenshot()
-            } label: {
-                Group {
-                    if isTakingScreenshot {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label(
-                            "Combined screenshot",
-                            systemImage: "camera.viewfinder"
-                        )
-                    }
-                }
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 24, minHeight: 24)
-                .contentShape(Rectangle())
-            }
-            .disabled(isTakingScreenshot || recording.isRecording)
-            .help("Save all visible clients in one row")
-
-            Button {
-                toggleRecording()
-            } label: {
-                Label(
-                    recording.isRecording ? "Stop recording" : "Record",
-                    systemImage: recording.isRecording
-                        ? "stop.circle.fill"
-                        : "record.circle"
-                )
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 24, minHeight: 24)
-                .contentShape(Rectangle())
-                .foregroundStyle(recording.isRecording ? .red : .primary)
-            }
-            .help(recordingHelp)
-        }
-        .controlSize(.regular)
-        .fixedSize()
+        WorkspaceActionToolbar(
+            recording: recording,
+            isTakingScreenshot: isTakingScreenshot,
+            recordingHelp: recordingHelp,
+            onRefresh: refreshAll,
+            onCombinedScreenshot: takeCombinedScreenshot,
+            onToggleRecording: toggleRecording
+        )
     }
 
     @ViewBuilder

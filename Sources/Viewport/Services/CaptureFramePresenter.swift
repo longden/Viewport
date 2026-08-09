@@ -147,7 +147,14 @@ final class CaptureFramePresenter {
         let changedSize = updateSize(size)
         releaseStoredFrames()
         cachedSnapshot = image
-        publishRecordingFrame(.image(image))
+        // Prefer a pixel buffer for composite recording so gRPC/CPU paths
+        // don't force the encoder to keep decoding CGImage every tick.
+        if let buffer = Self.makePixelBuffer(from: image) {
+            latestPixelBuffer = buffer
+            publishRecordingFrame(.pixelBuffer(buffer))
+        } else {
+            publishRecordingFrame(.image(image))
+        }
         previewView?.display(image)
         return changedSize
     }
@@ -225,6 +232,48 @@ final class CaptureFramePresenter {
             return image
         }
         return CGImage.viewportImageFromCPUCopy(from: surface)
+    }
+
+    /// BGRA pixel buffer for composite recording when only a CGImage is available
+    /// (e.g. emulator gRPC path).
+    private static func makePixelBuffer(from image: CGImage) -> CVPixelBuffer? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+
+        var buffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as CFDictionary,
+                kCVPixelBufferMetalCompatibilityKey as String: true
+            ] as CFDictionary,
+            &buffer
+        )
+        guard status == kCVReturnSuccess, let buffer else { return nil }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue
+                | CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else {
+            return nil
+        }
+        context.draw(
+            image,
+            in: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        return buffer
     }
 }
 

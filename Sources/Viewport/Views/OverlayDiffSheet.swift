@@ -28,10 +28,23 @@ struct OverlayDiffSheet: View {
             footer
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 520, idealHeight: 580)
+        .onChange(of: baseSource) { _, newValue in
+            if newValue == overlaySource {
+                overlaySource = ViewerSource.allCases.first { $0 != newValue } ?? .iOS
+            }
+        }
+        .onChange(of: overlaySource) { _, newValue in
+            if newValue == baseSource {
+                baseSource = ViewerSource.allCases.first { $0 != newValue } ?? .android
+            }
+        }
         .task(id: captureIdentity) {
             await capturePanes()
         }
-        .task(id: opacity) {
+        .task(id: Int((opacity * 100).rounded())) {
+            // Debounce slider rebuilds to whole-percent steps.
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
             await composePreview()
         }
     }
@@ -57,6 +70,12 @@ struct OverlayDiffSheet: View {
             HStack(spacing: 16) {
                 sourcePicker("Base", selection: $baseSource)
                 sourcePicker("Overlay", selection: $overlaySource)
+            }
+
+            if baseSource == overlaySource {
+                Text("Base and overlay must be different panes.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -109,7 +128,7 @@ struct OverlayDiffSheet: View {
             Button("Save PNG…") {
                 Task { await savePreview() }
             }
-            .disabled(preview == nil || isBusy)
+            .disabled(preview == nil || isBusy || baseSource == overlaySource)
             .keyboardShortcut(.defaultAction)
         }
         .padding(16)
@@ -130,6 +149,11 @@ struct OverlayDiffSheet: View {
 
     @MainActor
     private func capturePanes() async {
+        guard baseSource != overlaySource else {
+            errorMessage = "Base and overlay must be different panes."
+            preview = nil
+            return
+        }
         isBusy = true
         errorMessage = nil
         defer { isBusy = false }
