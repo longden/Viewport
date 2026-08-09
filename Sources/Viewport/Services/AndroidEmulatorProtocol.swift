@@ -1,6 +1,73 @@
 import CoreGraphics
 import Foundation
 
+/// gRPC length-prefixed message buffer that advances a read index instead of
+/// shifting the front of `Data` on every consume. Compacts only after the
+/// consumed prefix exceeds a threshold (64KB or half the buffer).
+struct GrpcMessageBuffer {
+    private var storage = Data()
+    private(set) var consumed = 0
+    private let compactionThreshold: Int
+
+    init(compactionThreshold: Int = 64 * 1_024) {
+        self.compactionThreshold = max(compactionThreshold, 1)
+    }
+
+    var count: Int { storage.count - consumed }
+
+    mutating func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        storage.append(data)
+    }
+
+    enum ConsumeError: Error, Equatable {
+        case compressedUnsupported
+        case invalidLength
+    }
+
+    /// Drains every complete uncompressed gRPC message currently buffered.
+    mutating func consumeMessages() throws -> [Data] {
+        var messages: [Data] = []
+        while count >= 5 {
+            let base = storage.startIndex + consumed
+            let compressed = storage[base]
+            let length = Int(storage[base + 1]) << 24
+                | Int(storage[base + 2]) << 16
+                | Int(storage[base + 3]) << 8
+                | Int(storage[base + 4])
+            guard compressed == 0 else {
+                throw ConsumeError.compressedUnsupported
+            }
+            guard length >= 0, length < 32 * 1_024 * 1_024 else {
+                throw ConsumeError.invalidLength
+            }
+            guard count >= 5 + length else { break }
+            let messageStart = base + 5
+            messages.append(
+                storage.subdata(in: messageStart..<(messageStart + length))
+            )
+            consumed += 5 + length
+            compactIfNeeded()
+        }
+        return messages
+    }
+
+    mutating func reset() {
+        storage.removeAll(keepingCapacity: false)
+        consumed = 0
+    }
+
+    private mutating func compactIfNeeded() {
+        guard consumed > 0 else { return }
+        let halfBuffer = storage.count / 2
+        guard consumed >= compactionThreshold || consumed >= halfBuffer else {
+            return
+        }
+        storage.removeSubrange(storage.startIndex..<(storage.startIndex + consumed))
+        consumed = 0
+    }
+}
+
 struct HTTP2Frame {
     enum FrameType: UInt8 {
         case data = 0
