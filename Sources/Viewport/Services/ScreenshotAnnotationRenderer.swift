@@ -49,8 +49,9 @@ struct ScreenshotAnnotation: Identifiable, Equatable {
 enum ScreenshotAnnotationRenderer {
     static let arrowLineWidth: CGFloat = 4
     static let boxLineWidth: CGFloat = 4
-    static let redactFillAlpha: CGFloat = 0.72
-    static let redactStrokeAlpha: CGFloat = 0.35
+    static let arrowHeadLength: CGFloat = 18
+    /// Large mosaic blocks so redaction is obviously unreadable.
+    static let redactBlockSize: CGFloat = 18
 
     static func render(
         _ image: CGImage,
@@ -82,7 +83,12 @@ enum ScreenshotAnnotationRenderer {
             case .box:
                 drawBox(from: start, to: end, in: context)
             case .redact:
-                redactRegion(from: start, to: end, in: context)
+                pixelateRegion(
+                    from: start,
+                    to: end,
+                    source: image,
+                    in: context
+                )
             }
         }
 
@@ -92,7 +98,33 @@ enum ScreenshotAnnotationRenderer {
         return result
     }
 
-    private static func denormalize(
+    /// Tip, left wing, right wing, and where the shaft should stop (base of tip).
+    static func arrowGeometry(from start: CGPoint, to end: CGPoint) -> (
+        tip: CGPoint,
+        left: CGPoint,
+        right: CGPoint,
+        shaftEnd: CGPoint
+    ) {
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let head = arrowHeadLength
+        let left = CGPoint(
+            x: end.x - head * cos(angle - .pi / 6),
+            y: end.y - head * sin(angle - .pi / 6)
+        )
+        let right = CGPoint(
+            x: end.x - head * cos(angle + .pi / 6),
+            y: end.y - head * sin(angle + .pi / 6)
+        )
+        // Stop the shaft at the triangle base so it doesn't poke through the tip.
+        let inset = head * cos(.pi / 6)
+        let shaftEnd = CGPoint(
+            x: end.x - inset * cos(angle),
+            y: end.y - inset * sin(angle)
+        )
+        return (end, left, right, shaftEnd)
+    }
+
+    static func denormalize(
         _ point: CGPoint,
         width: Int,
         height: Int
@@ -103,33 +135,101 @@ enum ScreenshotAnnotationRenderer {
         )
     }
 
+    /// Bottom-left CG coords → pixel crop rect (top-left image space).
+    static func pixelCropRect(
+        from start: CGPoint,
+        to end: CGPoint,
+        imageWidth: Int,
+        imageHeight: Int
+    ) -> CGRect {
+        let minX = min(start.x, end.x)
+        let maxX = max(start.x, end.x)
+        let minY = min(start.y, end.y)
+        let maxY = max(start.y, end.y)
+        let topLeftY = CGFloat(imageHeight) - maxY
+        return CGRect(
+            x: floor(minX),
+            y: floor(topLeftY),
+            width: max(ceil(maxX - minX), 1),
+            height: max(ceil(maxY - minY), 1)
+        ).integral.intersection(
+            CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight)
+        )
+    }
+
+    static func pixelatedImage(
+        from source: CGImage,
+        cropRect: CGRect,
+        blockSize: CGFloat = redactBlockSize
+    ) -> CGImage? {
+        guard cropRect.width >= 1, cropRect.height >= 1,
+              let cropped = source.cropping(to: cropRect) else {
+            return nil
+        }
+
+        let block = max(blockSize, 8)
+        let tinyWidth = max(1, Int((cropRect.width / block).rounded(.down)))
+        let tinyHeight = max(1, Int((cropRect.height / block).rounded(.down)))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let tinyContext = CGContext(
+            data: nil,
+            width: tinyWidth,
+            height: tinyHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        tinyContext.interpolationQuality = .none
+        tinyContext.draw(
+            cropped,
+            in: CGRect(x: 0, y: 0, width: tinyWidth, height: tinyHeight)
+        )
+        guard let tiny = tinyContext.makeImage() else { return nil }
+
+        let outWidth = max(Int(cropRect.width.rounded(.up)), 1)
+        let outHeight = max(Int(cropRect.height.rounded(.up)), 1)
+        guard let outContext = CGContext(
+            data: nil,
+            width: outWidth,
+            height: outHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        outContext.interpolationQuality = .none
+        outContext.draw(
+            tiny,
+            in: CGRect(x: 0, y: 0, width: outWidth, height: outHeight)
+        )
+        return outContext.makeImage()
+    }
+
     private static func drawArrow(
         from start: CGPoint,
         to end: CGPoint,
         in context: CGContext
     ) {
+        let geometry = arrowGeometry(from: start, to: end)
         context.saveGState()
         context.setStrokeColor(NSColor.systemRed.cgColor)
         context.setFillColor(NSColor.systemRed.cgColor)
         context.setLineWidth(arrowLineWidth)
         context.setLineCap(.round)
         context.move(to: start)
-        context.addLine(to: end)
+        context.addLine(to: geometry.shaftEnd)
         context.strokePath()
 
-        let angle = atan2(end.y - start.y, end.x - start.x)
-        let head: CGFloat = 18
-        let left = CGPoint(
-            x: end.x - head * cos(angle - .pi / 6),
-            y: end.y - head * sin(angle - .pi / 6)
-        )
-        let right = CGPoint(
-            x: end.x - head * cos(angle + .pi / 6),
-            y: end.y - head * sin(angle + .pi / 6)
-        )
-        context.move(to: end)
-        context.addLine(to: left)
-        context.addLine(to: right)
+        context.move(to: geometry.tip)
+        context.addLine(to: geometry.left)
+        context.addLine(to: geometry.right)
         context.closePath()
         context.fillPath()
         context.restoreGState()
@@ -153,27 +253,33 @@ enum ScreenshotAnnotationRenderer {
         context.restoreGState()
     }
 
-    private static func redactRegion(
+    private static func pixelateRegion(
         from start: CGPoint,
         to end: CGPoint,
+        source: CGImage,
         in context: CGContext
     ) {
-        let rect = CGRect(
+        let drawRect = CGRect(
             x: min(start.x, end.x),
             y: min(start.y, end.y),
             width: max(abs(end.x - start.x), 1),
             height: max(abs(end.y - start.y), 1)
         )
+        let crop = pixelCropRect(
+            from: start,
+            to: end,
+            imageWidth: source.width,
+            imageHeight: source.height
+        )
         context.saveGState()
-        context.setFillColor(
-            NSColor.black.withAlphaComponent(redactFillAlpha).cgColor
-        )
-        context.fill(rect)
-        context.setStrokeColor(
-            NSColor.white.withAlphaComponent(redactStrokeAlpha).cgColor
-        )
-        context.setLineWidth(1)
-        context.stroke(rect)
+        if crop.width >= 1, crop.height >= 1,
+           let mosaic = pixelatedImage(from: source, cropRect: crop) {
+            context.interpolationQuality = .none
+            context.draw(mosaic, in: drawRect)
+        } else {
+            context.setFillColor(NSColor.black.cgColor)
+            context.fill(drawRect)
+        }
         context.restoreGState()
     }
 }

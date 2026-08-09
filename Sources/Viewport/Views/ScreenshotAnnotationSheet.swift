@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 
 struct ScreenshotAnnotationSheet: View {
-    let image: CGImage
+    let panes: [ScreenshotPaneCapture]
+    var labelsEnabledByDefault: Bool = true
     var onSaved: (URL) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -13,16 +14,31 @@ struct ScreenshotAnnotationSheet: View {
     @State private var errorMessage: String?
     @State private var isSaving = false
     @State private var didSave = false
+    @State private var labeledPaneIDs: Set<UUID> = []
+    @State private var composedImage: CGImage?
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if panes.count > 1 || !panes.isEmpty {
+                labelToggles
+                Divider()
+            }
             canvas
             Divider()
             footer
         }
-        .frame(minWidth: 720, idealWidth: 820, minHeight: 560, idealHeight: 620)
+        .frame(minWidth: 720, idealWidth: 860, minHeight: 600, idealHeight: 660)
+        .onAppear {
+            if labelsEnabledByDefault {
+                labeledPaneIDs = Set(panes.map(\.id))
+            }
+            rebuildComposite()
+        }
+        .onChange(of: labeledPaneIDs) { _, _ in
+            rebuildComposite()
+        }
     }
 
     private var header: some View {
@@ -30,7 +46,7 @@ struct ScreenshotAnnotationSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Annotate screenshot")
                     .font(.title3.weight(.semibold))
-                Text("Draw arrows, boxes, or redaction regions, then save.")
+                Text("Draw arrows, boxes, or pixelate redaction regions, then save.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -59,24 +75,52 @@ struct ScreenshotAnnotationSheet: View {
         .padding(16)
     }
 
+    private var labelToggles: some View {
+        HStack(spacing: 14) {
+            Text("Labels")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(panes) { pane in
+                Toggle(isOn: binding(for: pane.id)) {
+                    Text(pane.label)
+                        .font(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
     private var canvas: some View {
         GeometryReader { proxy in
-            let fitted = fittedImageSize(in: proxy.size)
+            let image = composedImage
+            let fitted = image.map { fittedImageSize(for: $0, in: proxy.size) }
+                ?? .zero
             ZStack {
                 Color.black.opacity(0.88)
-                Image(
-                    nsImage: NSImage(
-                        cgImage: image,
-                        size: NSSize(width: image.width, height: image.height)
+                if let image, fitted.width > 0 {
+                    Image(
+                        nsImage: NSImage(
+                            cgImage: image,
+                            size: NSSize(
+                                width: image.width,
+                                height: image.height
+                            )
+                        )
                     )
-                )
-                .resizable()
-                .interpolation(.high)
-                .frame(width: fitted.width, height: fitted.height)
-
-                annotationOverlay(size: fitted)
+                    .resizable()
+                    .interpolation(.high)
                     .frame(width: fitted.width, height: fitted.height)
-                    .gesture(dragGesture(in: fitted))
+
+                    annotationOverlay(size: fitted, baseImage: image)
+                        .frame(width: fitted.width, height: fitted.height)
+                        .gesture(dragGesture(in: fitted))
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
@@ -119,11 +163,42 @@ struct ScreenshotAnnotationSheet: View {
         .padding(16)
     }
 
+    private func binding(for paneID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { labeledPaneIDs.contains(paneID) },
+            set: { isOn in
+                if isOn {
+                    labeledPaneIDs.insert(paneID)
+                } else {
+                    labeledPaneIDs.remove(paneID)
+                }
+            }
+        )
+    }
+
+    private func rebuildComposite() {
+        do {
+            composedImage = try WorkspaceScreenshotService().compose(
+                panes,
+                labeledPaneIDs: labeledPaneIDs,
+                reserveLabelBand: true
+            )
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     @ViewBuilder
-    private func annotationOverlay(size: CGSize) -> some View {
+    private func annotationOverlay(size: CGSize, baseImage: CGImage) -> some View {
         Canvas { context, _ in
             for annotation in annotations {
-                draw(annotation, in: context, size: size)
+                draw(
+                    annotation,
+                    in: context,
+                    size: size,
+                    baseImage: baseImage
+                )
             }
             if let draftStart, let draftEnd {
                 draw(
@@ -133,7 +208,8 @@ struct ScreenshotAnnotationSheet: View {
                         end: draftEnd
                     ),
                     in: context,
-                    size: size
+                    size: size,
+                    baseImage: baseImage
                 )
             }
         }
@@ -144,7 +220,8 @@ struct ScreenshotAnnotationSheet: View {
     private func draw(
         _ annotation: ScreenshotAnnotation,
         in context: GraphicsContext,
-        size: CGSize
+        size: CGSize,
+        baseImage: CGImage
     ) {
         let start = CGPoint(
             x: annotation.start.x * size.width,
@@ -156,31 +233,22 @@ struct ScreenshotAnnotationSheet: View {
         )
         switch annotation.kind {
         case .arrow:
-            var path = Path()
-            path.move(to: start)
-            path.addLine(to: end)
+            let geometry = ScreenshotAnnotationRenderer.arrowGeometry(
+                from: start,
+                to: end
+            )
+            var shaft = Path()
+            shaft.move(to: start)
+            shaft.addLine(to: geometry.shaftEnd)
             context.stroke(
-                path,
+                shaft,
                 with: .color(.red),
                 lineWidth: ScreenshotAnnotationRenderer.arrowLineWidth
             )
-            // Match export arrowhead for WYSIWYG preview.
-            let angle = atan2(end.y - start.y, end.x - start.x)
-            let head: CGFloat = 18
             var headPath = Path()
-            headPath.move(to: end)
-            headPath.addLine(
-                to: CGPoint(
-                    x: end.x - head * cos(angle - .pi / 6),
-                    y: end.y - head * sin(angle - .pi / 6)
-                )
-            )
-            headPath.addLine(
-                to: CGPoint(
-                    x: end.x - head * cos(angle + .pi / 6),
-                    y: end.y - head * sin(angle + .pi / 6)
-                )
-            )
+            headPath.move(to: geometry.tip)
+            headPath.addLine(to: geometry.left)
+            headPath.addLine(to: geometry.right)
             headPath.closeSubpath()
             context.fill(headPath, with: .color(.red))
         case .box:
@@ -202,19 +270,42 @@ struct ScreenshotAnnotationSheet: View {
                 width: abs(end.x - start.x),
                 height: abs(end.y - start.y)
             )
-            context.fill(
-                Path(rect),
-                with: .color(
-                    .black.opacity(ScreenshotAnnotationRenderer.redactFillAlpha)
+            let imageStart = ScreenshotAnnotationRenderer.denormalize(
+                annotation.start,
+                width: baseImage.width,
+                height: baseImage.height
+            )
+            let imageEnd = ScreenshotAnnotationRenderer.denormalize(
+                annotation.end,
+                width: baseImage.width,
+                height: baseImage.height
+            )
+            let crop = ScreenshotAnnotationRenderer.pixelCropRect(
+                from: imageStart,
+                to: imageEnd,
+                imageWidth: baseImage.width,
+                imageHeight: baseImage.height
+            )
+            if crop.width >= 1, crop.height >= 1,
+               let mosaic = ScreenshotAnnotationRenderer.pixelatedImage(
+                from: baseImage,
+                cropRect: crop
+               ) {
+                context.draw(
+                    Image(
+                        nsImage: NSImage(
+                            cgImage: mosaic,
+                            size: NSSize(
+                                width: mosaic.width,
+                                height: mosaic.height
+                            )
+                        )
+                    ),
+                    in: rect
                 )
-            )
-            context.stroke(
-                Path(rect),
-                with: .color(
-                    .white.opacity(ScreenshotAnnotationRenderer.redactStrokeAlpha)
-                ),
-                lineWidth: 1
-            )
+            } else {
+                context.fill(Path(rect), with: .color(.black))
+            }
         }
     }
 
@@ -244,7 +335,7 @@ struct ScreenshotAnnotationSheet: View {
         )
     }
 
-    private func fittedImageSize(in container: CGSize) -> CGSize {
+    private func fittedImageSize(for image: CGImage, in container: CGSize) -> CGSize {
         let imageSize = CGSize(width: image.width, height: image.height)
         let scale = min(
             container.width / max(imageSize.width, 1),
@@ -268,14 +359,17 @@ struct ScreenshotAnnotationSheet: View {
         isSaving = true
         errorMessage = nil
         do {
+            guard let base = composedImage else {
+                throw WorkspaceScreenshotError.imageCreationFailed
+            }
             let output: CGImage
             if annotated, !annotations.isEmpty {
                 output = try ScreenshotAnnotationRenderer.render(
-                    image,
+                    base,
                     annotations: annotations
                 )
             } else {
-                output = image
+                output = base
             }
             let preferredName = WorkspaceScreenshotNaming.filename()
                 .replacingOccurrences(
