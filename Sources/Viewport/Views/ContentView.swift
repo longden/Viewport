@@ -544,6 +544,6 @@ private struct DeveloperConsoleResizeHandle: View {
                     .frame(width: 42, height: isHovered ? 2 : 1)
             }
             .onHover { isHovered = $0 }
-            .help("Drag to resize developer logs")
+            .help("Drag to resize device logs")
     }
 }
