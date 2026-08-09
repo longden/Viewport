@@ -70,6 +70,23 @@ final class WorkspaceRecordingService: ObservableObject {
         webCaptureTarget = target
     }
 
+    deinit {
+        elapsedTask?.cancel()
+        elapsedTask = nil
+        writer?.cancel()
+        compositeEngine?.cancel()
+        let stream = self.stream
+        self.stream = nil
+        streamOutput = nil
+        if let temporaryURL {
+            try? FileManager.default.removeItem(at: temporaryURL)
+        }
+        guard let stream else { return }
+        Task {
+            try? await stream.stopCapture()
+        }
+    }
+
     func start(
         web: WebViewModel,
         workspace: WorkspaceStore
