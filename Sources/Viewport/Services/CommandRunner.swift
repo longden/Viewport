@@ -74,6 +74,10 @@ actor CommandRunner {
         }
     }
 
+    /// Launches a process that intentionally outlives this runner / the app.
+    /// Used for emulator boots (`emulator @AVD`) so the guest keeps running after
+    /// Viewport exits. The returned `Process` is not retained; ownership is
+    /// orphaned by design — do not treat a missing `terminate()` as a leak.
     func launchDetached(
         executable: URL,
         arguments: [String],

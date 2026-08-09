@@ -19,6 +19,10 @@ final class ScrcpyDeviceStream {
     private nonisolated(unsafe) var adb: URL?
     private nonisolated(unsafe) var serial: String?
 
+    deinit {
+        stop()
+    }
+
     var isAvailable: Bool {
         ScrcpyInstallation.locate() != nil
     }

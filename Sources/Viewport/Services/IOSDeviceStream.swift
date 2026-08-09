@@ -19,6 +19,10 @@ final class IOSDeviceStream: NSObject {
     private nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
+    deinit {
+        stop()
+    }
+
     func start(
         deviceID: String,
         profile: CapturePerformanceProfile,

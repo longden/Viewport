@@ -83,6 +83,18 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
         self.stream = stream
     }
 
+    deinit {
+        // SCStream stop is async; schedule cleanup without awaiting in deinit.
+        let stream = self.stream
+        self.stream = nil
+        output = nil
+        onFrame = nil
+        guard let stream else { return }
+        Task {
+            try? await stream.stopCapture()
+        }
+    }
+
     func stop() async {
         let stream = self.stream
         self.stream = nil

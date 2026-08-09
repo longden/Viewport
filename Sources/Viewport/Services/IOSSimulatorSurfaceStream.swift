@@ -20,6 +20,10 @@ final class IOSSimulatorSurfaceStream {
     private nonisolated(unsafe) var onFrame: ((IOSurfaceRef) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
+    deinit {
+        stop()
+    }
+
     var isAvailable: Bool {
         ViewportHIDLoadFrameworks()
     }
