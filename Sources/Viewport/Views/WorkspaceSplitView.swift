@@ -7,6 +7,7 @@ struct WorkspaceSplitView: View {
     var onPaneScreenshot: ((ViewerSource) -> Void)?
     var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     var squareWebContentCorners: Bool = false
+    var showNetworkOverlay: Bool = false
     @State private var dragState: DividerDragState?
     @State private var transientPaneWidths: [ViewerSource: CGFloat]?
 
@@ -185,7 +186,8 @@ struct WorkspaceSplitView: View {
                     { handler(.web) }
                 },
                 onCaptureTargetChange: onWebCaptureTargetChange,
-                squareContentCorners: squareWebContentCorners
+                squareContentCorners: squareWebContentCorners,
+                showNetworkOverlay: showNetworkOverlay
             )
         case .android:
             CaptureViewerPane(
@@ -193,7 +195,8 @@ struct WorkspaceSplitView: View {
                 deviceManager: workspace.androidDevices,
                 onScreenshot: onPaneScreenshot.map { handler in
                     { handler(.android) }
-                }
+                },
+                showPerfHUD: workspace.perfHUDEnabled
             )
         case .iOS:
             CaptureViewerPane(
@@ -201,7 +204,8 @@ struct WorkspaceSplitView: View {
                 deviceManager: workspace.iOSDevices,
                 onScreenshot: onPaneScreenshot.map { handler in
                     { handler(.iOS) }
-                }
+                },
+                showPerfHUD: workspace.perfHUDEnabled
             )
         }
     }

@@ -49,6 +49,7 @@ struct SourceVisibilityControls: View {
         }
         .controlSize(.regular)
         .fixedSize()
+        .padding(.trailing, 10)
         .accessibilityLabel("Visible sources")
     }
 }
