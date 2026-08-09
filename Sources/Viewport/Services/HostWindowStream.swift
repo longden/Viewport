@@ -1,5 +1,4 @@
 import AppKit
-import CoreImage
 import CoreMedia
 import CoreVideo
 import ScreenCaptureKit
@@ -7,13 +6,12 @@ import ScreenCaptureKit
 @MainActor
 final class HostWindowStream: NSObject {
     private let sampleQueue: DispatchQueue
-    nonisolated private let frameConverter = StreamFrameConverter()
     nonisolated private let frameDelivery =
         LatestValueDelivery<HostWindowFrameInput>()
 
     // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
     private nonisolated(unsafe) var activeStream: SCStream?
-    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
 
     override init() {
@@ -22,6 +20,10 @@ final class HostWindowStream: NSObject {
             qos: .userInteractive
         )
         super.init()
+    }
+
+    deinit {
+        stop()
     }
 
     var isAvailable: Bool {
@@ -33,7 +35,7 @@ final class HostWindowStream: NSObject {
         deviceName: String,
         profile: CapturePerformanceProfile,
         contentAspect: CGSize? = nil,
-        onFrame: @escaping (CGImage) -> Void,
+        onFrame: @escaping (CVPixelBuffer) -> Void,
         onFailure: @escaping (Error) -> Void
     ) async throws -> Bool {
         await stopAndWait()
@@ -80,7 +82,7 @@ final class HostWindowStream: NSObject {
             value: 1,
             timescale: CMTimeScale(profile.hostWindowFrameRate)
         )
-        configuration.queueDepth = 2
+        configuration.queueDepth = 4
         configuration.showsCursor = false
         configuration.capturesAudio = false
 
@@ -182,13 +184,10 @@ extension HostWindowStream: SCStreamOutput, SCStreamDelegate {
 
         frameDelivery.submit(
             HostWindowFrameInput(stream: stream, pixelBuffer: pixelBuffer)
-        ) { [weak self, frameConverter] input in
-            guard let image = frameConverter.image(from: input.pixelBuffer) else {
-                return
-            }
+        ) { [weak self] input in
             Task { @MainActor [weak self] in
                 guard let self, self.activeStream === input.stream else { return }
-                self.onFrame?(image)
+                self.onFrame?(input.pixelBuffer)
             }
         }
     }
@@ -202,17 +201,6 @@ extension HostWindowStream: SCStreamOutput, SCStreamDelegate {
             self.onFailure = nil
             onFailure?(error)
         }
-    }
-}
-
-private final class StreamFrameConverter: @unchecked Sendable {
-    private let context = CIContext(options: [
-        .cacheIntermediates: false
-    ])
-
-    func image(from pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        return context.createCGImage(image, from: image.extent)
     }
 }
 
