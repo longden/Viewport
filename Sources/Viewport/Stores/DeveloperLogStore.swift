@@ -306,7 +306,7 @@ final class DeveloperLogStore: ObservableObject {
             }
         }
         if lines.isEmpty {
-            return "(no log lines captured — enable Developer logs before reproducing)"
+            return "(no log lines captured — enable Device logs before reproducing)"
         }
         return lines.joined(separator: "\n")
     }

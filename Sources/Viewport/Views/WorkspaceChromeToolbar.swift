@@ -108,7 +108,13 @@ struct WorkspaceUtilityToolbar: View {
 
             Divider()
 
-            Toggle("Developer logs", isOn: $showDeveloperLogs)
+            Picker(
+                "Device logs",
+                selection: $showDeveloperLogs
+            ) {
+                Text("On").tag(true)
+                Text("Off").tag(false)
+            }
 
             Divider()
 
