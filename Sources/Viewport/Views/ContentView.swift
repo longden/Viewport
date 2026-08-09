@@ -9,13 +9,19 @@ struct ContentView: View {
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
     @StateObject private var recording = WorkspaceRecordingService()
+    @State private var pointerBridge = PointerEventBridge()
     @State private var isTakingScreenshot = false
+    @State private var isExportingBugReport = false
     @State private var exportError: String?
     @State private var exportErrorTitle = "Export Failed"
     @State private var savedExportURL: URL?
     @State private var showHelp = false
     @State private var showSettings = false
     @State private var showDeviceInjector = false
+    @State private var showOverlayDiff = false
+    @State private var showBatchSnapshots = false
+    @State private var showNetworkOverlay = false
+    @State private var annotationItem: AnnotatableScreenshot?
     @AppStorage("developerLogsVisible") private var showDeveloperLogs = false
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.system.rawValue
     @State private var dismissExportTask: Task<Void, Never>?
@@ -76,8 +82,28 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsSheet(workspace: workspace)
         }
+        .onChange(of: workspace.experimentalFeaturesEnabled) { _, isEnabled in
+            guard !isEnabled else { return }
+            showNetworkOverlay = false
+            showOverlayDiff = false
+            showBatchSnapshots = false
+            showDeviceInjector = false
+            workspace.setInputMirroringEnabled(false)
+            workspace.setSynchronizedScrollingEnabled(false)
+        }
         .sheet(isPresented: $showDeviceInjector) {
             DeviceInjectorSheet(workspace: workspace, web: web)
+        }
+        .sheet(isPresented: $showOverlayDiff) {
+            OverlayDiffSheet(workspace: workspace, web: web)
+        }
+        .sheet(isPresented: $showBatchSnapshots) {
+            BatchURLSnapshotSheet(workspace: workspace, web: web)
+        }
+        .sheet(item: $annotationItem) { item in
+            ScreenshotAnnotationSheet(image: item.image) { url in
+                presentExportToast(url)
+            }
         }
         .alert(
             exportErrorTitle,
@@ -103,6 +129,7 @@ struct ContentView: View {
         .task {
             workspace.refreshAll()
             syncLogStreams()
+            installPointerEventSinks()
         }
         .onDisappear {
             dismissExportTask?.cancel()
@@ -262,6 +289,22 @@ struct ContentView: View {
 
                 Divider()
 
+                Button {
+                    exportBugReport()
+                } label: {
+                    Label(
+                        isExportingBugReport
+                            ? "Preparing bug report…"
+                            : "Report a bug…",
+                        systemImage: "ladybug"
+                    )
+                }
+                .disabled(
+                    isExportingBugReport
+                        || isTakingScreenshot
+                        || recording.isRecording
+                )
+
                 Button("Settings…") {
                     showSettings = true
                 }
@@ -272,7 +315,10 @@ struct ContentView: View {
 
         DeviceToolsMenu(
             workspace: workspace,
-            showInjector: $showDeviceInjector
+            showInjector: $showDeviceInjector,
+            showNetworkOverlay: $showNetworkOverlay,
+            showOverlayDiff: $showOverlayDiff,
+            showBatchSnapshots: $showBatchSnapshots
         )
 
         Button {
@@ -361,7 +407,8 @@ struct ContentView: View {
             onWebCaptureTargetChange: { target in
                 recording.updateWebCaptureTarget(target)
             },
-            squareWebContentCorners: recording.squareWebContentCorners
+            squareWebContentCorners: recording.squareWebContentCorners,
+            showNetworkOverlay: showNetworkOverlay
         )
         .background {
             WorkspaceRecordingAnchor { target in
@@ -421,9 +468,7 @@ struct ContentView: View {
                     workspace: workspace,
                     includePlatformLabels: workspace.screenshotPlatformLabelsEnabled
                 )
-                if let url = try service.saveCombined(image) {
-                    presentExportToast(url)
-                }
+                annotationItem = AnnotatableScreenshot(image: image)
             } catch {
                 presentExportError(
                     title: "Screenshot Failed",
@@ -432,6 +477,37 @@ struct ContentView: View {
             }
             isTakingScreenshot = false
         }
+    }
+
+    private func exportBugReport() {
+        guard !isExportingBugReport else { return }
+        isExportingBugReport = true
+        exportError = nil
+        Task { @MainActor in
+            do {
+                if let url = try await BugReportService().export(
+                    web: web,
+                    workspace: workspace,
+                    logs: developerLogs,
+                    includePlatformLabels: workspace.screenshotPlatformLabelsEnabled
+                ) {
+                    presentExportToast(url)
+                }
+            } catch {
+                presentExportError(
+                    title: "Bug Report Failed",
+                    message: error.localizedDescription
+                )
+            }
+            isExportingBugReport = false
+        }
+    }
+
+    private func installPointerEventSinks() {
+        pointerBridge.workspace = workspace
+        pointerBridge.web = web
+        pointerBridge.install(on: workspace.androidCapture)
+        pointerBridge.install(on: workspace.iOSCapture)
     }
 
     private func takePaneScreenshot(_ source: ViewerSource) {
@@ -514,6 +590,11 @@ struct ContentView: View {
         dismissExportTask = nil
         savedExportURL = nil
     }
+}
+
+private struct AnnotatableScreenshot: Identifiable {
+    let id = UUID()
+    let image: CGImage
 }
 
 private struct ResizableDeveloperConsoleLayout<
