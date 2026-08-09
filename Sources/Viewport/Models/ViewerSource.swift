@@ -1,6 +1,6 @@
 import Foundation
 
-enum ViewerSource: String, CaseIterable, Identifiable {
+enum ViewerSource: String, CaseIterable, Identifiable, Codable {
     case web
     case android
     case iOS

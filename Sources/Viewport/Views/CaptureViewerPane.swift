@@ -1,24 +1,50 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
     @ObservedObject var deviceManager: DeviceManager
+    @ObservedObject var workspace: WorkspaceStore
+    var paneID: UUID?
+    var paneTitleSuffix: String?
+    var isClosable: Bool = false
     var onScreenshot: (() -> Void)?
     var showPerfHUD: Bool = false
+    var showDeviceBezels: Bool = false
     @State private var showCreateEmulator = false
+    @State private var showCloseConfirm = false
     @State private var isDropTargeted = false
     @State private var installBanner: PackageInstallBanner?
     @State private var installTask: Task<Void, Never>?
     @State private var dismissBannerTask: Task<Void, Never>?
+    @State private var automationStatus: AutomationStatusMessage?
 
     var body: some View {
-        ViewerPane(source: session.source) {
+        ViewerPane(
+            source: session.source,
+            titleSuffix: paneTitleSuffix,
+            onClose: isClosable ? { showCloseConfirm = true } : nil
+        ) {
             sourcePicker
         } content: {
             ZStack {
                 if session.phase == .live {
                     Color.primary.opacity(0.035)
                     CapturePreviewView(session: session)
+                        .padding(showDeviceBezels ? 12 : 0)
+                        .background {
+                            if showDeviceBezels {
+                                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                    .fill(Color(white: 0.12))
+                                    .padding(-2)
+                            }
+                        }
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: showDeviceBezels ? 22 : 0,
+                                style: .continuous
+                            )
+                        )
 
                     if session.capturedFrameSize == nil {
                         waitingForFrameOverlay
@@ -56,25 +82,71 @@ struct CaptureViewerPane: View {
                     packageDropOverlay
                 }
 
-                if let installBanner {
-                    VStack {
+                VStack {
+                    if let installBanner {
                         packageInstallBanner(installBanner)
-                        Spacer()
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    .padding(12)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    Spacer(minLength: 0)
+                    if let automationStatus {
+                        automationStatusBanner(automationStatus)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
+                .padding(12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
             .animation(.snappy(duration: 0.2), value: installBanner)
+            .animation(.snappy(duration: 0.2), value: automationStatus)
             .dropDestination(for: URL.self) { urls, _ in
                 handleDroppedPackages(urls)
             } isTargeted: { targeted in
                 isDropTargeted = targeted
             }
+            .onTapGesture {
+                workspace.focusedCaptureSource = session.source
+                workspace.focusedCapturePaneID = paneID
+            }
+            .onPasteCommand(of: [.plainText]) { providers in
+                guard let provider = providers.first else { return }
+                provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { item, _ in
+                    let text: String?
+                    if let data = item as? Data {
+                        text = String(data: data, encoding: .utf8)
+                    } else {
+                        text = item as? String
+                    }
+                    guard let text,
+                          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        return
+                    }
+                    Task { @MainActor in
+                        workspace.focusedCaptureSource = session.source
+                        workspace.focusedCapturePaneID = paneID
+                        do {
+                            try await workspace.pasteClipboard(text, to: session.source)
+                        } catch {
+                            presentAutomationError(error)
+                        }
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showCreateEmulator) {
             CreateAndroidEmulatorSheet(manager: deviceManager)
+        }
+        .alert("Remove this pane?", isPresented: $showCloseConfirm) {
+            Button("Remove", role: .destructive) {
+                if let paneID {
+                    _ = workspace.removePane(id: paneID)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This closes the live view and shuts down the emulator or Simulator shown in this pane."
+            )
         }
         .onDisappear {
             installTask?.cancel()
@@ -85,66 +157,138 @@ struct CaptureViewerPane: View {
 
     @ViewBuilder
     private var sourcePicker: some View {
-        HStack(spacing: 8) {
-            if session.availableDevices.isEmpty {
-                Text("No running \(session.source.detail.lowercased())")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Picker(
-                    "Device",
-                    selection: Binding(
-                        get: { session.selectedDeviceID },
-                        set: { id in
-                            if let id {
-                                session.selectDevice(id)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if session.availableDevices.isEmpty {
+                    Text("No running \(session.source.detail.lowercased())")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker(
+                        "Device",
+                        selection: Binding(
+                            get: { session.selectedDeviceID },
+                            set: { id in
+                                if let id {
+                                    session.selectDevice(id)
+                                }
                             }
+                        )
+                    ) {
+                        ForEach(session.availableDevices) { device in
+                            Text(devicePickerLabel(for: device))
+                                .tag(Optional(device.id))
                         }
-                    )
-                ) {
-                    ForEach(session.availableDevices) { device in
-                        Text(devicePickerLabel(for: device))
-                            .tag(Optional(device.id))
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize(horizontal: true, vertical: false)
 
-                Spacer(minLength: 0)
+                Button {
+                    session.refreshWindows()
+                } label: {
+                    Label("Refresh devices", systemImage: "arrow.clockwise")
+                }
+                .labelStyle(.iconOnly)
+                .help("Refresh devices")
+
+                Button {
+                    onScreenshot?()
+                } label: {
+                    Label("Screenshot", systemImage: "camera")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(!canTakeScreenshot)
+                .help(
+                    canTakeScreenshot
+                        ? "Save this \(session.source.title) pane"
+                        : "Nothing to capture yet"
+                )
+
+                Button {
+                    rotateDevice()
+                } label: {
+                    Label("Rotate", systemImage: "rotate.right")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(session.selectedDevice == nil)
+                .help("Rotate the selected device")
+
+                DeviceLauncherMenu(
+                    manager: deviceManager,
+                    onCreateEmulator: deviceManager.supportsCreatingEmulators
+                        ? { showCreateEmulator = true }
+                        : nil,
+                    onLaunch: { device in
+                        workspace.launch(device, into: session)
+                    }
+                )
             }
-
-            Button {
-                session.refreshWindows()
-            } label: {
-                Label("Refresh devices", systemImage: "arrow.clockwise")
-            }
-            .labelStyle(.iconOnly)
-            .help("Refresh devices")
-
-            Button {
-                onScreenshot?()
-            } label: {
-                Label("Screenshot", systemImage: "camera")
-            }
-            .labelStyle(.iconOnly)
-            .disabled(!canTakeScreenshot)
-            .help(
-                canTakeScreenshot
-                    ? "Save this \(session.source.title) pane"
-                    : "Nothing to capture yet"
-            )
-
-            DeviceLauncherMenu(
-                manager: deviceManager,
-                onCreateEmulator: deviceManager.supportsCreatingEmulators
-                    ? { showCreateEmulator = true }
-                    : nil
-            )
+            .controlSize(.small)
         }
-        .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func rotateDevice() {
+        workspace.focusedCaptureSource = session.source
+        workspace.focusedCapturePaneID = paneID
+        automationStatus = nil
+        Task {
+            do {
+                try await workspace.rotateFocusedDevice()
+            } catch {
+                presentAutomationError(error)
+            }
+        }
+    }
+
+    private func presentAutomationError(_ error: Error) {
+        let accessibility = (error as? DeviceAutomationError)?.isAccessibilityRequired == true
+        automationStatus = AutomationStatusMessage(
+            text: error.localizedDescription,
+            showsAccessibilitySettings: accessibility
+        )
+    }
+
+    @ViewBuilder
+    private func automationStatusBanner(
+        _ status: AutomationStatusMessage
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: status.showsAccessibilitySettings
+                ? "hand.raised.fill"
+                : "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(status.text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if status.showsAccessibilitySettings {
+                Button("Settings") {
+                    AccessibilityPermission.openSystemSettings()
+                }
+                .controlSize(.small)
+            }
+
+            Button {
+                automationStatus = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: RoundedRectangle(
+            cornerRadius: 12,
+            style: .continuous
+        ))
     }
 
     private var canTakeScreenshot: Bool {
@@ -200,7 +344,10 @@ struct CaptureViewerPane: View {
                     compact: false,
                     onCreateEmulator: deviceManager.supportsCreatingEmulators
                         ? { showCreateEmulator = true }
-                        : nil
+                        : nil,
+                    onLaunch: { device in
+                        workspace.launch(device, into: session)
+                    }
                 )
             }
         }
@@ -208,10 +355,11 @@ struct CaptureViewerPane: View {
     }
 
     private var isLoadingState: Bool {
-        if case .launching = deviceManager.phase {
+        if session.pendingLaunchName != nil {
             return true
         }
-        if case .creating = deviceManager.phase {
+        // Creating an AVD is global; only show it on panes that are not live yet.
+        if case .creating = deviceManager.phase, session.phase != .live {
             return true
         }
         switch session.phase {
@@ -232,11 +380,11 @@ struct CaptureViewerPane: View {
     }
 
     private var emptyStateTitle: String {
+        if let pendingLaunchName = session.pendingLaunchName {
+            return "Starting \(pendingLaunchName)"
+        }
         if case let .creating(name) = deviceManager.phase {
             return "Creating \(name)"
-        }
-        if case let .launching(name) = deviceManager.phase {
-            return "Starting \(name)"
         }
 
         return switch session.phase {
@@ -256,12 +404,12 @@ struct CaptureViewerPane: View {
             return message
         }
 
-        if case .creating = deviceManager.phase {
-            return "This can take a minute the first time packages are downloaded."
+        if session.pendingLaunchName != nil {
+            return "The live view will connect when the device finishes booting."
         }
 
-        if case .launching = deviceManager.phase {
-            return "The live view will connect when the device finishes booting."
+        if case .creating = deviceManager.phase {
+            return "This can take a minute the first time packages are downloaded."
         }
 
         return switch session.phase {
@@ -442,6 +590,11 @@ struct CaptureViewerPane: View {
             }
         }
     }
+}
+
+private struct AutomationStatusMessage: Equatable {
+    let text: String
+    let showsAccessibilitySettings: Bool
 }
 
 private enum PackageInstallBanner: Equatable {

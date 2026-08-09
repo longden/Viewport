@@ -23,7 +23,7 @@ struct SourceVisibilityButton: View {
                 : Color.secondary
         )
         .disabled(
-            workspace.visibleSources.count == 1
+            workspace.orderedVisiblePanes.count == 1
                 && workspace.isVisible(source)
         )
         .help(
@@ -39,16 +39,53 @@ struct SourceVisibilityControls: View {
     @ObservedObject var workspace: WorkspaceStore
 
     var body: some View {
-        ControlGroup {
-            ForEach(ViewerSource.allCases) { source in
-                SourceVisibilityButton(
-                    workspace: workspace,
-                    source: source
-                )
+        HStack(spacing: 6) {
+            ControlGroup {
+                ForEach(ViewerSource.allCases) { source in
+                    SourceVisibilityButton(
+                        workspace: workspace,
+                        source: source
+                    )
+                }
             }
+            .controlSize(.regular)
+            .fixedSize()
+
+            Menu {
+                Section("Add pane") {
+                    Button("Add Android pane") {
+                        _ = workspace.addPane(.android)
+                    }
+                    .disabled(!workspace.canAddPane(.android))
+
+                    Button("Add iOS pane") {
+                        _ = workspace.addPane(.iOS)
+                    }
+                    .disabled(!workspace.canAddPane(.iOS))
+                }
+
+                Section("Remove extra") {
+                    Button("Remove extra Android pane") {
+                        _ = workspace.removeExtraPane(.android)
+                    }
+                    .disabled(workspace.paneCount(of: .android) < 2)
+
+                    Button("Remove extra iOS pane") {
+                        _ = workspace.removeExtraPane(.iOS)
+                    }
+                    .disabled(workspace.paneCount(of: .iOS) < 2)
+                }
+            } label: {
+                Label("Panes", systemImage: "rectangle.split.3x1")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 24, minHeight: 24)
+                    .contentShape(Rectangle())
+            }
+            .help(
+                "Add a second Android or iOS pane (max \(PaneGridLayout.maximumPaneCount) panes)"
+            )
+            .accessibilityLabel("Manage panes")
         }
-        .controlSize(.regular)
-        .fixedSize()
         .padding(.trailing, 10)
         .accessibilityLabel("Visible sources")
     }

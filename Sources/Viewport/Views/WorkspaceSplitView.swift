@@ -9,47 +9,54 @@ struct WorkspaceSplitView: View {
     var squareWebContentCorners: Bool = false
     var showNetworkOverlay: Bool = false
     @State private var dragState: DividerDragState?
-    @State private var transientPaneWidths: [ViewerSource: CGFloat]?
+    @State private var transientPaneWidths: [UUID: CGFloat]?
 
     private let minimumPaneWidth: CGFloat = 190
     private let dividerWidth: CGFloat = 12
 
     var body: some View {
         GeometryReader { proxy in
-            let sources = workspace.orderedVisibleSources
+            let panes = workspace.orderedVisiblePanes
             let contentWidth = max(
                 proxy.size.width
-                    - dividerWidth * CGFloat(max(sources.count - 1, 0)),
+                    - dividerWidth * CGFloat(max(panes.count - 1, 0)),
                 1
             )
             let persistedWidths = paneWidths(
-                for: sources,
+                for: panes,
                 availableWidth: contentWidth
             )
             let widths = transientPaneWidths ?? persistedWidths
 
             HStack(spacing: 0) {
-                ForEach(Array(sources.enumerated()), id: \.element) {
-                    index, source in
-                    pane(for: source)
-                        .frame(width: widths[source])
+                ForEach(Array(panes.enumerated()), id: \.element.id) {
+                    index, node in
+                    pane(for: node)
+                        .frame(width: widths[node.id])
                         .frame(maxHeight: .infinity)
-                        .id(source)
+                        .clipped()
+                        .id(node.id)
 
-                    if index < sources.count - 1 {
+                    if index < panes.count - 1 {
                         PaneResizeHandle()
                             .frame(width: dividerWidth)
                             .gesture(
                                 resizeGesture(
-                                    leading: source,
-                                    trailing: sources[index + 1],
+                                    leading: node,
+                                    trailing: panes[index + 1],
                                     widths: widths
                                 )
                             )
                     }
                 }
             }
-            .onChange(of: sources) {
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height,
+                alignment: .topLeading
+            )
+            .clipped()
+            .onChange(of: panes.map(\.id)) {
                 dragState = nil
                 transientPaneWidths = nil
             }
@@ -57,72 +64,71 @@ struct WorkspaceSplitView: View {
     }
 
     private func paneWidths(
-        for sources: [ViewerSource],
+        for panes: [PaneGridNode],
         availableWidth: CGFloat
-    ) -> [ViewerSource: CGFloat] {
-        guard !sources.isEmpty else { return [:] }
+    ) -> [UUID: CGFloat] {
+        guard !panes.isEmpty else { return [:] }
 
-        let totalWeight = sources.reduce(0) {
-            $0 + workspace.paneWeight(for: $1)
-        }
-        let unconstrained = Dictionary(uniqueKeysWithValues: sources.map {
-            source in
+        let totalWeight = panes.reduce(0) { $0 + $1.weight }
+        let unconstrained = Dictionary(uniqueKeysWithValues: panes.map {
+            node in
             (
-                source,
-                availableWidth
-                    * CGFloat(workspace.paneWeight(for: source) / totalWeight)
+                node.id,
+                availableWidth * CGFloat(node.weight / totalWeight)
             )
         })
 
-        guard availableWidth >= minimumPaneWidth * CGFloat(sources.count) else {
-            let equalWidth = availableWidth / CGFloat(sources.count)
-            return Dictionary(uniqueKeysWithValues: sources.map {
-                ($0, equalWidth)
+        guard availableWidth >= minimumPaneWidth * CGFloat(panes.count) else {
+            let equalWidth = availableWidth / CGFloat(panes.count)
+            return Dictionary(uniqueKeysWithValues: panes.map {
+                ($0.id, equalWidth)
             })
         }
 
         var widths = unconstrained
-        var flexibleSources = Set(sources)
+        var flexibleIDs = Set(panes.map(\.id))
         var remainingWidth = availableWidth
         var remainingWeight = totalWeight
+        let weightByID = Dictionary(uniqueKeysWithValues: panes.map {
+            ($0.id, $0.weight)
+        })
 
-        while let undersized = flexibleSources.first(where: {
-            source in
+        while let undersized = flexibleIDs.first(where: { id in
             remainingWidth
-                * CGFloat(workspace.paneWeight(for: source) / remainingWeight)
+                * CGFloat((weightByID[id] ?? 1) / remainingWeight)
                 < minimumPaneWidth
         }) {
             widths[undersized] = minimumPaneWidth
-            flexibleSources.remove(undersized)
+            flexibleIDs.remove(undersized)
             remainingWidth -= minimumPaneWidth
-            remainingWeight -= workspace.paneWeight(for: undersized)
+            remainingWeight -= weightByID[undersized] ?? 1
         }
 
-        for source in flexibleSources {
-            widths[source] = remainingWidth
-                * CGFloat(workspace.paneWeight(for: source) / remainingWeight)
+        for id in flexibleIDs {
+            widths[id] = remainingWidth
+                * CGFloat((weightByID[id] ?? 1) / remainingWeight)
         }
         return widths
     }
 
     private func resizeGesture(
-        leading: ViewerSource,
-        trailing: ViewerSource,
-        widths: [ViewerSource: CGFloat]
+        leading: PaneGridNode,
+        trailing: PaneGridNode,
+        widths: [UUID: CGFloat]
     ) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 let state: DividerDragState
                 if let dragState,
-                   dragState.leading == leading,
-                   dragState.trailing == trailing {
+                   dragState.leadingID == leading.id,
+                   dragState.trailingID == trailing.id {
                     state = dragState
                 } else {
                     state = DividerDragState(
-                        leading: leading,
-                        trailing: trailing,
-                        leadingWidth: widths[leading] ?? minimumPaneWidth,
-                        trailingWidth: widths[trailing] ?? minimumPaneWidth
+                        leadingID: leading.id,
+                        trailingID: trailing.id,
+                        leadingWidth: widths[leading.id] ?? minimumPaneWidth,
+                        trailingWidth: widths[trailing.id] ?? minimumPaneWidth
                     )
                     dragState = state
                     transientPaneWidths = widths
@@ -137,8 +143,8 @@ struct WorkspaceSplitView: View {
                     combinedWidth - minimumPaneWidth
                 )
                 var updatedWidths = transientPaneWidths ?? widths
-                updatedWidths[leading] = leadingWidth
-                updatedWidths[trailing] = combinedWidth - leadingWidth
+                updatedWidths[leading.id] = leadingWidth
+                updatedWidths[trailing.id] = combinedWidth - leadingWidth
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
@@ -151,18 +157,18 @@ struct WorkspaceSplitView: View {
                     return
                 }
                 let widths = transientPaneWidths ?? widths
-                let leadingWidth = widths[state.leading] ?? state.leadingWidth
-                let trailingWidth = widths[state.trailing] ?? state.trailingWidth
+                let leadingWidth = widths[state.leadingID] ?? state.leadingWidth
+                let trailingWidth = widths[state.trailingID] ?? state.trailingWidth
                 let combinedWidth = max(leadingWidth + trailingWidth, 1)
-                let combinedWeight = workspace.paneWeight(for: state.leading)
-                    + workspace.paneWeight(for: state.trailing)
+                let combinedWeight = workspace.paneWeight(forPaneID: state.leadingID)
+                    + workspace.paneWeight(forPaneID: state.trailingID)
                 let leadingWeight = combinedWeight
                     * Double(leadingWidth / combinedWidth)
 
                 workspace.resizePanes(
-                    leading: state.leading,
+                    leadingID: state.leadingID,
                     leadingWeight: leadingWeight,
-                    trailing: state.trailing,
+                    trailingID: state.trailingID,
                     trailingWeight: combinedWeight - leadingWeight,
                     persist: true
                 )
@@ -176,8 +182,8 @@ struct WorkspaceSplitView: View {
     }
 
     @ViewBuilder
-    private func pane(for source: ViewerSource) -> some View {
-        switch source {
+    private func pane(for node: PaneGridNode) -> some View {
+        switch node.viewerSource {
         case .web:
             WebViewerPane(
                 model: web,
@@ -189,31 +195,33 @@ struct WorkspaceSplitView: View {
                 squareContentCorners: squareWebContentCorners,
                 showNetworkOverlay: showNetworkOverlay
             )
-        case .android:
-            CaptureViewerPane(
-                session: workspace.androidCapture,
-                deviceManager: workspace.androidDevices,
-                onScreenshot: onPaneScreenshot.map { handler in
-                    { handler(.android) }
-                },
-                showPerfHUD: workspace.perfHUDEnabled
-            )
-        case .iOS:
-            CaptureViewerPane(
-                session: workspace.iOSCapture,
-                deviceManager: workspace.iOSDevices,
-                onScreenshot: onPaneScreenshot.map { handler in
-                    { handler(.iOS) }
-                },
-                showPerfHUD: workspace.perfHUDEnabled
-            )
+        case .android, .iOS:
+            if let session = workspace.captureSession(for: node) {
+                CaptureViewerPane(
+                    session: session,
+                    deviceManager: node.viewerSource == .android
+                        ? workspace.androidDevices
+                        : workspace.iOSDevices,
+                    workspace: workspace,
+                    paneID: node.id,
+                    paneTitleSuffix: node.slot >= 1 ? " \(node.slot + 1)" : nil,
+                    isClosable: node.slot >= 1,
+                    onScreenshot: onPaneScreenshot.map { handler in
+                        { handler(node.viewerSource ?? .android) }
+                    },
+                    showPerfHUD: workspace.perfHUDEnabled,
+                    showDeviceBezels: workspace.deviceBezelsEnabled
+                )
+            }
+        case .none:
+            EmptyView()
         }
     }
 }
 
 private struct DividerDragState {
-    let leading: ViewerSource
-    let trailing: ViewerSource
+    let leadingID: UUID
+    let trailingID: UUID
     let leadingWidth: CGFloat
     let trailingWidth: CGFloat
 }

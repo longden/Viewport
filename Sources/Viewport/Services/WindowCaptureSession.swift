@@ -64,6 +64,8 @@ final class WindowCaptureSession: ObservableObject {
     @Published private(set) var capturedFrameSize: CGSize?
     @Published private(set) var transport: CaptureTransport = .direct
     @Published private(set) var framesPerSecond: Double = 0
+    /// When set, this pane is waiting for a freshly launched emulator/Simulator.
+    @Published private(set) var pendingLaunchName: String?
 
     private let frameClient: DeviceFrameClient
     private let hostWindowStream: HostWindowStream
@@ -83,10 +85,13 @@ final class WindowCaptureSession: ObservableObject {
     private var captureMode: CaptureMode = .direct
     private var usesHostWindowStream = false
     private var activePointer: ActivePointer?
-    /// When set, pointer gestures are also forwarded to this session using the
-    /// same normalized coordinates. Must not form a cycle that re-mirrors.
-    weak var mirrorTarget: WindowCaptureSession?
+    /// Pointer gestures are forwarded to these sessions using the same
+    /// normalized coordinates. Receivers set `isMirroringInput` so they do not
+    /// re-fan-out (avoids mirror cycles).
+    private var mirrorTargetBoxes: [WeakCaptureSessionBox] = []
     private var isMirroringInput = false
+    /// Device IDs already claimed by sibling panes; preferred auto-select skips these.
+    var deviceIDsOccupiedBySiblingPanes: () -> Set<String> = { [] }
     /// Optional sink for sync-scroll prototypes.
     var pointerEventSink: ((PointerEventPhase, CGPoint, TimeInterval?) -> Void)?
     private let simulatorSurfaceStream: IOSSimulatorSurfaceStream?
@@ -213,7 +218,7 @@ final class WindowCaptureSession: ObservableObject {
         let generation = UUID()
         refreshGeneration = generation
         if phase != .live {
-            phase = .searching
+            phase = pendingLaunchName == nil ? .searching : .connecting
         }
 
         refreshTask = Task { [weak self] in
@@ -227,15 +232,20 @@ final class WindowCaptureSession: ObservableObject {
 
                 let previousSelection = selectedDeviceID
                 availableDevices = devices
-                guard let selected = devices.first(where: {
-                    $0.id == previousSelection
-                }) ?? devices.first else {
+                let occupied = deviceIDsOccupiedBySiblingPanes()
+                let selected = preferredDevice(
+                    in: devices,
+                    previousSelection: previousSelection,
+                    occupied: occupied
+                )
+                guard let selected else {
                     selectedDeviceID = nil
                     stopCapture()
-                    phase = .noWindow
+                    phase = pendingLaunchName == nil ? .noWindow : .connecting
                     return
                 }
 
+                pendingLaunchName = nil
                 // Always re-run the capture strategy chain (Direct → … → ADB)
                 // so refresh recovers from sticky fallbacks like screencap
                 // polling after scrcpy/gRPC failed mid-session.
@@ -257,6 +267,58 @@ final class WindowCaptureSession: ObservableObject {
                 phase = .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// Clears any current stream and shows a loading empty state until a free
+    /// device appears for this pane (used when Play starts an emulator here).
+    func prepareForPendingLaunch(named name: String) {
+        pendingLaunchName = name
+        selectedDeviceID = nil
+        stopCapture()
+        phase = .connecting
+    }
+
+    func clearPendingLaunch() {
+        pendingLaunchName = nil
+    }
+
+    func clearSelection() {
+        pendingLaunchName = nil
+        selectedDeviceID = nil
+        stopCapture()
+        phase = .idle
+    }
+
+    /// True when reconnect-after-launch should refresh this session.
+    var needsLaunchReconnect: Bool {
+        if pendingLaunchName != nil {
+            return true
+        }
+        switch phase {
+        case .searching, .connecting, .noWindow, .idle:
+            return true
+        case .live, .failed:
+            return false
+        }
+    }
+
+    private func preferredDevice(
+        in devices: [StreamedDevice],
+        previousSelection: String?,
+        occupied: Set<String>
+    ) -> StreamedDevice? {
+        if let previousSelection,
+           let match = devices.first(where: { $0.id == previousSelection }) {
+            return match
+        }
+
+        // Never auto-clone a sibling pane's device — that caused the brief
+        // duplicate when a second pane was waiting for a new emulator.
+        if let free = devices.first(where: { !occupied.contains($0.id) }) {
+            return free
+        }
+
+        return nil
     }
 
     func selectDevice(_ id: String) {
@@ -464,25 +526,51 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
+    func setMirrorTargets(_ sessions: [WindowCaptureSession]) {
+        let ownDeviceID = selectedDeviceID
+        mirrorTargetBoxes = sessions
+            .filter { target in
+                guard target !== self else { return false }
+                // Never double-dispatch to the same physical device.
+                if let ownDeviceID,
+                   let otherID = target.selectedDeviceID,
+                   ownDeviceID == otherID {
+                    return false
+                }
+                return true
+            }
+            .map(WeakCaptureSessionBox.init)
+    }
+
+    private var liveMirrorTargets: [WindowCaptureSession] {
+        mirrorTargetBoxes.compactMap(\.session)
+    }
+
     private func forwardMirrorBegin(at point: CGPoint) {
-        guard let mirrorTarget, !isMirroringInput else { return }
-        mirrorTarget.isMirroringInput = true
-        mirrorTarget.beginPointer(at: point)
-        mirrorTarget.isMirroringInput = false
+        guard !isMirroringInput else { return }
+        for target in liveMirrorTargets {
+            target.isMirroringInput = true
+            target.beginPointer(at: point)
+            target.isMirroringInput = false
+        }
     }
 
     private func forwardMirrorMove(to point: CGPoint) {
-        guard let mirrorTarget, !isMirroringInput else { return }
-        mirrorTarget.isMirroringInput = true
-        mirrorTarget.movePointer(to: point)
-        mirrorTarget.isMirroringInput = false
+        guard !isMirroringInput else { return }
+        for target in liveMirrorTargets {
+            target.isMirroringInput = true
+            target.movePointer(to: point)
+            target.isMirroringInput = false
+        }
     }
 
     private func forwardMirrorEnd(at point: CGPoint, duration: TimeInterval) {
-        guard let mirrorTarget, !isMirroringInput else { return }
-        mirrorTarget.isMirroringInput = true
-        mirrorTarget.endPointer(at: point, duration: duration)
-        mirrorTarget.isMirroringInput = false
+        guard !isMirroringInput else { return }
+        for target in liveMirrorTargets {
+            target.isMirroringInput = true
+            target.endPointer(at: point, duration: duration)
+            target.isMirroringInput = false
+        }
     }
 
     func performGesture(
@@ -1039,5 +1127,13 @@ private final class DecodedFrame: @unchecked Sendable {
             width: sourceWidth ?? CGFloat(image.width),
             height: sourceHeight ?? CGFloat(image.height)
         )
+    }
+}
+
+private final class WeakCaptureSessionBox {
+    weak var session: WindowCaptureSession?
+
+    init(_ session: WindowCaptureSession) {
+        self.session = session
     }
 }

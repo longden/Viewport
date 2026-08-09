@@ -8,9 +8,12 @@ struct WorkspaceUtilityToolbar: View {
     @Binding var showSettings: Bool
     @Binding var showHelp: Bool
     @Binding var showDeviceInjector: Bool
+    @Binding var showLocation: Bool
     @Binding var showNetworkOverlay: Bool
     @Binding var showOverlayDiff: Bool
     @Binding var showBatchSnapshots: Bool
+    @Binding var showInteractionMacros: Bool
+    @Binding var showBuildPlay: Bool
     var isExportingBugReport: Bool
     var isTakingScreenshot: Bool
     var onExportBugReport: () -> Void
@@ -143,9 +146,12 @@ struct WorkspaceUtilityToolbar: View {
         DeviceToolsMenu(
             workspace: workspace,
             showInjector: $showDeviceInjector,
+            showLocation: $showLocation,
             showNetworkOverlay: $showNetworkOverlay,
             showOverlayDiff: $showOverlayDiff,
-            showBatchSnapshots: $showBatchSnapshots
+            showBatchSnapshots: $showBatchSnapshots,
+            showInteractionMacros: $showInteractionMacros,
+            showBuildPlay: $showBuildPlay
         )
 
         Button {

@@ -288,6 +288,7 @@ struct CapturePreviewView: NSViewRepresentable {
     func updateNSView(_ nsView: CapturePreviewNSView, context: Context) {
         nsView.session = session
         session.attachPreview(nsView)
+        nsView.needsLayout = true
     }
 
     static func dismantleNSView(

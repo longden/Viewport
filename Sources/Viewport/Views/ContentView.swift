@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
     @StateObject private var recording = WorkspaceRecordingService()
+    @StateObject private var interactionMacros = InteractionMacroService()
     @State private var pointerBridge = PointerEventBridge()
     @State private var isTakingScreenshot = false
     @State private var isExportingBugReport = false
@@ -18,8 +19,11 @@ struct ContentView: View {
     @State private var showHelp = false
     @State private var showSettings = false
     @State private var showDeviceInjector = false
+    @State private var showLocation = false
     @State private var showOverlayDiff = false
     @State private var showBatchSnapshots = false
+    @State private var showInteractionMacros = false
+    @State private var showBuildPlay = false
     @State private var showNetworkOverlay = false
     @State private var annotationItem: AnnotatableScreenshot?
     @AppStorage("developerLogsVisible") private var showDeveloperLogs = false
@@ -89,7 +93,6 @@ struct ContentView: View {
             showBatchSnapshots = false
             // Injector is promoted out of Experimental; leave its sheet alone.
             web.networkOverlay.setEnabled(false)
-            workspace.setInputMirroringEnabled(false)
             workspace.setSynchronizedScrollingEnabled(false)
         }
         .onChange(of: showNetworkOverlay) { _, enabled in
@@ -101,14 +104,33 @@ struct ContentView: View {
         .sheet(isPresented: $showDeviceInjector) {
             DeviceInjectorSheet(workspace: workspace, web: web)
         }
+        .sheet(isPresented: $showLocation) {
+            DeviceLocationSheet(workspace: workspace, web: web)
+        }
         .sheet(isPresented: $showOverlayDiff) {
             OverlayDiffSheet(workspace: workspace, web: web)
         }
         .sheet(isPresented: $showBatchSnapshots) {
             BatchURLSnapshotSheet(workspace: workspace, web: web)
         }
+        .sheet(isPresented: $showInteractionMacros) {
+            InteractionMacroSheet(
+                service: interactionMacros,
+                workspace: workspace
+            )
+        }
+        .sheet(isPresented: $showBuildPlay) {
+            BuildPlaySheet(
+                workspace: workspace,
+                developerLogs: developerLogs,
+                showDeveloperLogs: $showDeveloperLogs
+            )
+        }
         .sheet(item: $annotationItem) { item in
-            ScreenshotAnnotationSheet(image: item.image) { url in
+            ScreenshotAnnotationSheet(
+                panes: item.panes,
+                labelsEnabledByDefault: item.labelsEnabledByDefault
+            ) { url in
                 presentExportToast(url)
             }
         }
@@ -207,9 +229,12 @@ struct ContentView: View {
             showSettings: $showSettings,
             showHelp: $showHelp,
             showDeviceInjector: $showDeviceInjector,
+            showLocation: $showLocation,
             showNetworkOverlay: $showNetworkOverlay,
             showOverlayDiff: $showOverlayDiff,
             showBatchSnapshots: $showBatchSnapshots,
+            showInteractionMacros: $showInteractionMacros,
+            showBuildPlay: $showBuildPlay,
             isExportingBugReport: isExportingBugReport,
             isTakingScreenshot: isTakingScreenshot,
             onExportBugReport: exportBugReport
@@ -304,13 +329,19 @@ struct ContentView: View {
         Task { @MainActor in
             do {
                 let service = WorkspaceScreenshotService()
-                let image = try await service.createComposite(
-                    sources: workspace.orderedVisibleSources,
+                let panes = await service.collectPanes(
+                    nodes: workspace.orderedVisiblePanes,
                     web: web,
                     workspace: workspace,
-                    includePlatformLabels: workspace.screenshotPlatformLabelsEnabled
+                    includeDeviceBezels: workspace.deviceBezelsEnabled
                 )
-                annotationItem = AnnotatableScreenshot(image: image)
+                guard !panes.isEmpty else {
+                    throw WorkspaceScreenshotError.noCapturablePanes
+                }
+                annotationItem = AnnotatableScreenshot(
+                    panes: panes,
+                    labelsEnabledByDefault: workspace.screenshotPlatformLabelsEnabled
+                )
             } catch {
                 presentExportError(
                     title: "Screenshot Failed",
@@ -348,8 +379,24 @@ struct ContentView: View {
     private func installPointerEventSinks() {
         pointerBridge.workspace = workspace
         pointerBridge.web = web
-        pointerBridge.install(on: workspace.androidCapture)
-        pointerBridge.install(on: workspace.iOSCapture)
+        for session in workspace.allCaptureSessions {
+            let source = session.source
+            // Single fan-out sink avoids nested wrappers when reinstalling.
+            session.pointerEventSink = { [weak pointerBridge, weak interactionMacros] phase, point, duration in
+                interactionMacros?.record(
+                    source: source,
+                    phase: phase,
+                    point: point,
+                    duration: duration
+                )
+                pointerBridge?.handle(
+                    source: source,
+                    phase: phase,
+                    point: point,
+                    duration: duration
+                )
+            }
+        }
     }
 
     private func takePaneScreenshot(_ source: ViewerSource) {
@@ -388,6 +435,12 @@ struct ContentView: View {
         Task { @MainActor in
             do {
                 try await recording.start(web: web, workspace: workspace)
+            } catch let error as WorkspaceRecordingError where error == .permissionRequired {
+                ScreenRecordingPermission.openSystemSettings()
+                presentExportError(
+                    title: "Recording Failed",
+                    message: error.localizedDescription
+                )
             } catch {
                 presentExportError(
                     title: "Recording Failed",
@@ -436,7 +489,8 @@ struct ContentView: View {
 
 private struct AnnotatableScreenshot: Identifiable {
     let id = UUID()
-    let image: CGImage
+    let panes: [ScreenshotPaneCapture]
+    let labelsEnabledByDefault: Bool
 }
 
 private struct ResizableDeveloperConsoleLayout<

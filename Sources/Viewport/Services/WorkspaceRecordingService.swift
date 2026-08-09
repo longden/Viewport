@@ -7,7 +7,7 @@ import ScreenCaptureKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum WorkspaceRecordingError: LocalizedError {
+enum WorkspaceRecordingError: LocalizedError, Equatable {
     case nothingToRecord
     case alreadyRecording
     case notRecording
@@ -25,7 +25,7 @@ enum WorkspaceRecordingError: LocalizedError {
         case .notRecording:
             "No recording is in progress."
         case .permissionRequired:
-            "Screen Recording access is required. Allow Viewport in System Settings, then restart the app."
+            "Screen Recording access is required. Allow Viewport in System Settings → Privacy & Security → Screen Recording, then return here."
         case .windowUnavailable:
             "The Viewport workspace window could not be captured."
         case .writerSetupFailed:
@@ -94,7 +94,7 @@ final class WorkspaceRecordingService: ObservableObject {
         guard !isRecording else {
             throw WorkspaceRecordingError.alreadyRecording
         }
-        guard !workspace.orderedVisibleSources.isEmpty else {
+        guard !workspace.orderedVisiblePanes.isEmpty else {
             throw WorkspaceRecordingError.nothingToRecord
         }
 
@@ -124,10 +124,13 @@ final class WorkspaceRecordingService: ObservableObject {
         let quality = workspace.recordingQuality
         var sources: [ViewerSource] = []
         var sourceSizes: [CGSize] = []
+        var deviceFrameSlots: [LatestLiveFrameSlot?] = []
         let resolvedWebTarget = webCaptureTarget
             ?? WebPaneCaptureGeometry.target(for: web.webView)
 
-        for source in workspace.orderedVisibleSources {
+        // One strip per visible pane (including secondary Android / iOS).
+        for node in workspace.orderedVisiblePanes {
+            guard let source = node.viewerSource else { continue }
             switch source {
             case .web:
                 guard web.webView.url != nil else { continue }
@@ -141,25 +144,21 @@ final class WorkspaceRecordingService: ObservableObject {
                 )
                 sources.append(.web)
                 sourceSizes.append(size)
-            case .android:
-                if let frame = workspace.androidCapture.liveRecordingFrame() {
-                    sources.append(.android)
-                    sourceSizes.append(frame.size)
-                } else if let image = workspace.androidCapture.snapshotFrame() {
-                    sources.append(.android)
-                    sourceSizes.append(
-                        CGSize(width: image.width, height: image.height)
-                    )
+                deviceFrameSlots.append(nil)
+            case .android, .iOS:
+                guard let session = workspace.captureSession(for: node) else {
+                    continue
                 }
-            case .iOS:
-                if let frame = workspace.iOSCapture.liveRecordingFrame() {
-                    sources.append(.iOS)
+                if let frame = session.liveRecordingFrame() {
+                    sources.append(source)
                     sourceSizes.append(frame.size)
-                } else if let image = workspace.iOSCapture.snapshotFrame() {
-                    sources.append(.iOS)
+                    deviceFrameSlots.append(session.recordingFrameSlot)
+                } else if let image = session.snapshotFrame() {
+                    sources.append(source)
                     sourceSizes.append(
                         CGSize(width: image.width, height: image.height)
                     )
+                    deviceFrameSlots.append(session.recordingFrameSlot)
                 }
             }
         }
@@ -169,7 +168,7 @@ final class WorkspaceRecordingService: ObservableObject {
         }
 
         if sources.contains(.web) {
-            guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+            guard ScreenRecordingPermission.requestAccess() else {
                 throw WorkspaceRecordingError.permissionRequired
             }
         }
@@ -183,6 +182,7 @@ final class WorkspaceRecordingService: ObservableObject {
             engine = try CompositeRecordingEngine(
                 sources: sources,
                 sourceSizes: sourceSizes,
+                deviceFrameSlots: deviceFrameSlots,
                 outputURL: url,
                 quality: quality
             )
@@ -218,7 +218,7 @@ final class WorkspaceRecordingService: ObservableObject {
         // WKWebView and device previews together.
         _ = web
 
-        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+        guard ScreenRecordingPermission.requestAccess() else {
             throw WorkspaceRecordingError.permissionRequired
         }
         guard let appWindow = NSApp.keyWindow ?? NSApp.mainWindow else {

@@ -273,11 +273,37 @@ final class PaneGridLayoutTests: XCTestCase {
         )
         XCTAssertFalse(PaneGridMigration.roadmapNote.isEmpty)
     }
+
+    func testCanAddSecondDevicePaneUntilCap() {
+        var layout = PaneGridLayout.defaultTriple
+        XCTAssertTrue(layout.canAddPane(source: .android))
+        XCTAssertNotNil(layout.addPane(source: .android))
+        XCTAssertEqual(layout.count(of: .android), 2)
+        XCTAssertFalse(layout.canAddPane(source: .android))
+        // At 4 panes (web+2 android+ios), cannot add iOS 2.
+        XCTAssertEqual(layout.nodes.count, 4)
+        XCTAssertFalse(layout.canAddPane(source: .iOS))
+    }
+
+    func testRemoveExtraPaneDropsSecondarySlot() {
+        var layout = PaneGridLayout.defaultTriple
+        _ = layout.addPane(source: .iOS)
+        XCTAssertTrue(layout.removeExtraPane(of: .iOS))
+        XCTAssertEqual(layout.count(of: .iOS), 1)
+        XCTAssertEqual(layout.nodes.first { $0.source == ViewerSource.iOS.rawValue }?.slot, 0)
+    }
+
+    func testRemoveExtraPaneDoesNotRemovePrimary() {
+        var layout = PaneGridLayout.defaultTriple
+        XCTAssertEqual(layout.count(of: .android), 1)
+        XCTAssertFalse(layout.removeExtraPane(of: .android))
+        XCTAssertEqual(layout.count(of: .android), 1)
+    }
 }
 
 @MainActor
 final class ExperimentalSettingsCouplingTests: XCTestCase {
-    func testLaunchWithExperimentalOffClearsPersistedMirroring() {
+    func testLaunchWithExperimentalOffClearsPersistedSyncScrollOnly() {
         let suiteName = "ViewportTests.Experimental.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.set(false, forKey: "experimentalFeaturesEnabled")
@@ -286,8 +312,23 @@ final class ExperimentalSettingsCouplingTests: XCTestCase {
 
         let store = WorkspaceStore(defaults: defaults)
         XCTAssertFalse(store.experimentalFeaturesEnabled)
-        XCTAssertFalse(store.inputMirroringEnabled)
+        XCTAssertTrue(store.inputMirroringEnabled)
         XCTAssertFalse(store.synchronizedScrollingEnabled)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testDisablingExperimentalKeepsInputMirroring() {
+        let suiteName = "ViewportTests.Experimental.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(true, forKey: "experimentalFeaturesEnabled")
+        defaults.set(true, forKey: "inputMirroringEnabled")
+
+        let store = WorkspaceStore(defaults: defaults)
+        store.setExperimentalFeaturesEnabled(false)
+
+        XCTAssertFalse(store.experimentalFeaturesEnabled)
+        XCTAssertTrue(store.inputMirroringEnabled)
 
         defaults.removePersistentDomain(forName: suiteName)
     }
