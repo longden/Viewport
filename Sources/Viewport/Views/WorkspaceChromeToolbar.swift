@@ -147,7 +147,7 @@ struct WorkspaceUtilityToolbar: View {
         } label: {
             Label("Help", systemImage: "questionmark.circle")
         }
-        .help("Check Android setup and create an emulator")
+        .help("Setup checks, install guides, and create an emulator")
     }
 }
 
