@@ -4,6 +4,7 @@ struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
     @ObservedObject var deviceManager: DeviceManager
     var onScreenshot: (() -> Void)?
+    var showPerfHUD: Bool = false
     @State private var showCreateEmulator = false
     @State private var isDropTargeted = false
     @State private var installBanner: PackageInstallBanner?
@@ -24,6 +25,12 @@ struct CaptureViewerPane: View {
                     }
 
                     VStack {
+                        HStack {
+                            if showPerfHUD, session.framesPerSecond > 0 {
+                                PaneFPSHud(framesPerSecond: session.framesPerSecond)
+                            }
+                            Spacer()
+                        }
                         Spacer()
                         HStack {
                             Spacer()
