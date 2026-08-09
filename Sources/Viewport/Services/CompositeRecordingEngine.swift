@@ -97,6 +97,9 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         workspace: WorkspaceStore,
         webCaptureTarget: WorkspaceRecordingTarget?
     ) async throws {
+        let androidSlot = workspace.androidCapture.recordingFrameSlot
+        let iosSlot = workspace.iOSCapture.recordingFrameSlot
+
         stateQueue.sync {
             guard !isRunning else { return }
             isRunning = true
@@ -131,9 +134,11 @@ final class CompositeRecordingEngine: @unchecked Sendable {
             guard let self else { return }
             let sleepNanos = UInt64(max(frameInterval, 1 / 120) * 1_000_000_000)
             while !Task.isCancelled {
-                await MainActor.run {
-                    self.tick(workspace: workspace)
-                }
+                // Read latest device / web frames off MainActor.
+                self.tick(
+                    androidFrame: androidSlot.load(),
+                    iosFrame: iosSlot.load()
+                )
                 try? await Task.sleep(nanoseconds: sleepNanos)
             }
         }
@@ -152,6 +157,10 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         return await writer.finish()
     }
 
+    deinit {
+        cancel()
+    }
+
     func cancel() {
         encodeTask?.cancel()
         encodeTask = nil
@@ -168,8 +177,10 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         try? FileManager.default.removeItem(at: temporaryURL)
     }
 
-    @MainActor
-    private func tick(workspace: WorkspaceStore) {
+    private func tick(
+        androidFrame: LiveCaptureFrame?,
+        iosFrame: LiveCaptureFrame?
+    ) {
         let running = stateQueue.sync { isRunning }
         guard running else { return }
 
@@ -202,9 +213,9 @@ final class CompositeRecordingEngine: @unchecked Sendable {
             case .web:
                 frame = stateQueue.sync { self.webFrame }
             case .android:
-                frame = workspace.androidCapture.liveRecordingFrame()
+                frame = androidFrame
             case .iOS:
-                frame = workspace.iOSCapture.liveRecordingFrame()
+                frame = iosFrame
             }
             guard let frame else { continue }
             panes.append((frame, layoutImages[index]))
