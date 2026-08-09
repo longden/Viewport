@@ -144,11 +144,13 @@ actor AppPackageInstaller {
         case .androidEmulator, .androidDevice:
             try await installAndroidAPK(packageURL, serial: device.id)
         case .iOSSimulator:
-            let appURL = try await resolveiOSAppBundle(packageURL, kind: kind)
-            try await installSimulatorApp(appURL, udid: device.id)
+            let resolved = try await resolveiOSAppBundle(packageURL, kind: kind)
+            defer { resolved.cleanup() }
+            try await installSimulatorApp(resolved.appURL, udid: device.id)
         case .iOSDevice:
-            let appURL = try await resolveiOSAppBundle(packageURL, kind: kind)
-            try await installPhysicalDeviceApp(appURL, udid: device.id)
+            let resolved = try await resolveiOSAppBundle(packageURL, kind: kind)
+            defer { resolved.cleanup() }
+            try await installPhysicalDeviceApp(resolved.appURL, udid: device.id)
         }
     }
 
@@ -224,12 +226,13 @@ actor AppPackageInstaller {
     }
 
     /// `.ipa` archives contain `Payload/<Name>.app`; extract when needed.
+    /// Returns a cleanup closure that deletes temporary unzip / staging trees.
     private func resolveiOSAppBundle(
         _ url: URL,
         kind: AppPackageKind
-    ) async throws -> URL {
+    ) async throws -> (appURL: URL, cleanup: () -> Void) {
         if kind == .iOSAppBundle {
-            return url
+            return (url, {})
         }
 
         let workRoot = fileManager.temporaryDirectory
@@ -242,33 +245,56 @@ actor AppPackageInstaller {
             withIntermediateDirectories: true
         )
 
-        let unzip = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/bin/unzip"),
-            arguments: ["-qq", url.path, "-d", workRoot.path],
-            timeout: 60
-        )
-        guard unzip.exitCode == 0 else {
-            throw AppPackageInstallError.commandFailed(
-                Self.cleanInstallMessage(
-                    stdout: unzip.standardOutput,
-                    stderr: unzip.standardError,
-                    fallback: "Could not unpack the IPA."
-                )
+        do {
+            let unzip = try await runner.run(
+                executable: URL(fileURLWithPath: "/usr/bin/unzip"),
+                arguments: ["-qq", url.path, "-d", workRoot.path],
+                timeout: 60
             )
-        }
+            guard unzip.exitCode == 0 else {
+                throw AppPackageInstallError.commandFailed(
+                    Self.cleanInstallMessage(
+                        stdout: unzip.standardOutput,
+                        stderr: unzip.standardError,
+                        fallback: "Could not unpack the IPA."
+                    )
+                )
+            }
 
-        let payload = workRoot.appendingPathComponent("Payload", isDirectory: true)
-        guard let apps = try? fileManager.contentsOfDirectory(
-            at: payload,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ),
-        let app = apps.first(where: {
-            $0.pathExtension.lowercased() == "app"
-        }) else {
-            throw AppPackageInstallError.ipaMissingAppBundle
+            let payload = workRoot.appendingPathComponent("Payload", isDirectory: true)
+            guard let apps = try? fileManager.contentsOfDirectory(
+                at: payload,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ),
+            let app = apps.first(where: {
+                $0.pathExtension.lowercased() == "app"
+            }) else {
+                throw AppPackageInstallError.ipaMissingAppBundle
+            }
+
+            // Copy `.app` out of the unzip tree so install tools keep a stable path
+            // while we can delete the full Payload tree immediately after.
+            let stagingRoot = fileManager.temporaryDirectory
+                .appendingPathComponent(
+                    "Viewport-App-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            try fileManager.createDirectory(
+                at: stagingRoot,
+                withIntermediateDirectories: true
+            )
+            let stagedApp = stagingRoot.appendingPathComponent(app.lastPathComponent)
+            try fileManager.copyItem(at: app, to: stagedApp)
+            try? fileManager.removeItem(at: workRoot)
+
+            return (stagedApp, {
+                try? self.fileManager.removeItem(at: stagingRoot)
+            })
+        } catch {
+            try? fileManager.removeItem(at: workRoot)
+            throw error
         }
-        return app
     }
 
     nonisolated static func cleanInstallMessage(

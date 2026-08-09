@@ -12,6 +12,7 @@ struct ScreenshotAnnotationSheet: View {
     @State private var draftEnd: CGPoint?
     @State private var errorMessage: String?
     @State private var isSaving = false
+    @State private var didSave = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,8 +44,17 @@ struct ScreenshotAnnotationSheet: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 320)
 
-            Button("Close") { dismiss() }
-                .keyboardShortcut(.cancelAction)
+            Button("Discard") {
+                didSave = true
+                dismiss()
+            }
+            .disabled(isSaving)
+
+            Button("Close") {
+                closeSavingOriginalIfNeeded()
+            }
+            .keyboardShortcut(.cancelAction)
+            .disabled(isSaving)
         }
         .padding(16)
     }
@@ -95,8 +105,13 @@ struct ScreenshotAnnotationSheet: View {
 
             Spacer()
 
+            Button("Save without annotations") {
+                save(annotated: false)
+            }
+            .disabled(isSaving)
+
             Button("Save PNG…") {
-                save()
+                save(annotated: true)
             }
             .disabled(isSaving)
             .keyboardShortcut(.defaultAction)
@@ -144,7 +159,30 @@ struct ScreenshotAnnotationSheet: View {
             var path = Path()
             path.move(to: start)
             path.addLine(to: end)
-            context.stroke(path, with: .color(.red), lineWidth: 3)
+            context.stroke(
+                path,
+                with: .color(.red),
+                lineWidth: ScreenshotAnnotationRenderer.arrowLineWidth
+            )
+            // Match export arrowhead for WYSIWYG preview.
+            let angle = atan2(end.y - start.y, end.x - start.x)
+            let head: CGFloat = 18
+            var headPath = Path()
+            headPath.move(to: end)
+            headPath.addLine(
+                to: CGPoint(
+                    x: end.x - head * cos(angle - .pi / 6),
+                    y: end.y - head * sin(angle - .pi / 6)
+                )
+            )
+            headPath.addLine(
+                to: CGPoint(
+                    x: end.x - head * cos(angle + .pi / 6),
+                    y: end.y - head * sin(angle + .pi / 6)
+                )
+            )
+            headPath.closeSubpath()
+            context.fill(headPath, with: .color(.red))
         case .box:
             let rect = CGRect(
                 x: min(start.x, end.x),
@@ -155,16 +193,28 @@ struct ScreenshotAnnotationSheet: View {
             context.stroke(
                 Path(rect),
                 with: .color(.yellow),
-                lineWidth: 3
+                lineWidth: ScreenshotAnnotationRenderer.boxLineWidth
             )
-        case .blur:
+        case .redact:
             let rect = CGRect(
                 x: min(start.x, end.x),
                 y: min(start.y, end.y),
                 width: abs(end.x - start.x),
                 height: abs(end.y - start.y)
             )
-            context.fill(Path(rect), with: .color(.black.opacity(0.65)))
+            context.fill(
+                Path(rect),
+                with: .color(
+                    .black.opacity(ScreenshotAnnotationRenderer.redactFillAlpha)
+                )
+            )
+            context.stroke(
+                Path(rect),
+                with: .color(
+                    .white.opacity(ScreenshotAnnotationRenderer.redactStrokeAlpha)
+                ),
+                lineWidth: 1
+            )
         }
     }
 
@@ -206,23 +256,42 @@ struct ScreenshotAnnotationSheet: View {
         )
     }
 
-    private func save() {
+    private func closeSavingOriginalIfNeeded() {
+        guard !didSave else {
+            dismiss()
+            return
+        }
+        save(annotated: false)
+    }
+
+    private func save(annotated: Bool) {
         isSaving = true
         errorMessage = nil
         do {
-            let rendered = try ScreenshotAnnotationRenderer.render(
-                image,
-                annotations: annotations
-            )
+            let output: CGImage
+            if annotated, !annotations.isEmpty {
+                output = try ScreenshotAnnotationRenderer.render(
+                    image,
+                    annotations: annotations
+                )
+            } else {
+                output = image
+            }
+            let preferredName = WorkspaceScreenshotNaming.filename()
+                .replacingOccurrences(
+                    of: "Viewport",
+                    with: annotated && !annotations.isEmpty
+                        ? "Viewport-Annotated"
+                        : "Viewport"
+                )
             if let url = try WorkspaceScreenshotService().save(
-                rendered,
-                preferredName: WorkspaceScreenshotNaming.filename()
-                    .replacingOccurrences(
-                        of: "Viewport",
-                        with: "Viewport-Annotated"
-                    ),
-                panelTitle: "Save Annotated Screenshot"
+                output,
+                preferredName: preferredName,
+                panelTitle: annotated && !annotations.isEmpty
+                    ? "Save Annotated Screenshot"
+                    : "Save Screenshot"
             ) {
+                didSave = true
                 onSaved(url)
                 dismiss()
             }

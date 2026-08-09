@@ -50,12 +50,14 @@ struct DeviceToolsMenu: View {
                 .disabled(isBusy)
             }
 
+            Section("Inject") {
+                Button("Open URL & Push…") {
+                    showInjector = true
+                }
+            }
+
             if workspace.experimentalFeaturesEnabled {
                 Section("Experimental") {
-                    Button("Open URL & Push…") {
-                        showInjector = true
-                    }
-
                     Toggle("Web network overlay", isOn: $showNetworkOverlay)
 
                     Button("Onion-skin overlay…") {
@@ -78,14 +80,14 @@ struct DeviceToolsMenu: View {
                     )
 
                     Toggle(
-                        "Synchronized scrolling",
+                        "Synchronized scrolling (prototype)",
                         isOn: Binding(
                             get: { workspace.synchronizedScrollingEnabled },
                             set: { workspace.setSynchronizedScrollingEnabled($0) }
                         )
                     )
                     .help(
-                        "Turns on input mirroring and nudges the web pane when device swipes end."
+                        "Prototype: enables input mirroring and continuously nudges the web pane while device swipes move (web pane must be visible)."
                     )
                 }
             }
@@ -100,7 +102,7 @@ struct DeviceToolsMenu: View {
         } label: {
             Label("Device tools", systemImage: "wrench.and.screwdriver")
         }
-        .help("Appearance, status bars, and optional experimental compare tools")
+        .help("Appearance, status bars, inject, and optional experimental compare tools")
         .disabled(isBusy)
     }
 

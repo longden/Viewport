@@ -937,14 +937,23 @@ final class WindowCaptureSession: ObservableObject {
 
     private func noteFrameDelivered() {
         frameRateMeter.record()
-        if fpsPublishTask == nil {
-            fpsPublishTask = Task { @MainActor [weak self] in
+        ensureFPSPublishLoop()
+    }
+
+    /// Periodically republishes FPS so idle / stalled streams decay to 0.
+    private func ensureFPSPublishLoop() {
+        guard fpsPublishTask == nil else { return }
+        fpsPublishTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self else { return }
-                self.fpsPublishTask = nil
-                let fps = self.frameRateMeter.framesPerSecond
+                let fps = self.frameRateMeter.age()
                 if abs(self.framesPerSecond - fps) > 0.4 {
                     self.framesPerSecond = fps
+                }
+                if fps <= 0, self.framesPerSecond <= 0 {
+                    self.fpsPublishTask = nil
+                    return
                 }
             }
         }

@@ -116,7 +116,9 @@ struct DeviceInjectorSheet: View {
     }
 
     private var canRunPrimary: Bool {
-        !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasURL = !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasURL else { return false }
+        return !effectiveDeepLinkTargets.isEmpty || alsoOpenWeb
     }
 
     private var deepLinkContent: some View {
@@ -287,9 +289,6 @@ struct DeviceInjectorSheet: View {
         }
         if !workspace.isVisible(.iOS) {
             resolved.remove(.iOS)
-        }
-        if resolved.isEmpty {
-            return .both
         }
         return resolved
     }

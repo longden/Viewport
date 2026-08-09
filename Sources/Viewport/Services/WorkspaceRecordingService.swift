@@ -644,6 +644,7 @@ private final class ScreenCaptureRecordingWriter: @unchecked Sendable {
     private let input: AVAssetWriterInput
     private var hasStartedSession = false
     private var hasFinished = false
+    private var appendFailed = false
 
     init(
         outputURL: URL,
@@ -690,7 +691,9 @@ private final class ScreenCaptureRecordingWriter: @unchecked Sendable {
             writer.startSession(atSourceTime: presentationTime)
             hasStartedSession = true
         }
-        input.append(sampleBuffer)
+        if !input.append(sampleBuffer) {
+            appendFailed = true
+        }
     }
 
     func finish() async -> Bool {
@@ -708,9 +711,10 @@ private final class ScreenCaptureRecordingWriter: @unchecked Sendable {
                 }
 
                 self.input.markAsFinished()
+                let failed = self.appendFailed
                 self.writer.finishWriting {
                     continuation.resume(
-                        returning: self.writer.status == .completed
+                        returning: self.writer.status == .completed && !failed
                     )
                 }
             }

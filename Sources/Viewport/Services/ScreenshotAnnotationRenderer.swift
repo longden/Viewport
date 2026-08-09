@@ -5,7 +5,7 @@ import Foundation
 enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
     case arrow
     case box
-    case blur
+    case redact
 
     var id: String { rawValue }
 
@@ -13,7 +13,7 @@ enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
         switch self {
         case .arrow: "Arrow"
         case .box: "Box"
-        case .blur: "Blur"
+        case .redact: "Redact"
         }
     }
 
@@ -21,7 +21,7 @@ enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
         switch self {
         case .arrow: "arrow.up.right"
         case .box: "rectangle"
-        case .blur: "rectangle.dashed"
+        case .redact: "rectangle.dashed"
         }
     }
 }
@@ -47,6 +47,11 @@ struct ScreenshotAnnotation: Identifiable, Equatable {
 }
 
 enum ScreenshotAnnotationRenderer {
+    static let arrowLineWidth: CGFloat = 4
+    static let boxLineWidth: CGFloat = 4
+    static let redactFillAlpha: CGFloat = 0.72
+    static let redactStrokeAlpha: CGFloat = 0.35
+
     static func render(
         _ image: CGImage,
         annotations: [ScreenshotAnnotation]
@@ -76,8 +81,8 @@ enum ScreenshotAnnotationRenderer {
                 drawArrow(from: start, to: end, in: context)
             case .box:
                 drawBox(from: start, to: end, in: context)
-            case .blur:
-                blurRegion(from: start, to: end, image: image, in: context)
+            case .redact:
+                redactRegion(from: start, to: end, in: context)
             }
         }
 
@@ -106,7 +111,7 @@ enum ScreenshotAnnotationRenderer {
         context.saveGState()
         context.setStrokeColor(NSColor.systemRed.cgColor)
         context.setFillColor(NSColor.systemRed.cgColor)
-        context.setLineWidth(4)
+        context.setLineWidth(arrowLineWidth)
         context.setLineCap(.round)
         context.move(to: start)
         context.addLine(to: end)
@@ -143,15 +148,14 @@ enum ScreenshotAnnotationRenderer {
         )
         context.saveGState()
         context.setStrokeColor(NSColor.systemYellow.cgColor)
-        context.setLineWidth(4)
+        context.setLineWidth(boxLineWidth)
         context.stroke(rect)
         context.restoreGState()
     }
 
-    private static func blurRegion(
+    private static func redactRegion(
         from start: CGPoint,
         to end: CGPoint,
-        image: CGImage,
         in context: CGContext
     ) {
         let rect = CGRect(
@@ -160,14 +164,16 @@ enum ScreenshotAnnotationRenderer {
             width: max(abs(end.x - start.x), 1),
             height: max(abs(end.y - start.y), 1)
         )
-        // Approximate redaction with a solid fill (true gaussian blur is heavier).
         context.saveGState()
-        context.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
+        context.setFillColor(
+            NSColor.black.withAlphaComponent(redactFillAlpha).cgColor
+        )
         context.fill(rect)
-        context.setStrokeColor(NSColor.white.withAlphaComponent(0.35).cgColor)
+        context.setStrokeColor(
+            NSColor.white.withAlphaComponent(redactStrokeAlpha).cgColor
+        )
         context.setLineWidth(1)
         context.stroke(rect)
-        _ = image
         context.restoreGState()
     }
 }

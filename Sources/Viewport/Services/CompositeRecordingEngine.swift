@@ -29,6 +29,10 @@ final class CompositeRecordingEngine: @unchecked Sendable {
     private var webCapture: WebPaneCaptureStream?
     private var startHostTime: CFTimeInterval = 0
     private var lastAppendedPTS: CMTime = .invalid
+    /// Coalesce: at most one compose job is queued; newer panes replace pending.
+    private var composeScheduled = false
+    private var pendingPanes: [(LiveCaptureFrame, CGRect)]?
+    private var cpuOnlyFrameBudget = 0
 
     private let temporaryURL: URL
 
@@ -100,60 +104,93 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         let androidSlot = workspace.androidCapture.recordingFrameSlot
         let iosSlot = workspace.iOSCapture.recordingFrameSlot
 
-        stateQueue.sync {
-            guard !isRunning else { return }
+        let alreadyRunning = stateQueue.sync { () -> Bool in
+            guard !isRunning else { return true }
             isRunning = true
             startHostTime = CACurrentMediaTime()
             lastAppendedPTS = .invalid
+            composeScheduled = false
+            pendingPanes = nil
+            cpuOnlyFrameBudget = 0
+            return false
+        }
+        if alreadyRunning {
+            throw WorkspaceRecordingError.alreadyRecording
         }
 
-        if sources.contains(.web) {
-            guard let webCaptureTarget else {
-                throw WorkspaceRecordingError.windowUnavailable
+        do {
+            if sources.contains(.web) {
+                guard let webCaptureTarget else {
+                    throw WorkspaceRecordingError.windowUnavailable
+                }
+                let capture = WebPaneCaptureStream()
+                try await capture.start(
+                    target: webCaptureTarget,
+                    frameRate: quality.frameRate,
+                    pixelFormat: quality.pixelFormat,
+                    maximumHeight: quality.maximumOutputHeight
+                ) { [weak self] buffer in
+                    // Retain the backing IOSurface so SCK can recycle its pool
+                    // without invalidating the frame we hold for compositing.
+                    if let surface = CVPixelBufferGetIOSurface(buffer)?
+                        .takeUnretainedValue() {
+                        self?.seedWebFrame(.surface(BorrowedIOSurface(surface)))
+                    } else {
+                        self?.seedWebFrame(.pixelBuffer(buffer))
+                    }
+                }
+                stateQueue.sync { webCapture = capture }
             }
-            let capture = WebPaneCaptureStream()
-            try await capture.start(
-                target: webCaptureTarget,
-                frameRate: quality.frameRate,
-                pixelFormat: quality.pixelFormat,
-                maximumHeight: quality.maximumOutputHeight
-            ) { [weak self] buffer in
-                // Retain the backing IOSurface so SCK can recycle its pool
-                // without invalidating the frame we hold for compositing.
-                if let surface = CVPixelBufferGetIOSurface(buffer)?
-                    .takeUnretainedValue() {
-                    self?.seedWebFrame(.surface(BorrowedIOSurface(surface)))
-                } else {
-                    self?.seedWebFrame(.pixelBuffer(buffer))
+
+            let task = Task { [weak self] in
+                guard let self else { return }
+                let sleepNanos = UInt64(max(frameInterval, 1 / 120) * 1_000_000_000)
+                while !Task.isCancelled {
+                    // Read latest device / web frames off MainActor.
+                    self.tick(
+                        androidFrame: androidSlot.load(),
+                        iosFrame: iosSlot.load()
+                    )
+                    try? await Task.sleep(nanoseconds: sleepNanos)
                 }
             }
-            webCapture = capture
-        }
-
-        encodeTask = Task { [weak self] in
-            guard let self else { return }
-            let sleepNanos = UInt64(max(frameInterval, 1 / 120) * 1_000_000_000)
-            while !Task.isCancelled {
-                // Read latest device / web frames off MainActor.
-                self.tick(
-                    androidFrame: androidSlot.load(),
-                    iosFrame: iosSlot.load()
-                )
-                try? await Task.sleep(nanoseconds: sleepNanos)
-            }
+            stateQueue.sync { encodeTask = task }
+        } catch {
+            await rollbackFailedStart()
+            throw error
         }
     }
 
-    func stop() async -> Bool {
-        encodeTask?.cancel()
-        encodeTask = nil
-        let capture = webCapture
-        webCapture = nil
-        await capture?.stop()
-        stateQueue.sync {
+    private func rollbackFailedStart() async {
+        let capture: WebPaneCaptureStream? = stateQueue.sync {
+            let capture = webCapture
+            encodeTask?.cancel()
+            encodeTask = nil
+            webCapture = nil
             isRunning = false
             webFrame = nil
+            pendingPanes = nil
+            composeScheduled = false
+            return capture
         }
+        await capture?.stop()
+    }
+
+    func stop() async -> Bool {
+        let (task, capture): (Task<Void, Never>?, WebPaneCaptureStream?) =
+            stateQueue.sync {
+                let task = encodeTask
+                let capture = webCapture
+                encodeTask = nil
+                webCapture = nil
+                isRunning = false
+                webFrame = nil
+                pendingPanes = nil
+                composeScheduled = false
+                return (task, capture)
+            }
+        task?.cancel()
+        await capture?.stop()
         return await writer.finish()
     }
 
@@ -162,16 +199,23 @@ final class CompositeRecordingEngine: @unchecked Sendable {
     }
 
     func cancel() {
-        encodeTask?.cancel()
-        encodeTask = nil
-        let capture = webCapture
-        webCapture = nil
-        Task {
-            await capture?.stop()
-        }
-        stateQueue.sync {
-            isRunning = false
-            webFrame = nil
+        let (task, capture): (Task<Void, Never>?, WebPaneCaptureStream?) =
+            stateQueue.sync {
+                let task = encodeTask
+                let capture = webCapture
+                encodeTask = nil
+                webCapture = nil
+                isRunning = false
+                webFrame = nil
+                pendingPanes = nil
+                composeScheduled = false
+                return (task, capture)
+            }
+        task?.cancel()
+        if let capture {
+            Task {
+                await capture.stop()
+            }
         }
         writer.cancel()
         try? FileManager.default.removeItem(at: temporaryURL)
@@ -181,31 +225,34 @@ final class CompositeRecordingEngine: @unchecked Sendable {
         androidFrame: LiveCaptureFrame?,
         iosFrame: LiveCaptureFrame?
     ) {
-        let running = stateQueue.sync { isRunning }
-        guard running else { return }
+        let snapshot = stateQueue.sync { () -> (
+            running: Bool,
+            start: CFTimeInterval,
+            lastPTS: CMTime
+        )? in
+            guard isRunning else { return nil }
+            return (true, startHostTime, lastAppendedPTS)
+        }
+        guard let snapshot else { return }
 
         let now = CACurrentMediaTime()
-        let elapsed = now - startHostTime
+        let elapsed = now - snapshot.start
         let pts = CMTime(
             seconds: elapsed,
             preferredTimescale: 600
         )
-        let shouldAppend = stateQueue.sync { () -> Bool in
-            if lastAppendedPTS.isValid {
-                let delta = CMTimeGetSeconds(
-                    CMTimeSubtract(pts, lastAppendedPTS)
-                )
-                if delta + 0.0005 < frameInterval {
-                    return false
-                }
+        if snapshot.lastPTS.isValid {
+            let delta = CMTimeGetSeconds(
+                CMTimeSubtract(pts, snapshot.lastPTS)
+            )
+            if delta + 0.0005 < frameInterval {
+                return
             }
-            lastAppendedPTS = pts
-            return true
         }
-        guard shouldAppend else { return }
 
         var panes: [(LiveCaptureFrame, CGRect)] = []
         panes.reserveCapacity(sources.count)
+        var cpuOnly = true
 
         for (index, source) in sources.enumerated() {
             let frame: LiveCaptureFrame?
@@ -218,17 +265,84 @@ final class CompositeRecordingEngine: @unchecked Sendable {
                 frame = iosFrame
             }
             guard let frame else { continue }
+            switch frame {
+            case .image:
+                break
+            case .pixelBuffer, .surface:
+                cpuOnly = false
+            }
             panes.append((frame, layoutImages[index]))
         }
 
         guard !panes.isEmpty else { return }
 
+        // Emulator gRPC (and similar) still publish CGImage — downshift encode rate.
+        if cpuOnly {
+            let keep = stateQueue.sync { () -> Bool in
+                cpuOnlyFrameBudget += 1
+                if cpuOnlyFrameBudget % 2 == 0 {
+                    return true
+                }
+                return false
+            }
+            guard keep else { return }
+        }
+
+        let shouldSchedule = stateQueue.sync { () -> Bool in
+            pendingPanes = panes
+            guard !composeScheduled else { return false }
+            composeScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+
         writer.sampleQueue.async { [weak self] in
-            guard let self,
-                  let buffer = self.compositor.compose(panes: panes) else {
+            self?.drainPendingComposes(preferredPTS: pts)
+        }
+    }
+
+    private func drainPendingComposes(preferredPTS: CMTime) {
+        var pts = preferredPTS
+        while true {
+            let panes = stateQueue.sync { () -> [(LiveCaptureFrame, CGRect)]? in
+                let panes = pendingPanes
+                pendingPanes = nil
+                return panes
+            }
+            guard let panes,
+                  let buffer = compositor.compose(panes: panes) else {
+                let more = stateQueue.sync { () -> Bool in
+                    if pendingPanes != nil {
+                        return true
+                    }
+                    composeScheduled = false
+                    return false
+                }
+                if more { continue }
                 return
             }
-            self.writer.append(buffer, presentationTime: pts)
+
+            let appended = writer.append(
+                buffer,
+                presentationTime: pts
+            )
+            if appended {
+                stateQueue.sync { lastAppendedPTS = pts }
+            }
+
+            let more = stateQueue.sync { () -> Bool in
+                if pendingPanes != nil {
+                    // Advance PTS slightly for coalesced follow-up so times stay monotonic.
+                    pts = CMTimeAdd(
+                        pts,
+                        CMTime(seconds: frameInterval, preferredTimescale: 600)
+                    )
+                    return true
+                }
+                composeScheduled = false
+                return false
+            }
+            if !more { return }
         }
     }
 }
@@ -372,6 +486,7 @@ private final class PixelBufferRecordingWriter: @unchecked Sendable {
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
     private var hasStartedSession = false
     private var hasFinished = false
+    private var appendFailed = false
 
     init(
         outputURL: URL,
@@ -414,19 +529,24 @@ private final class PixelBufferRecordingWriter: @unchecked Sendable {
         }
     }
 
-    func append(_ buffer: CVPixelBuffer, presentationTime: CMTime) {
+    @discardableResult
+    func append(_ buffer: CVPixelBuffer, presentationTime: CMTime) -> Bool {
         dispatchPrecondition(condition: .onQueue(sampleQueue))
         guard !hasFinished,
               writer.status == .writing,
               input.isReadyForMoreMediaData else {
-            return
+            return false
         }
 
         if !hasStartedSession {
             writer.startSession(atSourceTime: presentationTime)
             hasStartedSession = true
         }
-        adaptor.append(buffer, withPresentationTime: presentationTime)
+        let ok = adaptor.append(buffer, withPresentationTime: presentationTime)
+        if !ok {
+            appendFailed = true
+        }
+        return ok
     }
 
     func finish() async -> Bool {
@@ -444,9 +564,10 @@ private final class PixelBufferRecordingWriter: @unchecked Sendable {
                 }
 
                 self.input.markAsFinished()
+                let failed = self.appendFailed
                 self.writer.finishWriting {
                     continuation.resume(
-                        returning: self.writer.status == .completed
+                        returning: self.writer.status == .completed && !failed
                     )
                 }
             }

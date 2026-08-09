@@ -90,24 +90,39 @@ struct HTTP2Frame {
 }
 
 struct HTTP2FrameDecoder {
-    func push(_ data: Data) -> (frames: [HTTP2Frame], remainder: Data) {
-        var buffer = data
+    private var storage = Data()
+    private var consumed = 0
+    private let compactionThreshold: Int
+
+    init(compactionThreshold: Int = 64 * 1_024) {
+        self.compactionThreshold = max(compactionThreshold, 1)
+    }
+
+    mutating func push(_ data: Data) -> [HTTP2Frame] {
+        guard !data.isEmpty else { return [] }
+        storage.append(data)
         var frames: [HTTP2Frame] = []
-        while buffer.count >= 9 {
-            let length = Int(buffer[buffer.startIndex]) << 16
-                | Int(buffer[buffer.startIndex + 1]) << 8
-                | Int(buffer[buffer.startIndex + 2])
-            guard buffer.count >= 9 + length else { break }
-            let typeRaw = buffer[buffer.startIndex + 3]
-            let flags = buffer[buffer.startIndex + 4]
-            let streamID = UInt32(buffer[buffer.startIndex + 5] & 0x7F) << 24
-                | UInt32(buffer[buffer.startIndex + 6]) << 16
-                | UInt32(buffer[buffer.startIndex + 7]) << 8
-                | UInt32(buffer[buffer.startIndex + 8])
-            let payloadStart = buffer.startIndex + 9
-            let payload = buffer.subdata(in: payloadStart..<(payloadStart + length))
-            buffer.removeSubrange(buffer.startIndex..<(payloadStart + length))
-            guard let type = HTTP2Frame.FrameType(rawValue: typeRaw) else { continue }
+        while storage.count - consumed >= 9 {
+            let base = storage.startIndex + consumed
+            let length = Int(storage[base]) << 16
+                | Int(storage[base + 1]) << 8
+                | Int(storage[base + 2])
+            guard storage.count - consumed >= 9 + length else { break }
+            let typeRaw = storage[base + 3]
+            let flags = storage[base + 4]
+            let streamID = UInt32(storage[base + 5] & 0x7F) << 24
+                | UInt32(storage[base + 6]) << 16
+                | UInt32(storage[base + 7]) << 8
+                | UInt32(storage[base + 8])
+            let payloadStart = base + 9
+            let payload = storage.subdata(
+                in: payloadStart..<(payloadStart + length)
+            )
+            consumed += 9 + length
+            compactIfNeeded()
+            guard let type = HTTP2Frame.FrameType(rawValue: typeRaw) else {
+                continue
+            }
             frames.append(
                 HTTP2Frame(
                     length: length,
@@ -118,7 +133,24 @@ struct HTTP2FrameDecoder {
                 )
             )
         }
-        return (frames, buffer)
+        return frames
+    }
+
+    mutating func reset() {
+        storage.removeAll(keepingCapacity: false)
+        consumed = 0
+    }
+
+    private mutating func compactIfNeeded() {
+        guard consumed > 0 else { return }
+        let halfBuffer = storage.count / 2
+        guard consumed >= compactionThreshold || consumed >= halfBuffer else {
+            return
+        }
+        storage.removeSubrange(
+            storage.startIndex..<(storage.startIndex + consumed)
+        )
+        consumed = 0
     }
 }
 

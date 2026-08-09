@@ -339,7 +339,6 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
     private let lock = NSLock()
     private var connection: NWConnection?
     private var stopped = false
-    private var receiveBuffer = Data()
     private var settingsAcked = false
     private var streamStarted = false
     private let frameDelivery = LatestValueDelivery<CGImage>()
@@ -423,6 +422,8 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
         stopped = true
         let connection = self.connection
         self.connection = nil
+        decoder.reset()
+        grpcBuffer.reset()
         lock.unlock()
         frameDelivery.clear()
         connection?.cancel()
@@ -546,14 +547,7 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
 
     private func consume(_ data: Data) {
         lock.lock()
-        receiveBuffer.append(data)
-        let buffer = receiveBuffer
-        receiveBuffer.removeAll(keepingCapacity: true)
-        lock.unlock()
-
-        let (frames, remainder) = decoder.push(buffer)
-        lock.lock()
-        receiveBuffer = remainder
+        let frames = decoder.push(data)
         lock.unlock()
 
         for frame in frames {

@@ -79,6 +79,7 @@ struct CaptureViewerPane: View {
         .onDisappear {
             installTask?.cancel()
             dismissBannerTask?.cancel()
+            installBanner = nil
         }
     }
 
@@ -381,9 +382,14 @@ struct CaptureViewerPane: View {
 
         installTask?.cancel()
         dismissBannerTask?.cancel()
+        installBanner = nil
         let installer = AppPackageInstaller()
         installTask = Task {
             for (index, package) in packages.enumerated() {
+                guard !Task.isCancelled else {
+                    installBanner = nil
+                    return
+                }
                 let name = package.url.lastPathComponent
                 presentInstallBanner(
                     .installing("Installing \(name)…"),
@@ -394,11 +400,22 @@ struct CaptureViewerPane: View {
                         packageURL: package.url,
                         on: device
                     )
+                    guard !Task.isCancelled else {
+                        installBanner = nil
+                        return
+                    }
                     presentInstallBanner(
                         .succeeded("Installed \(name)"),
                         autoDismiss: index == packages.count - 1
                     )
+                } catch is CancellationError {
+                    installBanner = nil
+                    return
                 } catch {
+                    guard !Task.isCancelled else {
+                        installBanner = nil
+                        return
+                    }
                     presentInstallBanner(
                         .failed(error.localizedDescription),
                         autoDismiss: true

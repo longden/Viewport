@@ -23,16 +23,12 @@ struct WebViewerPane: View {
         } content: {
             ZStack(alignment: .bottom) {
                 viewportContent
-
-                if showNetworkOverlay {
-                    HStack {
-                        Spacer()
-                        WebNetworkOverlayPanel(model: model.networkOverlay)
+                    .overlay(alignment: .topTrailing) {
+                        if showNetworkOverlay {
+                            WebNetworkOverlayPanel(model: model.networkOverlay)
+                                .padding(12)
+                        }
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .allowsHitTesting(true)
-                }
 
                 if let message = model.noticeMessage ?? model.errorMessage {
                     Text(message)

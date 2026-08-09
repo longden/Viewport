@@ -5,6 +5,7 @@ enum BatchURLSnapshotError: LocalizedError {
     case noURLs
     case cancelled
     case folderCreationFailed
+    case loadTimedOut(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum BatchURLSnapshotError: LocalizedError {
             "Batch snapshotting was cancelled."
         case .folderCreationFailed:
             "Could not create the output folder."
+        case let .loadTimedOut(url):
+            "Timed out loading \(url)."
         }
     }
 }
@@ -88,15 +91,39 @@ final class BatchURLSnapshotService {
             )
 
             web.load(url)
-            try await waitForLoad(web: web)
+            do {
+                try await waitForLoad(web: web)
+            } catch let error as BatchURLSnapshotError {
+                onProgress(
+                    BatchURLSnapshotProgress(
+                        index: offset + 1,
+                        total: urls.count,
+                        url: url.absoluteString,
+                        savedURL: nil,
+                        message: error.errorDescription
+                    )
+                )
+                throw error
+            }
 
             if alsoOpenOnDevices {
-                _ = try? await workspace.broadcastOpenURL(
+                let openResult = try? await workspace.broadcastOpenURL(
                     url.absoluteString,
                     targets: .both,
                     alsoOpenWeb: false,
                     web: nil
                 )
+                if let openResult, !openResult.didSucceed {
+                    onProgress(
+                        BatchURLSnapshotProgress(
+                            index: offset + 1,
+                            total: urls.count,
+                            url: url.absoluteString,
+                            savedURL: nil,
+                            message: openResult.summary(verb: "Device open")
+                        )
+                    )
+                }
                 try await Task.sleep(for: .milliseconds(500))
             }
 
@@ -149,7 +176,9 @@ final class BatchURLSnapshotService {
         while web.isLoading {
             try Task.checkCancellation()
             if ContinuousClock.now >= deadline {
-                break
+                throw BatchURLSnapshotError.loadTimedOut(
+                    web.address.isEmpty ? "page" : web.address
+                )
             }
             try await Task.sleep(for: .milliseconds(100))
         }
