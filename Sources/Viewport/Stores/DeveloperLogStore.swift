@@ -291,6 +291,26 @@ final class DeveloperLogStore: ObservableObject {
         setStatus(.idle, for: .iOS)
     }
 
+    /// Recent log lines across sources for bug-report export.
+    func exportRecentLines(limitPerSource: Int = 400) -> String {
+        let formatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        for source in DeveloperLogSource.allCases {
+            let entries = Array((buffers[source] ?? []).suffix(limitPerSource))
+            guard !entries.isEmpty else { continue }
+            lines.append("--- \(source.title) ---")
+            for entry in entries {
+                lines.append(
+                    "[\(formatter.string(from: entry.timestamp))] [\(entry.level.rawValue)] \(entry.message)"
+                )
+            }
+        }
+        if lines.isEmpty {
+            return "(no log lines captured — enable Developer logs before reproducing)"
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private func append(
         source: DeveloperLogSource,
         level: DeveloperLogLevel,
