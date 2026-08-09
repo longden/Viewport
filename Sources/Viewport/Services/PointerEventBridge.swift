@@ -48,14 +48,15 @@ final class PointerEventBridge {
                 return
             }
             lastPoint[source] = point
-            let deltaY = (point.y - previous.y) * scrollScale
+            // Touch: finger up (y decreases) should scroll the page down (positive).
+            let deltaY = (previous.y - point.y) * scrollScale
             if abs(deltaY) > 0.5 {
                 web?.scrollBy(deltaY: deltaY)
             }
         case .ended:
             defer { lastPoint[source] = nil }
             guard let previous = lastPoint[source] else { return }
-            let deltaY = (point.y - previous.y) * scrollScale
+            let deltaY = (previous.y - point.y) * scrollScale
             if abs(deltaY) > 0.5 {
                 web?.scrollBy(deltaY: deltaY)
             }
