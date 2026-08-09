@@ -8,6 +8,9 @@ if [[ "$MODE" == "--debug" || "$MODE" == "debug" ]]; then
 fi
 APP_NAME="Viewport"
 BUNDLE_ID="com.longden.viewport"
+# Keep in sync with CHANGELOG.md / Package.swift version comment / script/package.sh default.
+APP_VERSION="${VIEWPORT_VERSION:-0.1.0}"
+APP_BUILD="${VIEWPORT_BUILD:-1}"
 MIN_SYSTEM_VERSION="26.0"
 APP_ICON_NAME="AppIcon"
 
@@ -95,6 +98,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$APP_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$APP_BUILD</string>
   <key>CFBundleIconFile</key>
   <string>$APP_ICON_NAME</string>
   <key>CFBundleIconName</key>
