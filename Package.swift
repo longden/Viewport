@@ -1,4 +1,5 @@
 // swift-tools-version: 6.2
+// Viewport version: 0.1.0 (CFBundleShortVersionString in the app Info.plist)
 
 import PackageDescription
 
