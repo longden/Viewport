@@ -18,6 +18,10 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var screenshotPlatformLabelsEnabled: Bool
     @Published private(set) var highFrameRateCaptureAvailable: Bool
     @Published private(set) var inputMirroringEnabled: Bool
+    @Published private(set) var synchronizedScrollingEnabled: Bool
+    @Published private(set) var perfHUDEnabled: Bool
+    /// When off (default), unfinished tools stay hidden from the Settings menu.
+    @Published private(set) var experimentalFeaturesEnabled: Bool
     @Published private(set) var recentDeepLinks: [String]
     @Published private(set) var lastPushBundleID: String
     @Published private(set) var lastPushPayloadJSON: String
@@ -30,6 +34,9 @@ final class WorkspaceStore: ObservableObject {
     private let captureModeKey: String
     private let screenshotPlatformLabelsKey: String
     private let inputMirroringKey: String
+    private let synchronizedScrollingKey: String
+    private let perfHUDKey: String
+    private let experimentalFeaturesKey: String
     private let recentDeepLinksKey: String
     private let lastPushBundleIDKey: String
     private let lastPushPayloadJSONKey: String
@@ -45,6 +52,9 @@ final class WorkspaceStore: ObservableObject {
         captureModeKey: String = "captureMode",
         screenshotPlatformLabelsKey: String = "screenshotPlatformLabelsEnabled",
         inputMirroringKey: String = "inputMirroringEnabled",
+        synchronizedScrollingKey: String = "synchronizedScrollingEnabled",
+        perfHUDKey: String = "perfHUDEnabled",
+        experimentalFeaturesKey: String = "experimentalFeaturesEnabled",
         recentDeepLinksKey: String = "recentDeepLinks",
         lastPushBundleIDKey: String = "lastPushBundleID",
         lastPushPayloadJSONKey: String = "lastPushPayloadJSON",
@@ -59,6 +69,9 @@ final class WorkspaceStore: ObservableObject {
         self.captureModeKey = captureModeKey
         self.screenshotPlatformLabelsKey = screenshotPlatformLabelsKey
         self.inputMirroringKey = inputMirroringKey
+        self.synchronizedScrollingKey = synchronizedScrollingKey
+        self.perfHUDKey = perfHUDKey
+        self.experimentalFeaturesKey = experimentalFeaturesKey
         self.recentDeepLinksKey = recentDeepLinksKey
         self.lastPushBundleIDKey = lastPushBundleIDKey
         self.lastPushPayloadJSONKey = lastPushPayloadJSONKey
@@ -94,6 +107,13 @@ final class WorkspaceStore: ObservableObject {
         highFrameRateCaptureAvailable = CGPreflightScreenCaptureAccess()
         inputMirroringEnabled = defaults.object(forKey: inputMirroringKey)
             as? Bool ?? false
+        synchronizedScrollingEnabled = defaults.object(
+            forKey: synchronizedScrollingKey
+        ) as? Bool ?? false
+        perfHUDEnabled = defaults.object(forKey: perfHUDKey) as? Bool ?? false
+        experimentalFeaturesEnabled = defaults.object(
+            forKey: experimentalFeaturesKey
+        ) as? Bool ?? false
         recentDeepLinks = defaults.stringArray(forKey: recentDeepLinksKey) ?? []
         lastPushBundleID = defaults.string(forKey: lastPushBundleIDKey) ?? ""
         lastPushPayloadJSON = defaults.string(forKey: lastPushPayloadJSONKey)
@@ -185,6 +205,32 @@ final class WorkspaceStore: ObservableObject {
         inputMirroringEnabled = isEnabled
         defaults.set(isEnabled, forKey: inputMirroringKey)
         configureInputMirroring()
+    }
+
+    /// Prototype: enables device↔device input mirroring and optional web scroll nudges.
+    func setSynchronizedScrollingEnabled(_ isEnabled: Bool) {
+        guard synchronizedScrollingEnabled != isEnabled else { return }
+        synchronizedScrollingEnabled = isEnabled
+        defaults.set(isEnabled, forKey: synchronizedScrollingKey)
+        if isEnabled, !inputMirroringEnabled {
+            setInputMirroringEnabled(true)
+        }
+    }
+
+    func setPerfHUDEnabled(_ isEnabled: Bool) {
+        guard perfHUDEnabled != isEnabled else { return }
+        perfHUDEnabled = isEnabled
+        defaults.set(isEnabled, forKey: perfHUDKey)
+    }
+
+    func setExperimentalFeaturesEnabled(_ isEnabled: Bool) {
+        guard experimentalFeaturesEnabled != isEnabled else { return }
+        experimentalFeaturesEnabled = isEnabled
+        defaults.set(isEnabled, forKey: experimentalFeaturesKey)
+        if !isEnabled {
+            setSynchronizedScrollingEnabled(false)
+            setInputMirroringEnabled(false)
+        }
     }
 
     func broadcastOpenURL(_ rawURL: String) async throws {
