@@ -38,12 +38,14 @@ actor CommandRunner {
         executable: URL,
         arguments: [String],
         environment: [String: String] = [:],
+        standardInput: Data? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> CommandResult {
         let result = try await runData(
             executable: executable,
             arguments: arguments,
             environment: environment,
+            standardInput: standardInput,
             timeout: timeout
         )
 
@@ -58,6 +60,7 @@ actor CommandRunner {
         executable: URL,
         arguments: [String],
         environment: [String: String] = [:],
+        standardInput: Data? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> CommandDataResult {
         try Task.checkCancellation()
@@ -65,6 +68,7 @@ actor CommandRunner {
             executable: executable,
             arguments: arguments,
             environment: environment,
+            standardInput: standardInput,
             timeout: timeout
         )
         return try await withTaskCancellationHandler {
@@ -105,6 +109,8 @@ private final class ProcessExecution: @unchecked Sendable {
     private let process = Process()
     private let standardOutput = Pipe()
     private let standardError = Pipe()
+    private let standardInputPipe = Pipe()
+    private let standardInput: Data?
     private let timeout: TimeInterval?
     private let commandName: String
     private let lock = NSLock()
@@ -124,9 +130,11 @@ private final class ProcessExecution: @unchecked Sendable {
         executable: URL,
         arguments: [String],
         environment: [String: String],
+        standardInput: Data?,
         timeout: TimeInterval?
     ) {
         self.timeout = timeout
+        self.standardInput = standardInput
         commandName = ([executable.lastPathComponent] + arguments)
             .joined(separator: " ")
 
@@ -138,6 +146,9 @@ private final class ProcessExecution: @unchecked Sendable {
         )
         process.standardOutput = standardOutput
         process.standardError = standardError
+        if standardInput != nil {
+            process.standardInput = standardInputPipe
+        }
     }
 
     func run() async throws -> CommandDataResult {
@@ -194,6 +205,10 @@ private final class ProcessExecution: @unchecked Sendable {
         lock.unlock()
         do {
             try process.run()
+            if let standardInput {
+                standardInputPipe.fileHandleForWriting.write(standardInput)
+                try? standardInputPipe.fileHandleForWriting.close()
+            }
         } catch {
             lock.lock()
             forcedError = CommandRunnerError.failedToLaunch(
