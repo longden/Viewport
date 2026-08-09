@@ -26,8 +26,10 @@ final class WebViewModelTests: XCTestCase {
         let model = WebViewModel()
         let scripts = model.webView.configuration.userContentController.userScripts
 
-        XCTAssertEqual(scripts.count, 1)
-        XCTAssertEqual(scripts.first?.injectionTime, .atDocumentStart)
-        XCTAssertFalse(scripts.first?.isForMainFrameOnly ?? true)
+        // Console bridge (all frames) plus network overlay (main frame).
+        XCTAssertEqual(scripts.count, 2)
+        XCTAssertTrue(scripts.allSatisfy { $0.injectionTime == .atDocumentStart })
+        XCTAssertFalse(scripts[0].isForMainFrameOnly)
+        XCTAssertTrue(scripts[1].isForMainFrameOnly)
     }
 }
