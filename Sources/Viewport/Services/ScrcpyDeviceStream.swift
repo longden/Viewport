@@ -132,7 +132,20 @@ final class ScrcpyDeviceStream {
             )
         }
 
-        let maximumDimension = profile.maximumDisplayDimension ?? 2_800
+        let maximumDimension: Int
+        let maxFPS: Int
+        let bitRate: Int
+        if serial.hasPrefix("emulator-") {
+            // Emulator MediaCodec is software-backed and falls over on large
+            // resizable displays. Prefer a snappy encode over native resolution.
+            maximumDimension = min(profile.maximumDisplayDimension ?? 1_024, 720)
+            maxFPS = min(profile.targetFrameRate, 30)
+            bitRate = min(profile.scrcpyVideoBitRate, 2_500_000)
+        } else {
+            maximumDimension = profile.maximumDisplayDimension ?? 2_800
+            maxFPS = profile.targetFrameRate
+            bitRate = profile.scrcpyVideoBitRate
+        }
         let process = Process()
         process.executableURL = adb
         process.arguments = [
@@ -154,8 +167,8 @@ final class ScrcpyDeviceStream {
             "send_dummy_byte=true",
             "video_codec=h264",
             "max_size=\(maximumDimension)",
-            "max_fps=\(profile.targetFrameRate)",
-            "video_bit_rate=\(profile.scrcpyVideoBitRate)"
+            "max_fps=\(maxFPS)",
+            "video_bit_rate=\(bitRate)"
         ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -996,10 +1009,12 @@ private final class H264StreamDecoder: @unchecked Sendable {
         }
 
         var infoFlags = VTDecodeInfoFlags()
+        // Live mirroring: decode ASAP and drop late frames. `_1xRealTimePlayback`
+        // schedules against PTS and adds perceptible lag on emulator streams.
         status = VTDecompressionSessionDecodeFrame(
             session,
             sampleBuffer: sampleBuffer,
-            flags: [._EnableAsynchronousDecompression, ._1xRealTimePlayback],
+            flags: [._EnableAsynchronousDecompression],
             frameRefcon: nil,
             infoFlagsOut: &infoFlags
         )

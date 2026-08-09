@@ -4,6 +4,9 @@ struct DeviceLauncherMenu: View {
     @ObservedObject var manager: DeviceManager
     var compact = true
     var onCreateEmulator: (() -> Void)?
+    /// When set, Play routes through this instead of `manager.launch` directly
+    /// so the caller can bind the launch to a specific pane.
+    var onLaunch: ((LaunchableDevice) -> Void)?
 
     var body: some View {
         Menu {
@@ -25,7 +28,11 @@ struct DeviceLauncherMenu: View {
             } else {
                 ForEach(manager.devices) { device in
                     Button {
-                        manager.launch(device)
+                        if let onLaunch {
+                            onLaunch(device)
+                        } else {
+                            manager.launch(device)
+                        }
                     } label: {
                         Label(
                             menuTitle(for: device),
