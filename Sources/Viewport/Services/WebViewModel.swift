@@ -15,6 +15,7 @@ final class WebViewModel: ObservableObject {
     @Published private(set) var viewportPreset: WebViewportPreset
 
     let webView: WKWebView
+    let networkOverlay = WebNetworkOverlayModel()
 
     private let dataCleaner: any WebsiteDataClearing
     private let consoleBridge: WebConsoleBridge
@@ -48,10 +49,12 @@ final class WebViewModel: ObservableObject {
         configuration.websiteDataStore = .default()
         configuration.preferences.isElementFullscreenEnabled = true
         consoleBridge.install(in: configuration)
+        networkOverlay.install(in: configuration)
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = true
         webView.underPageBackgroundColor = .clear
+        networkOverlay.bind(to: webView)
         applyViewportPreset(viewportPreset, reloadIfNeeded: false)
     }
 
@@ -98,6 +101,16 @@ final class WebViewModel: ObservableObject {
 
     func reload() {
         webView.reload()
+    }
+
+    /// Prototype helper for synchronized scrolling from device gestures.
+    func scrollBy(deltaY: Double) {
+        let dy = Int(deltaY.rounded())
+        guard dy != 0 else { return }
+        webView.evaluateJavaScript(
+            "window.scrollBy(0, \(dy));",
+            completionHandler: nil
+        )
     }
 
     func setConsoleCaptureEnabled(_ enabled: Bool) {
