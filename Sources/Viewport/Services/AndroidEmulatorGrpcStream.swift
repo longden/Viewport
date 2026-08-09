@@ -33,6 +33,10 @@ final class AndroidEmulatorGrpcStream {
     private let endpointProvider: @Sendable (String) -> EmulatorGrpcEndpoint?
     private let workerFactory: WorkerFactory
 
+    deinit {
+        stop()
+    }
+
     init(
         endpointProvider: @escaping @Sendable (String) -> EmulatorGrpcEndpoint? = {
             AndroidEmulatorGrpcStream.endpoint(for: $0)
@@ -342,7 +346,7 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
     private var nextStreamID: UInt32 = 1
     private var screenshotStreamID: UInt32 = 1
     private var decoder = HTTP2FrameDecoder()
-    private var grpcBuffer = Data()
+    private var grpcBuffer = GrpcMessageBuffer()
 
     init(
         host: String,
@@ -625,24 +629,20 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
 
     private func handleGRPCData(_ payload: Data) {
         grpcBuffer.append(payload)
-        while grpcBuffer.count >= 5 {
-            let compressed = grpcBuffer[grpcBuffer.startIndex]
-            let length = Int(grpcBuffer[grpcBuffer.startIndex + 1]) << 24
-                | Int(grpcBuffer[grpcBuffer.startIndex + 2]) << 16
-                | Int(grpcBuffer[grpcBuffer.startIndex + 3]) << 8
-                | Int(grpcBuffer[grpcBuffer.startIndex + 4])
-            guard compressed == 0 else {
-                fail(AndroidEmulatorGrpcError.protocolError("Compressed gRPC frames are unsupported"))
-                return
-            }
-            guard length >= 0, length < 32 * 1024 * 1024 else {
-                fail(AndroidEmulatorGrpcError.protocolError("Invalid gRPC message length"))
-                return
-            }
-            guard grpcBuffer.count >= 5 + length else { return }
-            let messageStart = grpcBuffer.startIndex + 5
-            let message = grpcBuffer.subdata(in: messageStart..<(messageStart + length))
-            grpcBuffer.removeSubrange(grpcBuffer.startIndex..<(messageStart + length))
+        let messages: [Data]
+        do {
+            messages = try grpcBuffer.consumeMessages()
+        } catch GrpcMessageBuffer.ConsumeError.compressedUnsupported {
+            fail(AndroidEmulatorGrpcError.protocolError("Compressed gRPC frames are unsupported"))
+            return
+        } catch GrpcMessageBuffer.ConsumeError.invalidLength {
+            fail(AndroidEmulatorGrpcError.protocolError("Invalid gRPC message length"))
+            return
+        } catch {
+            fail(error)
+            return
+        }
+        for message in messages {
             if let image = EmulatorProtobuf.parseImage(message) {
                 frameDelivery.submit(image, deliver: onFrame)
             }
