@@ -1,18 +1,18 @@
 import SwiftUI
 
-/// Compare-workflow tools: injector sheet, appearance, font scale, status bars.
+/// Compare-workflow tools: appearance, font scale, status bars, and optional
+/// experimental compare helpers.
 struct DeviceToolsMenu: View {
     @ObservedObject var workspace: WorkspaceStore
     @Binding var showInjector: Bool
+    @Binding var showNetworkOverlay: Bool
+    @Binding var showOverlayDiff: Bool
+    @Binding var showBatchSnapshots: Bool
     @State private var isBusy = false
     @State private var statusMessage: String?
 
     var body: some View {
         Menu {
-            Button("Open URL & Push…") {
-                showInjector = true
-            }
-
             Section("Appearance") {
                 ForEach(DeviceAppearance.allCases) { appearance in
                     Button("\(appearance.title) on all devices") {
@@ -50,18 +50,45 @@ struct DeviceToolsMenu: View {
                 .disabled(isBusy)
             }
 
-            Divider()
+            if workspace.experimentalFeaturesEnabled {
+                Section("Experimental") {
+                    Button("Open URL & Push…") {
+                        showInjector = true
+                    }
 
-            Toggle(
-                "Mirror input across devices",
-                isOn: Binding(
-                    get: { workspace.inputMirroringEnabled },
-                    set: { workspace.setInputMirroringEnabled($0) }
-                )
-            )
-            .help(
-                "Replay taps and scrolls from one device pane onto the other visible device pane."
-            )
+                    Toggle("Web network overlay", isOn: $showNetworkOverlay)
+
+                    Button("Onion-skin overlay…") {
+                        showOverlayDiff = true
+                    }
+
+                    Button("Batch URL snapshots…") {
+                        showBatchSnapshots = true
+                    }
+
+                    Toggle(
+                        "Mirror input across devices",
+                        isOn: Binding(
+                            get: { workspace.inputMirroringEnabled },
+                            set: { workspace.setInputMirroringEnabled($0) }
+                        )
+                    )
+                    .help(
+                        "Replay taps and scrolls from one device pane onto the other visible device pane."
+                    )
+
+                    Toggle(
+                        "Synchronized scrolling",
+                        isOn: Binding(
+                            get: { workspace.synchronizedScrollingEnabled },
+                            set: { workspace.setSynchronizedScrollingEnabled($0) }
+                        )
+                    )
+                    .help(
+                        "Turns on input mirroring and nudges the web pane when device swipes end."
+                    )
+                }
+            }
 
             if let statusMessage {
                 Divider()
@@ -73,7 +100,7 @@ struct DeviceToolsMenu: View {
         } label: {
             Label("Device tools", systemImage: "wrench.and.screwdriver")
         }
-        .help("Deep links, push, appearance, status bars, and input mirroring")
+        .help("Appearance, status bars, and optional experimental compare tools")
         .disabled(isBusy)
     }
 
