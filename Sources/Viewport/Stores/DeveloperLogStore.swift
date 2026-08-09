@@ -19,7 +19,8 @@ final class DeveloperLogStore: ObservableObject {
     ] = [
         .web: .idle,
         .android: .idle,
-        .iOS: .idle
+        .iOS: .idle,
+        .build: .idle
     ]
     @Published private(set) var isPaused = false
     @Published private(set) var retentionLimitBytes: Int
@@ -100,6 +101,24 @@ final class DeveloperLogStore: ObservableObject {
             messages: [message],
             timestamp: timestamp
         )
+    }
+
+    func appendBuild(
+        level: DeveloperLogLevel,
+        message: String,
+        timestamp: Date = Date()
+    ) {
+        guard isEnabled else { return }
+        append(
+            source: .build,
+            level: level,
+            messages: [message],
+            timestamp: timestamp
+        )
+    }
+
+    func setBuildStatus(_ status: DeveloperLogStreamStatus) {
+        setStatus(status, for: .build)
     }
 
     func setEnabled(_ enabled: Bool) {

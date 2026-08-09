@@ -143,6 +143,7 @@ final class StreamingProcess: StreamingProcessRunning, @unchecked Sendable {
         executable: URL,
         arguments: [String],
         environment: [String: String] = [:],
+        workingDirectory: URL? = nil,
         onLines: @escaping LinesHandler,
         onTermination: @escaping TerminationHandler
     ) {
@@ -154,6 +155,7 @@ final class StreamingProcess: StreamingProcessRunning, @unchecked Sendable {
             environment,
             uniquingKeysWith: { _, override in override }
         )
+        process.currentDirectoryURL = workingDirectory
         process.standardOutput = standardOutput
         process.standardError = standardError
     }
