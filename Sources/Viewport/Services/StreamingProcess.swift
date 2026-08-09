@@ -12,22 +12,38 @@ protocol StreamingProcessRunning: AnyObject {
 }
 
 struct LogLineDecoder {
-    private(set) var bufferedData = Data()
+    private var storage = Data()
+    private var consumed = 0
     private var discardingOversizedLine = false
     let maximumLineBytes: Int
+    private let compactionThreshold: Int
 
-    init(maximumLineBytes: Int = 64 * 1_024) {
+    /// Unconsumed buffered bytes (for tests / debugging).
+    var bufferedData: Data {
+        Data(storage[(storage.startIndex + consumed)..<storage.endIndex])
+    }
+
+    /// Bytes already consumed but not yet compacted (for tests).
+    var consumedByteCount: Int { consumed }
+
+    init(
+        maximumLineBytes: Int = 64 * 1_024,
+        compactionThreshold: Int = 64 * 1_024
+    ) {
         self.maximumLineBytes = maximumLineBytes
+        self.compactionThreshold = max(compactionThreshold, 1)
     }
 
     mutating func append(_ data: Data) -> [String] {
         guard !data.isEmpty else { return [] }
-        bufferedData.append(data)
+        storage.append(data)
         var lines: [String] = []
 
-        while let newline = bufferedData.firstIndex(of: 0x0A) {
-            let lineData = Data(bufferedData[..<newline])
-            bufferedData.removeSubrange(...newline)
+        while let newline = firstNewlineIndex() {
+            let lineStart = storage.startIndex + consumed
+            let lineData = Data(storage[lineStart..<newline])
+            consumed = storage.distance(from: storage.startIndex, to: newline) + 1
+            compactIfNeeded()
             if discardingOversizedLine {
                 discardingOversizedLine = false
                 continue
@@ -41,23 +57,56 @@ struct LogLineDecoder {
             }
         }
 
-        if bufferedData.count > maximumLineBytes {
-            lines.append(decode(Data(bufferedData.prefix(maximumLineBytes))) + " …")
-            bufferedData.removeAll(keepingCapacity: true)
+        if unconsumedCount > maximumLineBytes {
+            lines.append(decode(Data(unconsumedPrefix(maximumLineBytes))) + " …")
+            storage.removeAll(keepingCapacity: true)
+            consumed = 0
             discardingOversizedLine = true
         }
         return lines
     }
 
     mutating func finish() -> [String] {
-        guard !bufferedData.isEmpty, !discardingOversizedLine else {
-            bufferedData.removeAll()
+        let pending = bufferedData
+        guard !pending.isEmpty, !discardingOversizedLine else {
+            storage.removeAll()
+            consumed = 0
             discardingOversizedLine = false
             return []
         }
-        let line = decode(bufferedData)
-        bufferedData.removeAll()
+        let line = decode(pending)
+        storage.removeAll()
+        consumed = 0
         return [line]
+    }
+
+    private var unconsumedCount: Int { storage.count - consumed }
+
+    private func firstNewlineIndex() -> Data.Index? {
+        let range = (storage.startIndex + consumed)..<storage.endIndex
+        return storage[range].firstIndex(of: 0x0A)
+    }
+
+    private func unconsumedPrefix(_ maxCount: Int) -> Data {
+        let start = storage.startIndex + consumed
+        let end = storage.index(
+            start,
+            offsetBy: maxCount,
+            limitedBy: storage.endIndex
+        ) ?? storage.endIndex
+        return storage[start..<end]
+    }
+
+    private mutating func compactIfNeeded() {
+        guard consumed > 0 else { return }
+        let halfBuffer = storage.count / 2
+        guard consumed >= compactionThreshold || consumed >= halfBuffer else {
+            return
+        }
+        storage.removeSubrange(
+            storage.startIndex..<(storage.startIndex + consumed)
+        )
+        consumed = 0
     }
 
     private func decode(_ data: Data) -> String {
