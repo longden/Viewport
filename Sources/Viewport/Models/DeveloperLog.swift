@@ -4,6 +4,7 @@ enum DeveloperLogSource: String, CaseIterable, Identifiable {
     case web
     case android
     case iOS
+    case build
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum DeveloperLogSource: String, CaseIterable, Identifiable {
         case .web: "Web"
         case .android: "Android"
         case .iOS: "iOS"
+        case .build: "Build"
         }
     }
 
@@ -20,6 +22,7 @@ enum DeveloperLogSource: String, CaseIterable, Identifiable {
         case .web: "globe"
         case .android: "apps.iphone"
         case .iOS: "iphone"
+        case .build: "hammer"
         }
     }
 }
