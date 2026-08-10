@@ -4,7 +4,8 @@ import Foundation
 import IOSurface
 import IndigoTouch
 
-/// Zero-copy iOS Simulator framebuffer via SimulatorKit IOSurface.
+/// Zero-copy iOS Simulator framebuffer via SimulatorKit IOSurface
+/// (device IO ports + damage callbacks; not Simulator.app window capture).
 @MainActor
 final class IOSSimulatorSurfaceStream {
     private let sampleQueue = DispatchQueue(
@@ -19,6 +20,11 @@ final class IOSSimulatorSurfaceStream {
     private nonisolated(unsafe) var subscription: UnsafeMutableRawPointer?
     private nonisolated(unsafe) var onFrame: ((IOSurfaceRef) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
+    private nonisolated(unsafe) var stallWatchdog: DispatchWorkItem?
+
+    /// Stall timeout in seconds. If no frame arrives within this interval
+    /// after subscription or after the last frame, `onFailure` fires.
+    private let stallTimeout: TimeInterval = 5
 
     deinit {
         stop()
@@ -50,6 +56,7 @@ final class IOSSimulatorSurfaceStream {
                 UInt32(max(1, frameRate)),
                 { [weak self] surface in
                     guard let self, let surface else { return }
+                    self.resetStallWatchdog()
                     let retained = Unmanaged.passUnretained(surface)
                         .retain()
                         .takeUnretainedValue()
@@ -77,6 +84,7 @@ final class IOSSimulatorSurfaceStream {
             throw IOSSimulatorSurfaceError.subscribeFailed(message)
         }
         subscription = handle
+        scheduleStallWatchdog()
     }
 
     nonisolated func stop() {
@@ -84,10 +92,37 @@ final class IOSSimulatorSurfaceStream {
         subscription = nil
         onFrame = nil
         onFailure = nil
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
         frameDelivery.clear()
         if let handle {
             ViewportSurfaceUnsubscribe(handle)
         }
+    }
+
+    /// Reschedules the stall watchdog from the sample queue.
+    nonisolated private func resetStallWatchdog() {
+        stallWatchdog?.cancel()
+        scheduleStallWatchdog()
+    }
+
+    /// Fires onFailure if no frame arrives within `stallTimeout`.
+    nonisolated private func scheduleStallWatchdog() {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.subscription != nil else { return }
+            let onFailure = self.onFailure
+            self.stop()
+            Task { @MainActor in
+                onFailure?(IOSSimulatorSurfaceError.subscribeFailed(
+                    "Surface stream stalled — no frames received."
+                ))
+            }
+        }
+        stallWatchdog = item
+        sampleQueue.asyncAfter(
+            deadline: .now() + stallTimeout,
+            execute: item
+        )
     }
 }
 

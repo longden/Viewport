@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class IOSSimulatorSurfaceStreamTests: XCTestCase {
+    func testPrivateFrameworksLoadFromActiveXcode() {
+        let stream = IOSSimulatorSurfaceStream()
+        // On a machine with Xcode + SimulatorKit this must succeed even when
+        // xcode-select points at Command Line Tools.
+        XCTAssertTrue(
+            stream.isAvailable,
+            "Expected CoreSimulator/SimulatorKit to load from Xcode"
+        )
+    }
+
     func testSurfaceStreamWhenRequested() async throws {
         guard let deviceID = ProcessInfo.processInfo.environment[
             "VIEWPORT_IOS_SIMULATOR_UDID"
