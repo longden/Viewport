@@ -9,6 +9,8 @@ struct HelpSheet: View {
     @State private var isChecking = true
     @State private var showCreateSheet = false
     @State private var copiedCommandID: String?
+    @State private var showInstalledDetails = false
+    @State private var installAlertMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,7 @@ struct HelpSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(
-                        "Viewport needs a few tools on this Mac to list, create, and stream devices. Recheck after installing anything."
+                        "Viewport needs a few tools on this Mac to list, create, and stream devices. Use Install to run a brew command in Terminal, then Recheck."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -30,7 +32,7 @@ struct HelpSheet: View {
                 .padding(20)
             }
         }
-        .frame(minWidth: 520, minHeight: 560)
+        .frame(minWidth: 520, minHeight: 520)
         .task {
             await refreshReport()
         }
@@ -40,6 +42,25 @@ struct HelpSheet: View {
         .onChange(of: androidDevices.devices.count) {
             Task { await refreshReport() }
         }
+        .alert(
+            "Couldn’t start install",
+            isPresented: Binding(
+                get: { installAlertMessage != nil },
+                set: { if !$0 { installAlertMessage = nil } }
+            )
+        ) {
+            if installAlertMessage?.contains("Homebrew") == true {
+                Button("Open brew.sh") {
+                    NSWorkspace.shared.open(SetupTerminalInstaller.homebrewURL)
+                    installAlertMessage = nil
+                }
+            }
+            Button("OK", role: .cancel) {
+                installAlertMessage = nil
+            }
+        } message: {
+            Text(installAlertMessage ?? "")
+        }
     }
 
     @ViewBuilder
@@ -47,61 +68,129 @@ struct HelpSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("This Mac")
 
-            if isChecking {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Checking this Mac…")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8)
-            } else if let report {
-                VStack(spacing: 10) {
-                    ForEach(report.items) { item in
-                        checkRow(item)
+            VStack(alignment: .leading, spacing: 12) {
+                if isChecking {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Checking this Mac…")
+                            .foregroundStyle(.secondary)
                     }
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                } else if let report {
+                    let attentionItems = report.items.filter { $0.status != .ready }
+                    let installedItems = report.items.filter { $0.status == .ready }
 
-                if report.canCreateEmulators {
-                    Button {
-                        showCreateSheet = true
-                    } label: {
-                        Label(
-                            "Create Android emulator…",
-                            systemImage: "plus.circle"
-                        )
-                        .frame(maxWidth: .infinity)
+                    if attentionItems.isEmpty {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Everything Viewport needs is installed.")
+                                .font(.body.weight(.medium))
+                            Spacer(minLength: 0)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(attentionItems) { item in
+                                checkRow(item, compact: false)
+                            }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                } else {
-                    Text(
-                        "Once Android Studio (or the Android CLI) and a system image are installed, you can create an emulator here."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+
+                    if report.shouldShowPhysicalAndroidTip {
+                        Text(
+                            "USB Android phones only need ADB — scrcpy is optional for smoother streaming. Emulators still need the SDK, Emulator package, and a system image."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if !installedItems.isEmpty {
+                        DisclosureGroup(isExpanded: $showInstalledDetails) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(installedItems) { item in
+                                    checkRow(item, compact: true)
+                                }
+                            }
+                            .padding(.top, 8)
+                        } label: {
+                            Text(
+                                installedItems.count == report.items.count
+                                    ? "Installed tools (\(installedItems.count))"
+                                    : "Already installed (\(installedItems.count))"
+                            )
+                            .font(.subheadline.weight(.medium))
+                        }
+                    }
+
+                    if report.canCreateEmulators {
+                        Button {
+                            showCreateSheet = true
+                        } label: {
+                            Label(
+                                "Create Android emulator…",
+                                systemImage: "plus.circle"
+                            )
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    } else if attentionItems.contains(where: {
+                        ["sdk", "android-cli", "system-images", "emulator"].contains($0.id)
+                    }) {
+                        Text(
+                            "Once Android Studio (or the Android CLI) and a system image are installed, you can create an emulator here."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color.primary.opacity(0.04),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
         }
     }
 
+    @ViewBuilder
     private var installGuidesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Install guides")
 
-            Text(
-                "Copy a brew command into Terminal, or open a download page. Homebrew: https://brew.sh"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
+            if isChecking {
+                Text("Matching guides to what’s installed…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                let neededGuides = report?.neededInstallGuides ?? SetupInstallGuides.all
 
-            VStack(spacing: 10) {
-                ForEach(SetupInstallGuides.all) { guide in
-                    installGuideRow(guide)
+                if neededGuides.isEmpty {
+                    Text(
+                        "Nothing left to install for the guides below. Recheck anytime after changing tools."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(
+                        "Only showing what’s still missing. Install opens Terminal with the brew command — then tap Recheck. Homebrew: https://brew.sh"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+
+                    VStack(spacing: 10) {
+                        ForEach(neededGuides) { guide in
+                            installGuideRow(guide)
+                        }
+                    }
                 }
             }
         }
@@ -139,41 +228,48 @@ struct HelpSheet: View {
             .font(.headline)
     }
 
-    private func checkRow(_ item: SetupCheckItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
+    private func checkRow(_ item: SetupCheckItem, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 8) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: statusSymbol(item.status))
                     .foregroundStyle(statusColor(item.status))
-                    .frame(width: 18)
+                    .frame(width: 16)
 
-                VStack(alignment: .leading, spacing: 2) {
+                if compact {
                     Text(item.title)
-                        .font(.body.weight(.medium))
+                        .font(.subheadline.weight(.medium))
                     Text(item.detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.body.weight(.medium))
+                        Text(item.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
             }
 
-            if item.status != .ready {
+            if !compact, item.status != .ready {
                 installActions(
                     command: item.installCommand,
                     commandID: "check-\(item.id)",
                     url: item.installURL,
                     urlTitle: item.installURLTitle
                 )
-                .padding(.leading, 30)
+                .padding(.leading, 26)
             }
         }
-        .padding(12)
-        .background(
-            Color.primary.opacity(0.04),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .padding(.vertical, compact ? 2 : 4)
     }
 
     private func installGuideRow(_ guide: SetupInstallGuide) -> some View {
@@ -223,10 +319,18 @@ struct HelpSheet: View {
             HStack(spacing: 8) {
                 if let command {
                     Button {
+                        runInstall(command)
+                    } label: {
+                        Label("Install", systemImage: "terminal")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button {
                         copyCommand(command, id: commandID)
                     } label: {
                         Label(
-                            copiedCommandID == commandID ? "Copied" : "Copy command",
+                            copiedCommandID == commandID ? "Copied" : "Copy",
                             systemImage: copiedCommandID == commandID
                                 ? "checkmark"
                                 : "doc.on.doc"
@@ -273,6 +377,14 @@ struct HelpSheet: View {
             .red
         case .optionalMissing:
             .orange
+        }
+    }
+
+    private func runInstall(_ command: String) {
+        do {
+            try SetupTerminalInstaller.runInTerminal(command)
+        } catch {
+            installAlertMessage = error.localizedDescription
         }
     }
 
