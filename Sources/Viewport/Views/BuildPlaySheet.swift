@@ -201,13 +201,13 @@ struct BuildPlaySheet: View {
             && workspace.iOSCapture.selectedDevice != nil
         let hasAndroidTarget = workspace.isVisible(.android)
             && workspace.androidCapture.selectedDevice != nil
-        let iosReady = !hasIOSTarget || (
-            settings.iosProjectPath != nil
-                && settings.iosScheme != nil
-                && !settings.iosScheme!.isEmpty
-        )
-        let androidReady = !hasAndroidTarget || settings.androidProjectPath != nil
-        return (hasIOSTarget || hasAndroidTarget) && iosReady && androidReady
+        let iosReady = settings.iosProjectPath != nil
+            && settings.iosScheme != nil
+            && !(settings.iosScheme?.isEmpty ?? true)
+        let androidReady = settings.androidProjectPath != nil
+        let canDeployIOS = hasIOSTarget && iosReady
+        let canDeployAndroid = hasAndroidTarget && androidReady
+        return canDeployIOS || canDeployAndroid
     }
 
     private func chooseIOSProject() {
