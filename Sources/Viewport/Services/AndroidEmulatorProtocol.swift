@@ -155,7 +155,7 @@ struct HTTP2FrameDecoder {
 }
 
 enum EmulatorProtobuf {
-    static func imageFormat(rgba: Bool, width: UInt32, height: UInt32) -> Data {
+    static func imageFormat(rgba: Bool, width: UInt32, height: UInt32, fps: UInt32 = 0) -> Data {
         var data = Data()
         data.append(contentsOf: encodeKey(field: 1, wire: 0))
         data.append(contentsOf: encodeVarint(UInt64(rgba ? 1 : 0)))
@@ -166,6 +166,10 @@ enum EmulatorProtobuf {
         if height > 0 {
             data.append(contentsOf: encodeKey(field: 4, wire: 0))
             data.append(contentsOf: encodeVarint(UInt64(height)))
+        }
+        if fps > 0 {
+            data.append(contentsOf: encodeKey(field: 7, wire: 0))
+            data.append(contentsOf: encodeVarint(UInt64(fps)))
         }
         return data
     }
