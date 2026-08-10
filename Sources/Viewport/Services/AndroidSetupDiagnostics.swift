@@ -92,6 +92,55 @@ struct AndroidSetupReport: Equatable {
     var isReady: Bool {
         !items.contains(where: \.isBlocking)
     }
+
+    func isItemReady(_ id: String) -> Bool {
+        items.first(where: { $0.id == id })?.status == .ready
+    }
+
+    /// Install guides that are still useful given the current Mac.
+    var neededInstallGuides: [SetupInstallGuide] {
+        SetupInstallGuides.all.filter { !$0.isSatisfied(by: self) }
+    }
+
+    /// ADB alone is enough to stream a plugged-in Android phone/emulator over adb.
+    var supportsPhysicalAndroid: Bool {
+        isItemReady("adb")
+    }
+
+    /// Full local emulator stack (not counting Android CLI create).
+    var hasEmulatorRuntime: Bool {
+        isItemReady("sdk")
+            && isItemReady("adb")
+            && isItemReady("emulator")
+            && isItemReady("system-images")
+    }
+
+    /// Show the lighter USB-device tip when ADB works but emulators aren't fully set up.
+    var shouldShowPhysicalAndroidTip: Bool {
+        supportsPhysicalAndroid && !hasEmulatorRuntime
+    }
+}
+
+extension SetupInstallGuide {
+    /// Whether this guide's deliverable is already present on the Mac.
+    func isSatisfied(by report: AndroidSetupReport) -> Bool {
+        switch id {
+        case "android-studio":
+            report.isItemReady("sdk")
+                && report.isItemReady("emulator")
+                && report.isItemReady("system-images")
+        case "adb":
+            report.isItemReady("adb")
+        case "android-cli":
+            report.isItemReady("android-cli")
+        case "scrcpy":
+            report.isItemReady("scrcpy")
+        case "xcode":
+            report.isItemReady("xcode")
+        default:
+            false
+        }
+    }
 }
 
 struct AndroidSetupDiagnostics {
@@ -118,6 +167,7 @@ struct AndroidSetupDiagnostics {
         let scrcpy = toolchains.scrcpy
         let systemImageCount = countSystemImages(in: sdk)
         let existingEmulators = await existingAVDCount()
+        let xcodeReady = toolchains.simctl != nil
 
         let items: [SetupCheckItem] = [
             SetupCheckItem(
@@ -186,6 +236,16 @@ struct AndroidSetupDiagnostics {
                 installCommand: scrcpy == nil ? SetupInstallGuides.scrcpy.command : nil,
                 installURL: scrcpy == nil ? SetupInstallGuides.scrcpy.url : nil,
                 installURLTitle: scrcpy == nil ? SetupInstallGuides.scrcpy.urlTitle : nil
+            ),
+            SetupCheckItem(
+                id: "xcode",
+                title: "Xcode",
+                status: xcodeReady ? .ready : .missing,
+                detail: xcodeReady
+                    ? toolchains.developerDirectory.path
+                    : "Required for the iOS Simulator pane. Install from the Mac App Store, then open Xcode once.",
+                installURL: xcodeReady ? nil : SetupInstallGuides.xcode.url,
+                installURLTitle: xcodeReady ? nil : SetupInstallGuides.xcode.urlTitle
             ),
             SetupCheckItem(
                 id: "avds",
