@@ -30,12 +30,12 @@ struct ViewerPane<Controls: View, Content: View>: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 14, height: 14)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .help("Remove this pane")
-                    .accessibilityLabel("Remove \(source.title) pane")
+                    .buttonStyle(PaneToolbarButtonStyle())
+                    .help(closeHelp)
+                    .accessibilityLabel(closeAccessibilityLabel)
                 }
             }
 
@@ -73,6 +73,28 @@ struct ViewerPane<Controls: View, Content: View>: View {
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .accessibilityHidden(true)
+    }
+
+    private var closeHelp: String {
+        switch source {
+        case .iOS:
+            "Shut down Simulator and close this pane"
+        case .android:
+            "Shut down emulator and close this pane"
+        case .web:
+            "Hide Web pane"
+        }
+    }
+
+    private var closeAccessibilityLabel: String {
+        switch source {
+        case .iOS:
+            "Shut down Simulator"
+        case .android:
+            "Shut down emulator"
+        case .web:
+            "Hide Web pane"
+        }
     }
 }
 

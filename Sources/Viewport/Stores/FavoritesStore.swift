@@ -44,6 +44,11 @@ final class FavoritesStore: ObservableObject {
             )
         }
 
+        let maximumFavorites = 50
+        if sites.count > maximumFavorites {
+            sites = Array(sites.prefix(maximumFavorites))
+        }
+
         persist()
     }
 

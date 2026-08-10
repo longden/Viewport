@@ -21,6 +21,7 @@ struct FavoritesMenu: View {
             Label("Saved websites", systemImage: "bookmark")
         }
         .labelStyle(.iconOnly)
+        .paneChromeHover()
         .help("Saved websites")
     }
 }

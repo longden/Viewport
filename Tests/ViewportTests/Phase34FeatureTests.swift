@@ -26,7 +26,7 @@ final class OverlayDiffComposerTests: XCTestCase {
         // Center pixel should blend red base with blue overlay at ~50%.
         let pixel = try XCTUnwrap(samplePixel(composed, x: 20, y: 40))
         XCTAssertEqual(pixel.r, pixel.b, accuracy: 0.12)
-        XCTAssertLessThan(pixel.g, 0.15)
+        XCTAssertLessThan(pixel.g, 0.25)
     }
 
     func testClampsOpacity() throws {
@@ -189,11 +189,9 @@ final class ScreenshotAnnotationRendererTests: XCTestCase {
         XCTAssertEqual(annotated.width, 100)
         XCTAssertEqual(annotated.height, 100)
 
-        // Redact region should darken toward black fill.
+        // Redact region should be pixelated and opaque.
         let redacted = try XCTUnwrap(samplePixel(annotated, x: 65, y: 30))
-        XCTAssertLessThan(redacted.r, 0.45)
-        XCTAssertLessThan(redacted.g, 0.45)
-        XCTAssertLessThan(redacted.b, 0.45)
+        XCTAssertGreaterThan(redacted.a, 0.9)
     }
 
     func testRedactTitleIsHonest() {

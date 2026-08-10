@@ -50,6 +50,48 @@ struct ContentView: View {
     }
 
     var body: some View {
+        workspaceChrome
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: NSApplication.didBecomeActiveNotification
+                )
+            ) { _ in
+                workspace.refreshHighFrameRateCaptureAvailability()
+            }
+            .onChange(of: workspace.androidDevices.lastLaunchToken) {
+                workspace.reconnectAfterDeviceLaunch()
+            }
+            .onChange(of: workspace.iOSDevices.lastLaunchToken) {
+                workspace.reconnectAfterDeviceLaunch()
+            }
+            .onChange(of: workspace.androidDevices.lastLaunchFailureToken) {
+                workspace.clearPendingLaunch(
+                    for: .android,
+                    deviceID: workspace.androidDevices.lastLaunchFailureDeviceID
+                )
+            }
+            .onChange(of: workspace.iOSDevices.lastLaunchFailureToken) {
+                workspace.clearPendingLaunch(
+                    for: .iOS,
+                    deviceID: workspace.iOSDevices.lastLaunchFailureDeviceID
+                )
+            }
+            .modifier(LogStreamSyncTriggers(
+                workspace: workspace,
+                showDeveloperLogs: showDeveloperLogs,
+                sync: syncLogStreams
+            ))
+            .onChange(of: workspace.captureMode) {
+                finalizeRecordingIfNeeded()
+            }
+            .onChange(of: recording.lastSavedURL) { _, url in
+                if let url {
+                    presentExportToast(url)
+                }
+            }
+    }
+
+    private var workspaceChrome: some View {
         ZStack(alignment: .top) {
             workspaceBackground
 
@@ -171,39 +213,6 @@ struct ContentView: View {
                 workspace.stopCaptures()
             }
         }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )
-        ) { _ in
-            workspace.refreshHighFrameRateCaptureAvailability()
-        }
-        .onChange(of: workspace.androidDevices.lastLaunchToken) {
-            workspace.reconnectAfterDeviceLaunch()
-        }
-        .onChange(of: workspace.iOSDevices.lastLaunchToken) {
-            workspace.reconnectAfterDeviceLaunch()
-        }
-        .onChange(of: workspace.androidCapture.selectedDeviceID) {
-            syncLogStreams()
-        }
-        .onChange(of: workspace.iOSCapture.selectedDeviceID) {
-            syncLogStreams()
-        }
-        .onChange(of: workspace.visibleSources) {
-            syncLogStreams()
-        }
-        .onChange(of: showDeveloperLogs) {
-            syncLogStreams()
-        }
-        .onChange(of: workspace.captureMode) {
-            finalizeRecordingIfNeeded()
-        }
-        .onChange(of: recording.lastSavedURL) { _, url in
-            if let url {
-                presentExportToast(url)
-            }
-        }
     }
 
     private var recordingHelp: String {
@@ -311,12 +320,16 @@ struct ContentView: View {
     private func syncLogStreams() {
         developerLogs.setEnabled(showDeveloperLogs)
         web.setConsoleCaptureEnabled(showDeveloperLogs)
+
+        let activeAndroidSession = workspace.focusedCaptureSession(for: .android) ?? workspace.androidCapture
+        let activeIOSSession = workspace.focusedCaptureSession(for: .iOS) ?? workspace.iOSCapture
+
         developerLogs.updateAndroidDevice(
-            id: workspace.androidCapture.selectedDeviceID,
+            id: activeAndroidSession.selectedDeviceID,
             isVisible: showDeveloperLogs && workspace.isVisible(.android)
         )
         developerLogs.updateIOSDevice(
-            workspace.iOSCapture.selectedDevice,
+            activeIOSSession.selectedDevice,
             isVisible: showDeveloperLogs && workspace.isVisible(.iOS)
         )
     }
@@ -399,7 +412,7 @@ struct ContentView: View {
         }
     }
 
-    private func takePaneScreenshot(_ source: ViewerSource) {
+    private func takePaneScreenshot(_ source: ViewerSource, session: WindowCaptureSession? = nil) {
         guard !isTakingScreenshot else { return }
         isTakingScreenshot = true
         exportError = nil
@@ -409,6 +422,7 @@ struct ContentView: View {
                 let service = WorkspaceScreenshotService()
                 let image = try await service.capturePane(
                     source: source,
+                    session: session,
                     web: web,
                     workspace: workspace
                 )
@@ -582,6 +596,37 @@ private struct ResizableDeveloperConsoleLayout<
                 storedHeight = Double(transientHeight ?? currentHeight)
                 dragStartHeight = nil
                 transientHeight = nil
+            }
+    }
+}
+
+private struct LogStreamSyncTriggers: ViewModifier {
+    @ObservedObject var workspace: WorkspaceStore
+    var showDeveloperLogs: Bool
+    var sync: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: workspace.androidCapture.selectedDeviceID) { _, _ in
+                sync()
+            }
+            .onChange(of: workspace.androidCaptureSecondary.selectedDeviceID) { _, _ in
+                sync()
+            }
+            .onChange(of: workspace.iOSCapture.selectedDeviceID) { _, _ in
+                sync()
+            }
+            .onChange(of: workspace.iOSCaptureSecondary.selectedDeviceID) { _, _ in
+                sync()
+            }
+            .onChange(of: workspace.focusedCapturePaneID) { _, _ in
+                sync()
+            }
+            .onChange(of: workspace.visibleSources) { _, _ in
+                sync()
+            }
+            .onChange(of: showDeveloperLogs) { _, _ in
+                sync()
             }
     }
 }

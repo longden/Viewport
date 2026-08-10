@@ -4,7 +4,7 @@ struct WorkspaceSplitView: View {
     @ObservedObject var workspace: WorkspaceStore
     @ObservedObject var web: WebViewModel
     @ObservedObject var favorites: FavoritesStore
-    var onPaneScreenshot: ((ViewerSource) -> Void)?
+    var onPaneScreenshot: ((ViewerSource, WindowCaptureSession?) -> Void)?
     var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     var squareWebContentCorners: Bool = false
     var showNetworkOverlay: Bool = false
@@ -56,6 +56,12 @@ struct WorkspaceSplitView: View {
                 alignment: .topLeading
             )
             .clipped()
+            .onAppear {
+                workspace.noteSplitContentSize(proxy.size)
+            }
+            .onChange(of: proxy.size) { _, newSize in
+                workspace.noteSplitContentSize(newSize)
+            }
             .onChange(of: panes.map(\.id)) {
                 dragState = nil
                 transientPaneWidths = nil
@@ -189,11 +195,14 @@ struct WorkspaceSplitView: View {
                 model: web,
                 favorites: favorites,
                 onScreenshot: onPaneScreenshot.map { handler in
-                    { handler(.web) }
+                    { handler(.web, nil) }
                 },
                 onCaptureTargetChange: onWebCaptureTargetChange,
                 squareContentCorners: squareWebContentCorners,
-                showNetworkOverlay: showNetworkOverlay
+                showNetworkOverlay: showNetworkOverlay,
+                onClose: {
+                    workspace.setVisible(false, for: .web)
+                }
             )
         case .android, .iOS:
             if let session = workspace.captureSession(for: node) {
@@ -205,9 +214,10 @@ struct WorkspaceSplitView: View {
                     workspace: workspace,
                     paneID: node.id,
                     paneTitleSuffix: node.slot >= 1 ? " \(node.slot + 1)" : nil,
-                    isClosable: node.slot >= 1,
+                    isClosable: true,
+                    isExtraPane: node.slot >= 1,
                     onScreenshot: onPaneScreenshot.map { handler in
-                        { handler(node.viewerSource ?? .android) }
+                        { handler(node.viewerSource ?? .android, session) }
                     },
                     showPerfHUD: workspace.perfHUDEnabled,
                     showDeviceBezels: workspace.deviceBezelsEnabled

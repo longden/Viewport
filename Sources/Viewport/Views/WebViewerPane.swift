@@ -8,7 +8,9 @@ struct WebViewerPane: View {
     /// Composite recording squares the live web clip so it matches device panes.
     var squareContentCorners: Bool = false
     var showNetworkOverlay: Bool = false
+    var onClose: (() -> Void)? = nil
     @FocusState private var addressIsFocused: Bool
+    @State private var showCloseConfirm = false
 
     private var contentCornerRadius: CGFloat {
         squareContentCorners ? 0 : 16
@@ -17,7 +19,8 @@ struct WebViewerPane: View {
     var body: some View {
         ViewerPane(
             source: .web,
-            contentCornerRadius: contentCornerRadius
+            contentCornerRadius: contentCornerRadius,
+            onClose: onClose == nil ? nil : { showCloseConfirm = true }
         ) {
             addressBar
         } content: {
@@ -46,6 +49,14 @@ struct WebViewerPane: View {
             .onAppear {
                 model.networkOverlay.setEnabled(showNetworkOverlay)
             }
+        }
+        .alert("Hide Web pane?", isPresented: $showCloseConfirm) {
+            Button("Hide", role: .destructive) {
+                onClose?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the Web pane from the workspace. You can show it again from the toolbar.")
         }
     }
 
@@ -108,53 +119,56 @@ struct WebViewerPane: View {
 
     private var addressBar: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                ControlGroup {
-                    Button {
-                        model.goBack()
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ControlGroup {
+                        Button {
+                            model.goBack()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                        .disabled(!model.canGoBack)
+
+                        Button {
+                            model.goForward()
+                        } label: {
+                            Label("Forward", systemImage: "chevron.right")
+                        }
+                        .disabled(!model.canGoForward)
                     }
-                    .disabled(!model.canGoBack)
+                    .labelStyle(.iconOnly)
+
+                    viewportPresetPicker
+
+                    clearDataMenu
+
+                    FavoritesMenu(favorites: favorites, web: model)
 
                     Button {
-                        model.goForward()
+                        onScreenshot?()
                     } label: {
-                        Label("Forward", systemImage: "chevron.right")
+                        Label("Screenshot", systemImage: "camera")
                     }
-                    .disabled(!model.canGoForward)
+                    .labelStyle(.iconOnly)
+                    .disabled(!canTakeScreenshot)
+                    .help(
+                        canTakeScreenshot
+                            ? "Save this web pane"
+                            : "Nothing to capture yet"
+                    )
+
+                    Button {
+                        model.reload()
+                    } label: {
+                        Label("Reload", systemImage: "arrow.clockwise")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Reload page")
                 }
-                .labelStyle(.iconOnly)
-
-                viewportPresetPicker
-
-                Spacer(minLength: 0)
-
-                clearDataMenu
-
-                FavoritesMenu(favorites: favorites, web: model)
-
-                Button {
-                    onScreenshot?()
-                } label: {
-                    Label("Screenshot", systemImage: "camera")
-                }
-                .labelStyle(.iconOnly)
-                .disabled(!canTakeScreenshot)
-                .help(
-                    canTakeScreenshot
-                        ? "Save this web pane"
-                        : "Nothing to capture yet"
-                )
-
-                Button {
-                    model.reload()
-                } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
-                }
-                .labelStyle(.iconOnly)
-                .help("Reload page")
+                .controlSize(.small)
+                .buttonStyle(PaneToolbarButtonStyle())
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 8) {
                 TextField("Web address", text: $model.address)
@@ -174,6 +188,7 @@ struct WebViewerPane: View {
                     )
                 }
                 .labelStyle(.iconOnly)
+                .buttonStyle(PaneToolbarButtonStyle())
                 .disabled(model.currentURL == nil)
                 .help(
                     currentWebsiteIsSaved
@@ -181,31 +196,29 @@ struct WebViewerPane: View {
                         : "Save current website"
                 )
             }
+            .controlSize(.small)
         }
-        .controlSize(.small)
     }
 
     private var viewportPresetPicker: some View {
-        Menu {
+        Picker(
+            "Viewport",
+            selection: Binding(
+                get: { model.viewportPreset },
+                set: { model.setViewportPreset($0) }
+            )
+        ) {
             ForEach(WebViewportPreset.Category.allCases, id: \.self) { category in
                 Section(category.title) {
                     ForEach(WebViewportPreset.presets(in: category)) { preset in
-                        Button {
-                            model.setViewportPreset(preset)
-                        } label: {
-                            if model.viewportPreset == preset {
-                                Label(preset.menuLabel, systemImage: "checkmark")
-                            } else {
-                                Text(preset.menuLabel)
-                            }
-                        }
+                        Text(preset.menuLabel)
+                            .tag(preset)
                     }
                 }
             }
-        } label: {
-            Label(model.viewportPreset.menuLabel, systemImage: model.viewportPreset.systemImage)
         }
-        .labelStyle(.titleAndIcon)
+        .labelsHidden()
+        .pickerStyle(.menu)
         .fixedSize(horizontal: true, vertical: false)
         .help("Match a device or desktop CSS viewport")
     }
@@ -232,6 +245,7 @@ struct WebViewerPane: View {
             }
         }
         .labelStyle(.iconOnly)
+        .paneChromeHover()
         .disabled(model.isClearingData)
         .help("Clear cookies and website data")
     }
