@@ -38,10 +38,9 @@ actor DeviceFrameClient {
 
     private let runner: CommandRunner
     private let adb: URL?
-    private let xcrun: URL
-    private let simctl: URL
-    private let invokesSimctlThroughXcrun: Bool
+    private let toolchains: ToolchainLocator
     private let developerDirectory: String
+    private let iOSToolsAvailable: Bool
 
     init(
         source: ViewerSource,
@@ -50,21 +49,11 @@ actor DeviceFrameClient {
     ) {
         self.source = source
         self.runner = runner
-        xcrun = toolchains.xcrun
+        self.toolchains = toolchains
         developerDirectory = toolchains.developerDirectory.path
-
-        let directSimctl = URL(
-            fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
-        )
-        if FileManager.default.isExecutableFile(atPath: directSimctl.path) {
-            simctl = directSimctl
-            invokesSimctlThroughXcrun = false
-        } else {
-            simctl = xcrun
-            invokesSimctlThroughXcrun = true
-        }
-
         adb = toolchains.adb
+        iOSToolsAvailable = toolchains.simctl != nil
+            || FileManager.default.isExecutableFile(atPath: toolchains.xcrun.path)
     }
 
     nonisolated var isAvailable: Bool {
@@ -72,7 +61,7 @@ actor DeviceFrameClient {
         case .android:
             adb != nil
         case .iOS:
-            FileManager.default.isExecutableFile(atPath: xcrun.path)
+            iOSToolsAvailable
         case .web:
             false
         }
@@ -294,9 +283,10 @@ actor DeviceFrameClient {
     }
 
     private func listIOSSimulators() async throws -> [StreamedDevice] {
+        let command = toolchains.simctlCommand(["list", "devices", "--json"])
         let result = try await runner.run(
-            executable: simctl,
-            arguments: simctlArguments(["list", "devices", "--json"]),
+            executable: command.executable,
+            arguments: command.arguments,
             environment: processEnvironment,
             timeout: 3
         )
@@ -387,12 +377,13 @@ actor DeviceFrameClient {
             .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
         defer { try? FileManager.default.removeItem(at: screenshotURL) }
 
+        let command = toolchains.simctlCommand([
+            "io", udid, "screenshot", "--type=jpeg", "--mask=ignored",
+            screenshotURL.path
+        ])
         let result = try await runner.run(
-            executable: simctl,
-            arguments: simctlArguments([
-                "io", udid, "screenshot", "--type=jpeg", "--mask=ignored",
-                screenshotURL.path
-            ]),
+            executable: command.executable,
+            arguments: command.arguments,
             environment: processEnvironment,
             timeout: 4
         )
@@ -410,10 +401,6 @@ actor DeviceFrameClient {
 
     private nonisolated var processEnvironment: [String: String] {
         ["DEVELOPER_DIR": developerDirectory]
-    }
-
-    private func simctlArguments(_ arguments: [String]) -> [String] {
-        invokesSimctlThroughXcrun ? ["simctl"] + arguments : arguments
     }
 }
 

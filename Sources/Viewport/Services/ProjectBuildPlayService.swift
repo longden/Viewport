@@ -59,6 +59,7 @@ actor ProjectBuildPlayService {
 
     private let runner: CommandRunner
     private let adb: URL?
+    private let toolchains: ToolchainLocator
     private let xcrun: URL
     private let developerEnvironment: [String: String]
     private let androidSDK: URL
@@ -79,6 +80,7 @@ actor ProjectBuildPlayService {
     ) {
         self.runner = runner
         adb = toolchains.adb
+        self.toolchains = toolchains
         xcrun = toolchains.xcrun
         developerEnvironment = toolchains.developerEnvironment
         androidSDK = toolchains.androidSDK
@@ -438,9 +440,12 @@ actor ProjectBuildPlayService {
         onLog: @escaping LogHandler
     ) async throws {
         onLog(.standardOutput, "=== \(deviceName): install ===")
+        let installCommand = toolchains.simctlCommand([
+            "install", udid, artifact.appURL.path
+        ])
         let install = try await runner.run(
-            executable: xcrun,
-            arguments: ["simctl", "install", udid, artifact.appURL.path],
+            executable: installCommand.executable,
+            arguments: installCommand.arguments,
             environment: developerEnvironment,
             timeout: 180
         )
@@ -456,9 +461,12 @@ actor ProjectBuildPlayService {
         }
 
         onLog(.standardOutput, "=== \(deviceName): launch \(artifact.bundleID) ===")
+        let launchCommand = toolchains.simctlCommand([
+            "launch", udid, artifact.bundleID
+        ])
         let launch = try await runner.run(
-            executable: xcrun,
-            arguments: ["simctl", "launch", udid, artifact.bundleID],
+            executable: launchCommand.executable,
+            arguments: launchCommand.arguments,
             environment: developerEnvironment,
             timeout: 60
         )

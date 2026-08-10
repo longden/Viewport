@@ -76,6 +76,7 @@ extension StreamedDeviceKind {
 actor AppPackageInstaller {
     private let runner: CommandRunner
     private let adb: URL?
+    private let toolchains: ToolchainLocator
     private let xcrun: URL
     private let developerEnvironment: [String: String]
     private let fileManager: FileManager
@@ -87,6 +88,7 @@ actor AppPackageInstaller {
     ) {
         self.runner = runner
         adb = toolchains.adb
+        self.toolchains = toolchains
         xcrun = toolchains.xcrun
         developerEnvironment = toolchains.developerEnvironment
         self.fileManager = fileManager
@@ -183,9 +185,10 @@ actor AppPackageInstaller {
     }
 
     private func installSimulatorApp(_ url: URL, udid: String) async throws {
+        let command = toolchains.simctlCommand(["install", udid, url.path])
         let result = try await runner.run(
-            executable: xcrun,
-            arguments: ["simctl", "install", udid, url.path],
+            executable: command.executable,
+            arguments: command.arguments,
             environment: developerEnvironment,
             timeout: 180
         )

@@ -1,15 +1,25 @@
 import Foundation
 
+/// How to invoke `simctl` without relying on the Mac's active `xcode-select`.
+/// Prefer a real `simctl` binary so Command Line Tools-only selections still work.
+struct SimctlCommand: Equatable {
+    let executable: URL
+    let arguments: [String]
+}
+
 struct ToolchainLocator {
     let environment: [String: String]
     let homeDirectory: URL
+    private let fileManager: FileManager
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
     ) {
         self.environment = environment
         self.homeDirectory = homeDirectory
+        self.fileManager = fileManager
     }
 
     var androidSDK: URL {
@@ -63,9 +73,15 @@ struct ToolchainLocator {
         )
     }
 
+    /// Xcode developer directory that actually contains Simulator tools.
+    /// Ignores `DEVELOPER_DIR` / `xcode-select` when they point at Command Line
+    /// Tools (which do not ship `simctl`).
     var developerDirectory: URL {
-        environment["DEVELOPER_DIR"].map(URL.init(fileURLWithPath:))
-            ?? URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer")
+        let fallback = URL(
+            fileURLWithPath: "/Applications/Xcode.app/Contents/Developer"
+        )
+        return developerDirectoryCandidates.first(where: isUsableDeveloperDirectory)
+            ?? fallback
     }
 
     var developerEnvironment: [String: String] {
@@ -73,4 +89,60 @@ struct ToolchainLocator {
     }
 
     let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+
+    /// Resolved `simctl` binary when one exists on disk.
+    var simctl: URL? {
+        let candidates = [
+            URL(
+                fileURLWithPath:
+                    "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
+            ),
+            developerDirectory.appendingPathComponent("usr/bin/simctl")
+        ]
+        return candidates.first {
+            fileManager.isExecutableFile(atPath: $0.path)
+        }
+    }
+
+    /// Build an invocation that prefers a direct `simctl` binary over `xcrun`.
+    func simctlCommand(_ arguments: [String]) -> SimctlCommand {
+        if let simctl {
+            return SimctlCommand(executable: simctl, arguments: arguments)
+        }
+        return SimctlCommand(
+            executable: xcrun,
+            arguments: ["simctl"] + arguments
+        )
+    }
+
+    private var developerDirectoryCandidates: [URL] {
+        var candidates: [URL] = []
+        if let override = environment["DEVELOPER_DIR"], !override.isEmpty {
+            candidates.append(URL(fileURLWithPath: override))
+        }
+        candidates.append(
+            URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer")
+        )
+        if let selected = readXcodeSelectLink(),
+           !candidates.contains(where: { $0.path == selected.path }) {
+            candidates.append(selected)
+        }
+        return candidates
+    }
+
+    private func isUsableDeveloperDirectory(_ url: URL) -> Bool {
+        fileManager.isExecutableFile(
+            atPath: url.appendingPathComponent("usr/bin/simctl").path
+        )
+    }
+
+    private func readXcodeSelectLink() -> URL? {
+        let link = URL(fileURLWithPath: "/var/db/xcode_select_link")
+        guard let destination = try? fileManager.destinationOfSymbolicLink(
+            atPath: link.path
+        ) else {
+            return nil
+        }
+        return URL(fileURLWithPath: destination)
+    }
 }

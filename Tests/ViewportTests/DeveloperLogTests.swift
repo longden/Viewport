@@ -140,11 +140,15 @@ final class DeveloperLogStoreTests: XCTestCase {
         XCTAssertEqual(
             recorder.arguments,
             [
-                "simctl", "spawn", "SIMULATOR-UDID",
+                "spawn", "SIMULATOR-UDID",
                 "log", "stream",
                 "--style", "compact",
                 "--level", "debug"
             ]
+        )
+        XCTAssertEqual(
+            recorder.executable?.lastPathComponent,
+            "simctl"
         )
         XCTAssertEqual(recorder.environment?["DEVELOPER_DIR"], ToolchainLocator().developerDirectory.path)
         XCTAssertEqual(store.status(for: .iOS), .streaming)

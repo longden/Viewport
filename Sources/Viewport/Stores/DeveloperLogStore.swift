@@ -240,14 +240,15 @@ final class DeveloperLogStore: ObservableObject {
         }
 
         setStatus(.connecting, for: .iOS)
+        let command = toolchains.simctlCommand([
+            "spawn", device.id,
+            "log", "stream",
+            "--style", "compact",
+            "--level", "debug"
+        ])
         let process = processFactory(
-            toolchains.xcrun,
-            [
-                "simctl", "spawn", device.id,
-                "log", "stream",
-                "--style", "compact",
-                "--level", "debug"
-            ],
+            command.executable,
+            command.arguments,
             toolchains.developerEnvironment,
             { [weak self] output, lines in
                 Task { @MainActor [weak self] in
