@@ -98,3 +98,41 @@ final class DevicePreviewInputGeometryTests: XCTestCase {
         XCTAssertEqual(rect.width, 500, accuracy: 0.001)
     }
 }
+
+final class HostWindowDeviceTitleMatchingTests: XCTestCase {
+    func testExactAndSeparatorPrefixMatch() {
+        XCTAssertTrue(
+            HostWindowDeviceTitleMatching.matches(
+                title: "iPhone 16",
+                deviceName: "iPhone 16"
+            )
+        )
+        XCTAssertTrue(
+            HostWindowDeviceTitleMatching.matches(
+                title: "iPhone 16 — Safari",
+                deviceName: "iPhone 16"
+            )
+        )
+        XCTAssertTrue(
+            HostWindowDeviceTitleMatching.matches(
+                title: "iPhone 16 - Safari",
+                deviceName: "iPhone 16"
+            )
+        )
+    }
+
+    func testRejectsLongerDeviceNameSubstring() {
+        XCTAssertFalse(
+            HostWindowDeviceTitleMatching.matches(
+                title: "iPhone 16 Pro — Safari",
+                deviceName: "iPhone 16"
+            )
+        )
+        XCTAssertFalse(
+            HostWindowDeviceTitleMatching.matches(
+                title: "Pixel 7 Pro",
+                deviceName: "Pixel 7"
+            )
+        )
+    }
+}
