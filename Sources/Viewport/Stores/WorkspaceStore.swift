@@ -30,9 +30,13 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var lastPushBundleID: String
     @Published private(set) var lastPushPayloadJSON: String
     @Published private(set) var preferHeadlessAndroidEmulators: Bool
+    @Published private(set) var preferHeadlessIOSSimulators: Bool
     @Published private(set) var locationFavorites: [DeviceLocationCoordinate]
     @Published var focusedCaptureSource: ViewerSource?
     @Published var focusedCapturePaneID: UUID?
+
+    /// Latest workspace row size from ``WorkspaceSplitView`` (for Reset Windows).
+    private(set) var lastSplitContentSize: CGSize = PaneGridLayout.defaultSplitContentSize
 
     private let defaults: UserDefaults
     private let visibleSourcesKey: String
@@ -51,6 +55,7 @@ final class WorkspaceStore: ObservableObject {
     private let lastPushBundleIDKey: String
     private let lastPushPayloadJSONKey: String
     private let preferHeadlessAndroidKey: String
+    private let preferHeadlessIOSKey: String
     private let locationFavoritesKey: String
     private let automation = DeviceAutomationService()
     private var captureRefreshTask: Task<Void, Never>?
@@ -73,6 +78,7 @@ final class WorkspaceStore: ObservableObject {
         lastPushBundleIDKey: String = "lastPushBundleID",
         lastPushPayloadJSONKey: String = "lastPushPayloadJSON",
         preferHeadlessAndroidKey: String = AndroidEmulatorLaunchArguments.preferHeadlessUserDefaultsKey,
+        preferHeadlessIOSKey: String = IOSSimulatorClient.preferHeadlessUserDefaultsKey,
         locationFavoritesKey: String = "locationFavorites",
         androidClient: (any DeviceClient)? = nil,
         iOSClient: any DeviceClient = IOSSimulatorClient()
@@ -94,6 +100,7 @@ final class WorkspaceStore: ObservableObject {
         self.lastPushBundleIDKey = lastPushBundleIDKey
         self.lastPushPayloadJSONKey = lastPushPayloadJSONKey
         self.preferHeadlessAndroidKey = preferHeadlessAndroidKey
+        self.preferHeadlessIOSKey = preferHeadlessIOSKey
         self.locationFavoritesKey = locationFavoritesKey
         androidDevices = DeviceManager(
             client: androidClient ?? AndroidDeviceClient(defaults: defaults)
@@ -104,7 +111,10 @@ final class WorkspaceStore: ObservableObject {
         let initialPaneWeights = Dictionary(uniqueKeysWithValues: ViewerSource.allCases.map {
             source in
             let value = restoredWeights?[source.rawValue] as? Double
-            return (source, max(value ?? 1, 0.01))
+            return (
+                source,
+                max(value ?? PaneGridLayout.preferredWeight(for: source), 0.01)
+            )
         })
 
         let initialVisibility: Set<ViewerSource>
@@ -115,9 +125,11 @@ final class WorkspaceStore: ObservableObject {
             from: data
            ),
            !restoredLayout.nodes.isEmpty {
-            initialLayout = restoredLayout
+            var normalized = restoredLayout
+            normalized.normalizeCanonicalOrder()
+            initialLayout = normalized
             initialVisibility = Set(
-                restoredLayout.nodes.compactMap(\.viewerSource)
+                normalized.nodes.compactMap(\.viewerSource)
             )
         } else {
             let restored = defaults.stringArray(forKey: visibleSourcesKey)?
@@ -166,6 +178,9 @@ final class WorkspaceStore: ObservableObject {
         preferHeadlessAndroidEmulators = defaults.object(
             forKey: preferHeadlessAndroidKey
         ) as? Bool ?? true
+        preferHeadlessIOSSimulators = defaults.object(
+            forKey: preferHeadlessIOSKey
+        ) as? Bool ?? true
         if let data = defaults.data(forKey: locationFavoritesKey),
            let favorites = try? JSONDecoder().decode(
             [DeviceLocationCoordinate].self,
@@ -175,6 +190,11 @@ final class WorkspaceStore: ObservableObject {
         } else {
             locationFavorites = Self.defaultLocationFavorites
         }
+
+        androidCapture.isPerfHUDEnabled = perfHUDEnabled
+        androidCaptureSecondary.isPerfHUDEnabled = perfHUDEnabled
+        iOSCapture.isPerfHUDEnabled = perfHUDEnabled
+        iOSCaptureSecondary.isPerfHUDEnabled = perfHUDEnabled
 
         // Sync-scroll stays experimental; mirroring is a first-class compare tool.
         if !experimentalFeaturesEnabled, synchronizedScrollingEnabled {
@@ -199,7 +219,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var orderedVisiblePanes: [PaneGridNode] {
-        paneLayout.nodes
+        paneLayout.canonicallyOrderedNodes
     }
 
     var allCaptureSessions: [WindowCaptureSession] {
@@ -265,30 +285,32 @@ final class WorkspaceStore: ObservableObject {
         return removePane(id: node.id)
     }
 
-    /// Removes an extra device pane (slot ≥ 1), stops its stream, and shuts down
-    /// the emulator / Simulator that was selected there.
+    /// Closes a device pane: shuts down its Simulator/emulator (if any), then
+    /// removes an extra pane or clears the primary pane back to empty.
     @discardableResult
-    func removePane(id: UUID) -> Bool {
+    func closePane(id: UUID) -> Bool {
         guard let node = paneLayout.nodes.first(where: { $0.id == id }),
-              node.viewerSource != nil,
-              node.slot >= 1 else {
+              let source = node.viewerSource,
+              source == .android || source == .iOS else {
             return false
         }
 
         let session = captureSession(for: node)
-        let deviceToStop = session?.selectedDevice
+        let deviceToStop = session?.guestToTerminate
         session?.clearSelection()
 
-        var layout = paneLayout
-        layout.removePane(id: id)
-        paneLayout = layout
+        if node.slot >= 1 {
+            var layout = paneLayout
+            layout.removePane(id: id)
+            paneLayout = layout
 
-        if focusedCapturePaneID == id {
-            focusedCapturePaneID = nil
+            if focusedCapturePaneID == id {
+                focusedCapturePaneID = nil
+            }
+
+            configureInputMirroring()
+            persistPaneLayout()
         }
-
-        configureInputMirroring()
-        persistPaneLayout()
 
         if let deviceToStop {
             Task { [weak self] in
@@ -298,17 +320,84 @@ final class WorkspaceStore: ObservableObject {
         return true
     }
 
+    /// Removes an extra device pane (slot ≥ 1), stops its stream, and shuts down
+    /// the emulator / Simulator that was selected there.
+    @discardableResult
+    func removePane(id: UUID) -> Bool {
+        guard let node = paneLayout.nodes.first(where: { $0.id == id }),
+              node.slot >= 1 else {
+            return false
+        }
+        return closePane(id: id)
+    }
+
     /// Starts an AVD / Simulator into a specific pane with a loading state,
     /// without cloning the sibling pane's live device.
     func launch(_ device: LaunchableDevice, into session: WindowCaptureSession) {
         guard device.source == session.source else { return }
         focusedCaptureSource = session.source
-        session.prepareForPendingLaunch(named: device.name)
+        session.prepareForPendingLaunch(named: device.name, deviceID: device.id)
+        // Poll for the guest while bootstatus runs so the pane connects as soon
+        // as the runtime is Booted — even if bootstatus is slow or stalls.
+        reconnectAfterDeviceLaunch()
         switch device.source {
         case .android:
             androidDevices.launch(device)
         case .iOS:
             iOSDevices.launch(device)
+        case .web:
+            break
+        }
+    }
+
+    /// Clears pending “Starting…” state after a launch failure/cancel.
+    /// When `deviceID` is set, only panes waiting for that guest are cleared so
+    /// superseding a boot into another pane does not wipe the new pending launch.
+    func clearPendingLaunch(for source: ViewerSource, deviceID: String? = nil) {
+        for session in allCaptureSessions where session.source == source {
+            guard session.pendingLaunchName != nil else { continue }
+            if let deviceID, session.pendingLaunchDeviceID != deviceID {
+                continue
+            }
+            session.clearPendingLaunch()
+        }
+        // Launch-failure path: stop reconnect polling once nothing is still
+        // waiting for a guest. Leave the task alone if another source still
+        // has a pending launch.
+        let stillWaiting = allCaptureSessions.contains { $0.pendingLaunchName != nil }
+        if !stillWaiting {
+            captureRefreshTask?.cancel()
+            captureRefreshTask = nil
+        }
+    }
+
+    /// Powers off a Simulator / emulator from the Play menu and clears any pane
+    /// that was showing it.
+    func shutdownGuest(_ device: LaunchableDevice) {
+        switch device.source {
+        case .android:
+            for session in allCaptureSessions where session.source == .android {
+                if session.pendingLaunchDeviceID == device.id {
+                    session.clearSelection()
+                    continue
+                }
+                if let selected = session.selectedDevice,
+                   selected.kind == .androidEmulator,
+                   selected.name == device.name
+                    || selected.name.replacingOccurrences(of: " ", with: "_")
+                        == device.id {
+                    session.clearSelection()
+                }
+            }
+            androidDevices.shutdown(device)
+        case .iOS:
+            for session in allCaptureSessions where session.source == .iOS {
+                if session.selectedDeviceID == device.id
+                    || session.pendingLaunchDeviceID == device.id {
+                    session.clearSelection()
+                }
+            }
+            iOSDevices.shutdown(device)
         case .web:
             break
         }
@@ -320,6 +409,52 @@ final class WorkspaceStore: ObservableObject {
 
     func paneWeight(forPaneID id: UUID) -> Double {
         paneLayout.nodes.first { $0.id == id }?.weight ?? 1
+    }
+
+    func noteSplitContentSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        lastSplitContentSize = size
+    }
+
+    /// Restores aspect-fit device columns and gives leftover width to web.
+    /// Keeps current panes/visibility; only resets widths.
+    func resetPaneWindows() {
+        let nodes = paneLayout.canonicallyOrderedNodes
+        var aspects: [UUID: Double] = [:]
+        for node in nodes {
+            guard node.viewerSource == .android || node.viewerSource == .iOS,
+                  let session = captureSession(for: node),
+                  let frame = session.capturedFrameSize,
+                  frame.height > 0 else {
+                continue
+            }
+            aspects[node.id] = Double(frame.width / frame.height)
+        }
+
+        let widths = PaneGridLayout.balancedPaneWidths(
+            nodes: nodes,
+            contentSize: lastSplitContentSize,
+            deviceAspectByNodeID: aspects
+        )
+
+        var layout = paneLayout
+        var nextWeights = paneWeights
+        for index in layout.nodes.indices {
+            let node = layout.nodes[index]
+            let width = max(widths[node.id] ?? PaneGridLayout.minimumPaneWidth, 0.01)
+            layout.nodes[index].weight = width
+            if node.slot == 0, let source = node.viewerSource {
+                nextWeights[source] = width
+            }
+        }
+        for source in ViewerSource.allCases where nextWeights[source] == nil {
+            nextWeights[source] = PaneGridLayout.preferredWeight(for: source)
+        }
+        paneWeights = nextWeights
+        paneLayout = layout
+
+        persistPaneWeights()
+        persistPaneLayout()
     }
 
     func resizePanes(
@@ -452,6 +587,10 @@ final class WorkspaceStore: ObservableObject {
         guard perfHUDEnabled != isEnabled else { return }
         perfHUDEnabled = isEnabled
         defaults.set(isEnabled, forKey: perfHUDKey)
+        androidCapture.isPerfHUDEnabled = isEnabled
+        androidCaptureSecondary.isPerfHUDEnabled = isEnabled
+        iOSCapture.isPerfHUDEnabled = isEnabled
+        iOSCaptureSecondary.isPerfHUDEnabled = isEnabled
     }
 
     func setExperimentalFeaturesEnabled(_ isEnabled: Bool) {
@@ -664,6 +803,12 @@ final class WorkspaceStore: ObservableObject {
         defaults.set(isEnabled, forKey: preferHeadlessAndroidKey)
     }
 
+    func setPreferHeadlessIOSSimulators(_ isEnabled: Bool) {
+        guard preferHeadlessIOSSimulators != isEnabled else { return }
+        preferHeadlessIOSSimulators = isEnabled
+        defaults.set(isEnabled, forKey: preferHeadlessIOSKey)
+    }
+
     func broadcastSetClipboard(_ text: String) async throws {
         try await broadcast { try await automation.setClipboard(text, on: $0) }
     }
@@ -733,6 +878,69 @@ final class WorkspaceStore: ObservableObject {
             return
         }
         try await broadcastRotateClockwise()
+    }
+
+    func pressHomeOnFocusedDevice() async throws {
+        guard let source = focusedCaptureSource ?? focusedDeviceSource(),
+              let device = selectedCaptureDevice(for: source) else {
+            throw DeviceAutomationError.commandFailed(
+                "Select an Android or iOS device first."
+            )
+        }
+        // Reuse the live pane HID client so we don't fight a second Indigo session.
+        if source == .iOS,
+           let session = focusedCaptureSession(for: .iOS),
+           session.selectedDevice?.id == device.id {
+            try await session.pressSystemHome()
+            return
+        }
+        try await automation.pressHome(on: device)
+    }
+
+    func pressBackOnFocusedDevice() async throws {
+        guard let source = focusedCaptureSource ?? focusedDeviceSource(),
+              let device = selectedCaptureDevice(for: source) else {
+            throw DeviceAutomationError.commandFailed(
+                "Select an Android or iOS device first."
+            )
+        }
+        if source == .iOS,
+           let session = focusedCaptureSession(for: .iOS),
+           session.selectedDevice?.id == device.id {
+            try await session.pressSystemBack()
+            return
+        }
+        try await automation.pressBack(on: device)
+    }
+
+    func focusedCaptureSession(for source: ViewerSource) -> WindowCaptureSession? {
+        if let focusedCapturePaneID,
+           let node = paneLayout.nodes.first(where: { $0.id == focusedCapturePaneID }),
+           node.viewerSource == source {
+            return captureSession(for: node)
+        }
+        switch source {
+        case .android:
+            return androidCapture.selectedDevice != nil
+                ? androidCapture
+                : androidCaptureSecondary.selectedDevice != nil
+                    ? androidCaptureSecondary
+                    : nil
+        case .iOS:
+            return iOSCapture.selectedDevice != nil
+                ? iOSCapture
+                : iOSCaptureSecondary.selectedDevice != nil
+                    ? iOSCaptureSecondary
+                    : nil
+        case .web:
+            return nil
+        }
+    }
+
+    private func focusedDeviceSource() -> ViewerSource? {
+        if androidCapture.selectedDevice != nil { return .android }
+        if iOSCapture.selectedDevice != nil { return .iOS }
+        return nil
     }
 
     func addLocationFavorite(
@@ -962,18 +1170,40 @@ final class WorkspaceStore: ObservableObject {
             // Keep at least one pane overall.
             let remaining = paneLayout.nodes.filter { $0.source != source.rawValue }
             guard !remaining.isEmpty else { return }
+            let devicesToStop = paneLayout.nodes
+                .filter { $0.source == source.rawValue }
+                .compactMap { captureSession(for: $0)?.guestToTerminate }
             for node in paneLayout.nodes where node.source == source.rawValue {
-                captureSession(for: node)?.stopCapture()
+                captureSession(for: node)?.clearSelection()
             }
             var layout = paneLayout
             layout.removePanes(of: source)
             paneLayout = layout
             visibleSources.remove(source)
+
+            for device in devicesToStop {
+                Task { [weak self] in
+                    try? await self?.automation.terminateGuest(device)
+                }
+            }
         }
 
         persistVisibleSources()
         persistPaneLayout()
         configureInputMirroring()
+    }
+
+    func guestsToTerminate(for source: ViewerSource) -> [StreamedDevice] {
+        guard isVisible(source) else { return [] }
+        return paneLayout.nodes
+            .filter { $0.source == source.rawValue }
+            .compactMap { captureSession(for: $0)?.guestToTerminate }
+    }
+
+    func guestToTerminate(forExtraPane source: ViewerSource) -> StreamedDevice? {
+        guard paneCount(of: source) >= 2,
+              let node = paneLayout.nodes.filter({ $0.source == source.rawValue }).last else { return nil }
+        return captureSession(for: node)?.guestToTerminate
     }
 
     func refreshCaptures() {
@@ -1000,7 +1230,10 @@ final class WorkspaceStore: ObservableObject {
     func reconnectAfterDeviceLaunch() {
         captureRefreshTask?.cancel()
         captureRefreshTask = Task { [weak self] in
-            for delay in [0.5, 1.5, 3.0, 5.0] {
+            // Keep polling longer than a cold Simulator boot. Early ticks catch
+            // the device as soon as it is Booted; later ticks recover if Surface
+            // attach raced ahead of the framebuffer.
+            for delay in [0.4, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0] {
                 try? await Task.sleep(for: .seconds(delay))
                 guard let self, !Task.isCancelled else { return }
                 // Only reconnect panes that are waiting — leave live siblings alone
