@@ -52,6 +52,10 @@ typedef struct {
 #define ButtonEventTypeDown 0x1
 #define ButtonEventTypeUp 0x2
 
+#define ButtonEventSourceHomeButton 0x0
+#define ButtonEventSourceLock 0x1
+#define ButtonEventTargetHardware 0x33
+
 typedef struct {
   unsigned int field1;
   unsigned char field2[40];

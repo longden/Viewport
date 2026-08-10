@@ -2,6 +2,7 @@
 #import <IOSurface/IOSurface.h>
 
 /// Loads CoreSimulator and SimulatorKit from the active Xcode installation.
+/// Tries Contents/SharedFrameworks (newer Xcode) and Library/PrivateFrameworks.
 FOUNDATION_EXPORT BOOL ViewportHIDLoadFrameworks(void);
 
 /// Sends one touch phase through a short-lived HID client. Recreating the
@@ -44,6 +45,15 @@ FOUNDATION_EXPORT BOOL ViewportHIDSessionSendKeyboard(
   char *_Nonnull errorBuffer,
   size_t errorBufferLength);
 
+/// Hardware button via IndigoHIDMessageForButton.
+/// buttonCode: 0 = Home, 1 = Lock. keyDown YES = press, NO = release.
+FOUNDATION_EXPORT BOOL ViewportHIDSessionSendButton(
+  void *_Nonnull session,
+  unsigned int buttonCode,
+  BOOL keyDown,
+  char *_Nonnull errorBuffer,
+  size_t errorBufferLength);
+
 FOUNDATION_EXPORT void ViewportHIDSessionClose(void *_Nullable session);
 
 /// Callback for SimulatorKit framebuffer surface changes.
@@ -51,6 +61,8 @@ FOUNDATION_EXPORT void ViewportHIDSessionClose(void *_Nullable session);
 typedef void (^ViewportSurfaceFrameHandler)(IOSurfaceRef _Nullable surface);
 
 /// Subscribes to the booted simulator's main display IOSurface.
+/// Prefers damage-rectangle callbacks for frame updates; falls back to a
+/// cadence timer when damage callbacks are unavailable.
 /// Returns an opaque subscription handle, or NULL on failure.
 FOUNDATION_EXPORT void *_Nullable ViewportSurfaceSubscribe(
   NSString *_Nonnull udid,

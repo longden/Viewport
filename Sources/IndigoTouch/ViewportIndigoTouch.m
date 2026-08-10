@@ -22,6 +22,8 @@
 #import <string.h>
 
 static const unsigned long long kSimDeviceStateBooted = 3;
+/// Low-rate present when damage callbacks drive frames (stall recovery only).
+static const unsigned int kDamageHeartbeatFPS = 2;
 
 static void StoreError(char *buffer, size_t length, NSString *message) {
   if (!buffer || length == 0) {
@@ -32,21 +34,106 @@ static void StoreError(char *buffer, size_t length, NSString *message) {
   buffer[length - 1] = '\0';
 }
 
-BOOL ViewportHIDLoadFrameworks(void) {
-  NSBundle *coreSimulator = [NSBundle
-    bundleWithPath:@"/Library/Developer/PrivateFrameworks/CoreSimulator.framework"];
-  if (![coreSimulator load]) {
+static BOOL BundleExistsAtPath(NSString *path) {
+  BOOL isDirectory = NO;
+  return path.length > 0
+    && [[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDirectory]
+    && isDirectory;
+}
+
+static BOOL LoadBundleAtPath(NSString *path) {
+  if (!BundleExistsAtPath(path)) {
     return NO;
   }
+  NSBundle *bundle = [NSBundle bundleWithPath:path];
+  return bundle != nil && [bundle load];
+}
 
-  NSString *developerDirectory = NSProcessInfo.processInfo.environment[@"DEVELOPER_DIR"];
-  if (developerDirectory.length == 0) {
-    developerDirectory = @"/Applications/Xcode.app/Contents/Developer";
+/// Prefer DEVELOPER_DIR, then an Xcode that ships SimulatorKit, then xcode-select.
+static NSString *ResolvedDeveloperDirectory(void) {
+  NSString *fromEnv = NSProcessInfo.processInfo.environment[@"DEVELOPER_DIR"];
+  if (fromEnv.length > 0 && BundleExistsAtPath(fromEnv)) {
+    return fromEnv;
   }
-  NSString *simulatorKitPath = [[developerDirectory
-    stringByAppendingPathComponent:@"Library/PrivateFrameworks"]
-    stringByAppendingPathComponent:@"SimulatorKit.framework"];
-  return [[NSBundle bundleWithPath:simulatorKitPath] load];
+
+  NSArray<NSString *> *candidates = @[
+    @"/Applications/Xcode.app/Contents/Developer",
+    @"/Applications/Xcode-beta.app/Contents/Developer",
+  ];
+  for (NSString *candidate in candidates) {
+    NSString *privateKit = [[candidate
+      stringByAppendingPathComponent:@"Library/PrivateFrameworks"]
+      stringByAppendingPathComponent:@"SimulatorKit.framework"];
+    NSString *sharedKit = [[[candidate stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"SharedFrameworks"]
+      stringByAppendingPathComponent:@"SimulatorKit.framework"];
+    if (BundleExistsAtPath(privateKit) || BundleExistsAtPath(sharedKit)) {
+      return candidate;
+    }
+  }
+
+  NSTask *task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcode-select"];
+  task.arguments = @[@"-p"];
+  NSPipe *pipe = [NSPipe pipe];
+  task.standardOutput = pipe;
+  task.standardError = [NSPipe pipe];
+  NSError *launchError = nil;
+  if ([task launchAndReturnError:&launchError]) {
+    [task waitUntilExit];
+    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
+    NSString *selected = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (selected.length > 0 && BundleExistsAtPath(selected)) {
+      return selected;
+    }
+  }
+
+  return @"/Applications/Xcode.app/Contents/Developer";
+}
+
+BOOL ViewportHIDLoadFrameworks(void) {
+  static dispatch_once_t onceToken;
+  static BOOL loaded = NO;
+  dispatch_once(&onceToken, ^{
+    NSString *developerDirectory = ResolvedDeveloperDirectory();
+    NSString *xcodeContents = [developerDirectory stringByDeletingLastPathComponent];
+
+    NSArray<NSString *> *coreSimulatorPaths = @[
+      @"/Library/Developer/PrivateFrameworks/CoreSimulator.framework",
+      [[developerDirectory stringByAppendingPathComponent:@"Library/PrivateFrameworks"]
+        stringByAppendingPathComponent:@"CoreSimulator.framework"],
+    ];
+    BOOL coreLoaded = NO;
+    for (NSString *path in coreSimulatorPaths) {
+      if (LoadBundleAtPath(path)) {
+        coreLoaded = YES;
+        break;
+      }
+    }
+    if (!coreLoaded) {
+      loaded = NO;
+      return;
+    }
+
+    // Xcode 27+ may ship SimulatorKit under Contents/SharedFrameworks;
+    // older Xcodes keep it under Developer/Library/PrivateFrameworks.
+    NSArray<NSString *> *simulatorKitPaths = @[
+      [[xcodeContents stringByAppendingPathComponent:@"SharedFrameworks"]
+        stringByAppendingPathComponent:@"SimulatorKit.framework"],
+      [[developerDirectory stringByAppendingPathComponent:@"Library/PrivateFrameworks"]
+        stringByAppendingPathComponent:@"SimulatorKit.framework"],
+      @"/Library/Developer/PrivateFrameworks/SimulatorKit.framework",
+    ];
+    for (NSString *path in simulatorKitPaths) {
+      if (LoadBundleAtPath(path)) {
+        loaded = YES;
+        return;
+      }
+    }
+    loaded = NO;
+  });
+  return loaded;
 }
 
 static id BootedDevice(NSString *udid, NSError **error) {
@@ -60,10 +147,7 @@ static id BootedDevice(NSString *udid, NSError **error) {
     return nil;
   }
 
-  NSString *developerDirectory = NSProcessInfo.processInfo.environment[@"DEVELOPER_DIR"];
-  if (developerDirectory.length == 0) {
-    developerDirectory = @"/Applications/Xcode.app/Contents/Developer";
-  }
+  NSString *developerDirectory = ResolvedDeveloperDirectory();
   id context = ((id (*)(Class, SEL, NSString *, NSError **))objc_msgSend)(
     contextClass,
     sel_registerName("sharedServiceContextForDeveloperDir:error:"),
@@ -151,7 +235,10 @@ static IndigoMessage *TouchMessage(double x, double y, int phase) {
   IndigoMessage *partial = NULL;
 
   if (phase == 0) {
-    static const int moveTypes[] = {6, 5, 7, 8};
+    // Dragged/moved NSEvent types (5–8) are rate-limited and often return NULL
+    // on Xcode 26. Fall back to a touch-down sample — the same pattern idb uses
+    // for swipe interpolation — before giving up.
+    static const int moveTypes[] = {6, 5, 7, 8, 1};
     for (size_t index = 0;
          index < sizeof(moveTypes) / sizeof(moveTypes[0]) && !partial;
          index++) {
@@ -162,6 +249,9 @@ static IndigoMessage *TouchMessage(double x, double y, int phase) {
     }
   } else {
     partial = MouseMessage(&point, phase, NO);
+    if (!partial) {
+      partial = MouseMessage(&point, phase, YES);
+    }
   }
 
   if (!partial) {
@@ -308,6 +398,33 @@ BOOL ViewportHIDSessionSendKeyboard(
     errorBufferLength);
 }
 
+BOOL ViewportHIDSessionSendButton(
+  void *session,
+  unsigned int buttonCode,
+  BOOL keyDown,
+  char *errorBuffer,
+  size_t errorBufferLength) {
+  if (!session) {
+    StoreError(errorBuffer, errorBufferLength, @"HID session is unavailable");
+    return NO;
+  }
+  // IndigoHIDMessageForButton(code, op, target) — confirmed 3-arg on Xcode 26.
+  IndigoMessage *(*buttonMessage)(unsigned int, unsigned int, unsigned int) =
+    (void *)dlsym(RTLD_DEFAULT, "IndigoHIDMessageForButton");
+  if (!buttonMessage) {
+    StoreError(errorBuffer, errorBufferLength, @"SimulatorKit button HID is unavailable");
+    return NO;
+  }
+  return SendMessage(
+    (__bridge id)session,
+    buttonMessage(
+      buttonCode,
+      keyDown ? ButtonEventTypeDown : ButtonEventTypeUp,
+      ButtonEventTargetHardware),
+    errorBuffer,
+    errorBufferLength);
+}
+
 BOOL ViewportHIDSendKeyboard(
   NSString *udid,
   unsigned int usage,
@@ -355,6 +472,9 @@ void ViewportHIDSessionClose(void *session) {
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, strong) dispatch_source_t frameTimer;
 @property(nonatomic, copy) ViewportSurfaceFrameHandler handler;
+@property(nonatomic, assign) BOOL usesDamageCallbacks;
+@property(nonatomic, assign) CFAbsoluteTime lastPresentTime;
+@property(nonatomic, assign) NSTimeInterval minimumPresentInterval;
 @end
 
 @implementation ViewportSurfaceSubscription
@@ -411,6 +531,25 @@ static IOSurfaceRef CurrentFramebufferSurface(id renderable) {
       sel_registerName("ioSurface"));
   }
   return NULL;
+}
+
+static void PresentCurrentSurface(ViewportSurfaceSubscription *subscription, BOOL force) {
+  if (!subscription.handler) {
+    return;
+  }
+  if (!force && subscription.minimumPresentInterval > 0) {
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if ((now - subscription.lastPresentTime) < subscription.minimumPresentInterval) {
+      return;
+    }
+    subscription.lastPresentTime = now;
+  } else {
+    subscription.lastPresentTime = CFAbsoluteTimeGetCurrent();
+  }
+  IOSurfaceRef surface = CurrentFramebufferSurface(subscription.renderable);
+  if (surface) {
+    subscription.handler(surface);
+  }
 }
 
 void *ViewportSurfaceSubscribe(
@@ -477,33 +616,80 @@ void *ViewportSurfaceSubscribe(
   subscription.handler = handler;
   subscription.callbackUUID = [NSUUID UUID];
 
+  unsigned int effectiveFrameRate = MAX(1, MIN(frameRate, 120));
+  subscription.minimumPresentInterval = 1.0 / (NSTimeInterval)effectiveFrameRate;
+
+  __weak ViewportSurfaceSubscription *weakSubscription = subscription;
   void (^surfaceCallback)(IOSurfaceRef, IOSurfaceRef) = ^(IOSurfaceRef next, IOSurfaceRef previous) {
     (void)previous;
-    IOSurfaceRef surface = next ?: CurrentFramebufferSurface(renderable);
-    handler(surface);
+    ViewportSurfaceSubscription *strong = weakSubscription;
+    if (!strong || !strong.handler || !strong.queue) {
+      return;
+    }
+    IOSurfaceRef surface = next ?: CurrentFramebufferSurface(strong.renderable);
+    if (!surface) {
+      return;
+    }
+    // Serialize presents / lastPresentTime with the frame timer on subscription.queue.
+    CFRetain(surface);
+    dispatch_async(strong.queue, ^{
+      if (strong.handler) {
+        // Surface replacements should present immediately.
+        strong.lastPresentTime = CFAbsoluteTimeGetCurrent();
+        strong.handler(surface);
+      }
+      CFRelease(surface);
+    });
   };
 
-  SEL registerSelector = sel_registerName("registerCallbackWithUUID:ioSurfacesChangeCallback:");
-  if (![renderable respondsToSelector:registerSelector]) {
+  SEL registerSurface = sel_registerName("registerCallbackWithUUID:ioSurfacesChangeCallback:");
+  if (![renderable respondsToSelector:registerSurface]) {
     StoreError(errorBuffer, errorBufferLength, @"Simulator surface callbacks are unavailable");
     return NULL;
   }
   ((void (*)(id, SEL, NSUUID *, id))objc_msgSend)(
     renderable,
-    registerSelector,
+    registerSurface,
     subscription.callbackUUID,
     surfaceCallback);
 
-  IOSurfaceRef initial = CurrentFramebufferSurface(renderable);
-  if (initial) {
-    dispatch_async(queue, ^{ handler(initial); });
+  // Prefer damage-rect callbacks (idb-style) for per-frame updates; the surface
+  // callback only fires when the backing IOSurface is replaced.
+  SEL registerDamage = sel_registerName("registerCallbackWithUUID:damageRectanglesCallback:");
+  if ([renderable respondsToSelector:registerDamage]) {
+    void (^damageCallback)(NSArray *) = ^(NSArray *rects) {
+      (void)rects;
+      ViewportSurfaceSubscription *strong = weakSubscription;
+      if (!strong || !strong.queue) {
+        return;
+      }
+      // Simulator may invoke this off subscription.queue; hop so PresentCurrentSurface
+      // does not race the timer on lastPresentTime.
+      dispatch_async(strong.queue, ^{
+        PresentCurrentSurface(strong, NO);
+      });
+    };
+    ((void (*)(id, SEL, NSUUID *, id))objc_msgSend)(
+      renderable,
+      registerDamage,
+      subscription.callbackUUID,
+      damageCallback);
+    subscription.usesDamageCallbacks = YES;
   }
 
-  // ioSurfacesChangeCallback reports backing-surface replacements, not every
-  // presented frame. Simulator normally reuses one IOSurface, so resubmit its
-  // current contents at the requested cadence to keep CALayer presentation live.
-  unsigned int effectiveFrameRate = MAX(1, MIN(frameRate, 120));
-  uint64_t interval = NSEC_PER_SEC / effectiveFrameRate;
+  IOSurfaceRef initial = CurrentFramebufferSurface(renderable);
+  if (initial) {
+    dispatch_async(queue, ^{
+      PresentCurrentSurface(subscription, YES);
+    });
+  }
+
+  // With damage callbacks: low-rate heartbeat for stall recovery.
+  // Without them: poll at the requested cadence (IOSurface is often reused).
+  unsigned int timerFPS = subscription.usesDamageCallbacks
+    ? kDamageHeartbeatFPS
+    : effectiveFrameRate;
+  uint64_t interval = NSEC_PER_SEC / MAX(1, timerFPS);
   dispatch_source_t timer = dispatch_source_create(
     DISPATCH_SOURCE_TYPE_TIMER,
     0,
@@ -516,10 +702,7 @@ void *ViewportSurfaceSubscribe(
     interval,
     MIN(interval / 8, 2 * NSEC_PER_MSEC));
   dispatch_source_set_event_handler(timer, ^{
-    IOSurfaceRef surface = CurrentFramebufferSurface(renderable);
-    if (surface) {
-      handler(surface);
-    }
+    PresentCurrentSurface(subscription, subscription.usesDamageCallbacks);
   });
   dispatch_resume(timer);
 
@@ -539,9 +722,15 @@ void ViewportSurfaceUnsubscribe(void *subscriptionPointer) {
   id renderable = subscription.renderable;
   NSUUID *uuid = subscription.callbackUUID;
   if (renderable && uuid) {
-    SEL unregister = sel_registerName("unregisterIOSurfacesChangeCallbackWithUUID:");
-    if ([renderable respondsToSelector:unregister]) {
-      ((void (*)(id, SEL, NSUUID *))objc_msgSend)(renderable, unregister, uuid);
+    if (subscription.usesDamageCallbacks) {
+      SEL unregisterDamage = sel_registerName("unregisterDamageRectanglesCallbackWithUUID:");
+      if ([renderable respondsToSelector:unregisterDamage]) {
+        ((void (*)(id, SEL, NSUUID *))objc_msgSend)(renderable, unregisterDamage, uuid);
+      }
+    }
+    SEL unregisterSurface = sel_registerName("unregisterIOSurfacesChangeCallbackWithUUID:");
+    if ([renderable respondsToSelector:unregisterSurface]) {
+      ((void (*)(id, SEL, NSUUID *))objc_msgSend)(renderable, unregisterSurface, uuid);
     } else {
       SEL generic = sel_registerName("unregisterCallbackWithUUID:");
       if ([renderable respondsToSelector:generic]) {
@@ -549,5 +738,6 @@ void ViewportSurfaceUnsubscribe(void *subscriptionPointer) {
       }
     }
   }
+  subscription.handler = nil;
 }
 
