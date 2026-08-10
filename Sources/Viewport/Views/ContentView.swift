@@ -9,7 +9,6 @@ struct ContentView: View {
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
     @StateObject private var recording = WorkspaceRecordingService()
-    @StateObject private var interactionMacros = InteractionMacroService()
     @State private var pointerBridge = PointerEventBridge()
     @State private var isTakingScreenshot = false
     @State private var isExportingBugReport = false
@@ -18,13 +17,8 @@ struct ContentView: View {
     @State private var savedExportURL: URL?
     @State private var showHelp = false
     @State private var showSettings = false
-    @State private var showDeviceInjector = false
-    @State private var showLocation = false
-    @State private var showOverlayDiff = false
     @State private var showBatchSnapshots = false
-    @State private var showInteractionMacros = false
     @State private var showBuildPlay = false
-    @State private var showNetworkOverlay = false
     @State private var annotationItem: AnnotatableScreenshot?
     @AppStorage("developerLogsVisible") private var showDeveloperLogs = false
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.system.rawValue
@@ -130,36 +124,11 @@ struct ContentView: View {
         }
         .onChange(of: workspace.experimentalFeaturesEnabled) { _, isEnabled in
             guard !isEnabled else { return }
-            showNetworkOverlay = false
-            showOverlayDiff = false
             showBatchSnapshots = false
-            // Injector is promoted out of Experimental; leave its sheet alone.
-            web.networkOverlay.setEnabled(false)
             workspace.setSynchronizedScrollingEnabled(false)
-        }
-        .onChange(of: showNetworkOverlay) { _, enabled in
-            // Disable even when the web pane is unmounted (no WebViewerPane onChange).
-            if !enabled {
-                web.networkOverlay.setEnabled(false)
-            }
-        }
-        .sheet(isPresented: $showDeviceInjector) {
-            DeviceInjectorSheet(workspace: workspace, web: web)
-        }
-        .sheet(isPresented: $showLocation) {
-            DeviceLocationSheet(workspace: workspace, web: web)
-        }
-        .sheet(isPresented: $showOverlayDiff) {
-            OverlayDiffSheet(workspace: workspace, web: web)
         }
         .sheet(isPresented: $showBatchSnapshots) {
             BatchURLSnapshotSheet(workspace: workspace, web: web)
-        }
-        .sheet(isPresented: $showInteractionMacros) {
-            InteractionMacroSheet(
-                service: interactionMacros,
-                workspace: workspace
-            )
         }
         .sheet(isPresented: $showBuildPlay) {
             BuildPlaySheet(
@@ -237,12 +206,7 @@ struct ContentView: View {
             showDeveloperLogs: $showDeveloperLogs,
             showSettings: $showSettings,
             showHelp: $showHelp,
-            showDeviceInjector: $showDeviceInjector,
-            showLocation: $showLocation,
-            showNetworkOverlay: $showNetworkOverlay,
-            showOverlayDiff: $showOverlayDiff,
             showBatchSnapshots: $showBatchSnapshots,
-            showInteractionMacros: $showInteractionMacros,
             showBuildPlay: $showBuildPlay,
             isExportingBugReport: isExportingBugReport,
             isTakingScreenshot: isTakingScreenshot,
@@ -283,8 +247,7 @@ struct ContentView: View {
             onWebCaptureTargetChange: { target in
                 recording.updateWebCaptureTarget(target)
             },
-            squareWebContentCorners: recording.squareWebContentCorners,
-            showNetworkOverlay: showNetworkOverlay
+            squareWebContentCorners: recording.squareWebContentCorners
         )
         .background {
             WorkspaceRecordingAnchor { target in
@@ -395,13 +358,7 @@ struct ContentView: View {
         for session in workspace.allCaptureSessions {
             let source = session.source
             // Single fan-out sink avoids nested wrappers when reinstalling.
-            session.pointerEventSink = { [weak pointerBridge, weak interactionMacros] phase, point, duration in
-                interactionMacros?.record(
-                    source: source,
-                    phase: phase,
-                    point: point,
-                    duration: duration
-                )
+            session.pointerEventSink = { [weak pointerBridge] phase, point, duration in
                 pointerBridge?.handle(
                     source: source,
                     phase: phase,

@@ -7,7 +7,6 @@ struct WorkspaceSplitView: View {
     var onPaneScreenshot: ((ViewerSource, WindowCaptureSession?) -> Void)?
     var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     var squareWebContentCorners: Bool = false
-    var showNetworkOverlay: Bool = false
     @State private var dragState: DividerDragState?
     @State private var transientPaneWidths: [UUID: CGFloat]?
 
@@ -199,7 +198,6 @@ struct WorkspaceSplitView: View {
                 },
                 onCaptureTargetChange: onWebCaptureTargetChange,
                 squareContentCorners: squareWebContentCorners,
-                showNetworkOverlay: showNetworkOverlay,
                 onClose: {
                     workspace.setVisible(false, for: .web)
                 }
