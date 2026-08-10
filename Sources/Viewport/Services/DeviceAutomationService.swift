@@ -134,7 +134,7 @@ struct DeviceInjectionResult: Sendable, Equatable {
 actor DeviceAutomationService {
     private let runner: CommandRunner
     private let adb: URL?
-    private let xcrun: URL
+    private let toolchains: ToolchainLocator
     private let developerEnvironment: [String: String]
 
     init(
@@ -143,7 +143,7 @@ actor DeviceAutomationService {
     ) {
         self.runner = runner
         adb = toolchains.adb
-        xcrun = toolchains.xcrun
+        self.toolchains = toolchains
         developerEnvironment = toolchains.developerEnvironment
     }
 
@@ -510,6 +510,62 @@ actor DeviceAutomationService {
         }
     }
 
+    /// Home button / home gesture for the selected guest.
+    func pressHome(on device: StreamedDevice) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: ["shell", "input", "keyevent", "KEYCODE_HOME"],
+                label: "Home"
+            )
+        case .iOSSimulator:
+            // Prefer the hardware Home HID button — more reliable than a
+            // home-indicator swipe on Xcode 26 (mouse HID rate-limits moves).
+            try await sendIOSHome(udid: device.id)
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Home works on Simulator and Android only. Use the device Home gesture."
+            )
+        }
+    }
+
+    /// Android system Back, or iOS interactive-pop edge swipe.
+    func pressBack(on device: StreamedDevice) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: ["shell", "input", "keyevent", "KEYCODE_BACK"],
+                label: "Back"
+            )
+        case .iOSSimulator:
+            try await sendIOSSwipe(
+                udid: device.id,
+                from: Self.iosBackGesture.from,
+                to: Self.iosBackGesture.to,
+                duration: Self.iosBackGesture.duration,
+                label: "Back"
+            )
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Back works on Simulator and Android only. Swipe from the left edge on device."
+            )
+        }
+    }
+
+    /// Normalized framebuffer gestures for iOS system navigation.
+    nonisolated static let iosHomeGesture = (
+        from: CGPoint(x: 0.5, y: 0.995),
+        to: CGPoint(x: 0.5, y: 0.15),
+        duration: 0.36
+    )
+    nonisolated static let iosBackGesture = (
+        from: CGPoint(x: 0.02, y: 0.5),
+        to: CGPoint(x: 0.75, y: 0.5),
+        duration: 0.35
+    )
+
     /// Stops the guest shown in a pane (headless/windowed AVD or Simulator).
     /// Physical devices are left alone — only the live view is closed by the caller.
     func terminateGuest(_ device: StreamedDevice) async throws {
@@ -778,9 +834,10 @@ actor DeviceAutomationService {
         standardInput: Data? = nil,
         label: String
     ) async throws {
+        let invocation = simctlInvocation(for: arguments)
         let result = try await runner.run(
-            executable: xcrun,
-            arguments: arguments,
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             environment: developerEnvironment,
             standardInput: standardInput,
             timeout: 12
@@ -800,9 +857,10 @@ actor DeviceAutomationService {
         arguments: [String],
         label: String
     ) async throws -> Data {
+        let invocation = simctlInvocation(for: arguments)
         let result = try await runner.runData(
-            executable: xcrun,
-            arguments: arguments,
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             environment: developerEnvironment,
             timeout: 12
         )
@@ -816,6 +874,13 @@ actor DeviceAutomationService {
             )
         }
         return result.standardOutput
+    }
+
+    private func simctlInvocation(for arguments: [String]) -> SimctlCommand {
+        if arguments.first == "simctl" {
+            return toolchains.simctlCommand(Array(arguments.dropFirst()))
+        }
+        return SimctlCommand(executable: toolchains.xcrun, arguments: arguments)
     }
 
     private func androidUserRotation(serial: String) async throws -> Int {
@@ -885,6 +950,79 @@ actor DeviceAutomationService {
             """,
             label: "Rotate Simulator"
         )
+    }
+
+    /// Injects a timed HID swipe on a booted Simulator (framebuffer-normalized).
+    @MainActor
+    private func sendIOSSwipe(
+        udid: String,
+        from start: CGPoint,
+        to end: CGPoint,
+        duration: TimeInterval,
+        label: String
+    ) async throws {
+        let input = IOSSimulatorHIDInput()
+        guard input.isAvailable else {
+            throw DeviceAutomationError.unsupported(
+                "SimulatorKit is unavailable for \(label.lowercased())."
+            )
+        }
+
+        // Instant down/move/up in one runloop tick is treated as a tap by iOS.
+        let succeeded = await input.swipe(
+            from: start,
+            to: end,
+            duration: duration,
+            udid: udid
+        )
+        let detail = input.lastErrorMessage
+        input.reset()
+
+        guard succeeded else {
+            throw DeviceAutomationError.commandFailed(
+                detail.map { "\(label) failed to inject a Simulator HID gesture (\($0))." }
+                    ?? "\(label) failed to inject a Simulator HID gesture."
+            )
+        }
+    }
+
+    /// Hardware Home button, with home-indicator swipe as fallback.
+    @MainActor
+    private func sendIOSHome(udid: String) async throws {
+        let input = IOSSimulatorHIDInput()
+        guard input.isAvailable else {
+            throw DeviceAutomationError.unsupported(
+                "SimulatorKit is unavailable for home."
+            )
+        }
+
+        if await input.pressHomeButton(udid: udid) {
+            input.reset()
+            return
+        }
+
+        let buttonError = input.lastErrorMessage
+        input.reset()
+        let swipeOK = await input.swipe(
+            from: Self.iosHomeGesture.from,
+            to: Self.iosHomeGesture.to,
+            duration: Self.iosHomeGesture.duration,
+            udid: udid
+        )
+        let swipeError = input.lastErrorMessage
+        input.reset()
+
+        guard swipeOK else {
+            let detail = [buttonError, swipeError]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " — ")
+            throw DeviceAutomationError.commandFailed(
+                detail.isEmpty
+                    ? "Home failed to inject a Simulator HID gesture."
+                    : "Home failed to inject a Simulator HID gesture (\(detail))."
+            )
+        }
     }
 
     /// Returns whether the Simulator window for `device` is currently landscape-shaped.
