@@ -4,6 +4,7 @@ protocol DeviceClient {
     var source: ViewerSource { get }
     func listDevices() async throws -> [LaunchableDevice]
     func launch(_ device: LaunchableDevice) async throws
+    func shutdown(_ device: LaunchableDevice) async throws
 }
 
 struct ADBDeviceRecord: Equatable {
@@ -105,6 +106,34 @@ struct AndroidDeviceClient: DeviceClient {
             executable: emulator,
             arguments: emulatorArguments
         )
+    }
+
+    func shutdown(_ device: LaunchableDevice) async throws {
+        guard device.source == .android else { return }
+        guard let adb else {
+            throw CommandRunnerError.executableNotFound("adb")
+        }
+        guard let serial = await serial(forAVDNamed: device.id) else {
+            throw CommandRunnerError.commandFailed(
+                command: "Stop \(device.name)",
+                code: 1,
+                message: "No running emulator is using AVD \(device.id)."
+            )
+        }
+
+        let result = try await runner.run(
+            executable: adb,
+            arguments: ["-s", serial, "emu", "kill"]
+        )
+        guard result.exitCode == 0 else {
+            throw CommandRunnerError.commandFailed(
+                command: "Stop \(device.name)",
+                code: result.exitCode,
+                message: result.standardError.isEmpty
+                    ? result.standardOutput
+                    : result.standardError
+            )
+        }
     }
 
     func listCreateProfiles() async throws -> [AndroidEmulatorProfile] {
@@ -285,16 +314,24 @@ struct AndroidDeviceClient: DeviceClient {
     }
 
     private func runningAVDNames() async -> Set<String> {
+        Set(await runningAVDSerials().keys)
+    }
+
+    private func serial(forAVDNamed name: String) async -> String? {
+        await runningAVDSerials().first(where: { $0.key == name })?.value
+    }
+
+    private func runningAVDSerials() async -> [String: String] {
         guard let adb,
               let devicesResult = try? await runner.run(
                 executable: adb,
                 arguments: ["devices"]
               ),
               devicesResult.exitCode == 0 else {
-            return []
+            return [:]
         }
 
-        var names = Set<String>()
+        var mapping: [String: String] = [:]
         for serial in Self.parseADBDevices(devicesResult.standardOutput)
             .filter({ $0.isOnline && $0.isEmulator })
             .map(\.serial) {
@@ -305,9 +342,9 @@ struct AndroidDeviceClient: DeviceClient {
             let name = Self.parseAVDNameResponse(result.standardOutput) else {
                 continue
             }
-            names.insert(name)
+            mapping[name] = serial
         }
-        return names
+        return mapping
     }
 
     private func countRunningEmulators() async -> Int {
@@ -330,26 +367,32 @@ struct IOSSimulatorClient: DeviceClient {
     let source = ViewerSource.iOS
 
     private let runner: CommandRunner
-    private let xcrun: URL
+    private let toolchains: ToolchainLocator
+    private let defaults: UserDefaults
     private let open = URL(fileURLWithPath: "/usr/bin/open")
     private let developerDirectory: URL
     private let simulatorApplication: URL
 
     init(
         runner: CommandRunner = CommandRunner(),
-        toolchains: ToolchainLocator = ToolchainLocator()
+        toolchains: ToolchainLocator = ToolchainLocator(),
+        defaults: UserDefaults = .standard
     ) {
         self.runner = runner
-        xcrun = toolchains.xcrun
+        self.toolchains = toolchains
+        self.defaults = defaults
         developerDirectory = toolchains.developerDirectory
         simulatorApplication = developerDirectory
             .appendingPathComponent("Applications/Simulator.app")
     }
 
     func listDevices() async throws -> [LaunchableDevice] {
+        let command = toolchains.simctlCommand([
+            "list", "devices", "available", "--json"
+        ])
         let result = try await runner.run(
-            executable: xcrun,
-            arguments: ["simctl", "list", "devices", "available", "--json"],
+            executable: command.executable,
+            arguments: command.arguments,
             environment: processEnvironment
         )
 
@@ -369,24 +412,34 @@ struct IOSSimulatorClient: DeviceClient {
     func launch(_ device: LaunchableDevice) async throws {
         guard device.source == .iOS else { return }
 
-        if device.state != .booted {
-            let bootResult = try await runner.run(
-                executable: xcrun,
-                arguments: ["simctl", "boot", device.id],
-                environment: processEnvironment
+        // `bootstatus -b` boots when needed and blocks until the runtime is
+        // ready for IOSurface / HID. Prefer it over a separate `simctl boot`
+        // (which had no timeout and could leave Play stuck on "Starting…").
+        let bootStatusCommand = toolchains.simctlCommand([
+            "bootstatus", device.id, "-b"
+        ])
+        let bootStatus = try await runner.run(
+            executable: bootStatusCommand.executable,
+            arguments: bootStatusCommand.arguments,
+            environment: processEnvironment,
+            timeout: 180
+        )
+        guard bootStatus.exitCode == 0 else {
+            throw CommandRunnerError.commandFailed(
+                command: "Boot \(device.name)",
+                code: bootStatus.exitCode,
+                message: bootStatus.standardError.isEmpty
+                    ? bootStatus.standardOutput
+                    : bootStatus.standardError
             )
-
-            let alreadyBooted = bootResult.standardError.localizedCaseInsensitiveContains(
-                "current state: Booted"
-            )
-            guard bootResult.exitCode == 0 || alreadyBooted else {
-                throw CommandRunnerError.commandFailed(
-                    command: "Boot \(device.name)",
-                    code: bootResult.exitCode,
-                    message: bootResult.standardError
-                )
-            }
         }
+
+        // Direct Surface + HID do not need Simulator.app. Open it when the
+        // user opts out of headless (Legacy host-window capture needs the UI).
+        let preferHeadless = defaults.object(
+            forKey: Self.preferHeadlessUserDefaultsKey
+        ) as? Bool ?? true
+        guard !preferHeadless else { return }
 
         let openResult = try await runner.run(
             executable: open,
@@ -407,6 +460,34 @@ struct IOSSimulatorClient: DeviceClient {
             )
         }
     }
+
+    func shutdown(_ device: LaunchableDevice) async throws {
+        guard device.source == .iOS else { return }
+
+        let command = toolchains.simctlCommand(["shutdown", device.id])
+        let result = try await runner.run(
+            executable: command.executable,
+            arguments: command.arguments,
+            environment: processEnvironment
+        )
+
+        let alreadyShutdown = result.standardError
+            .localizedCaseInsensitiveContains("current state: Shutdown")
+            || result.standardError
+                .localizedCaseInsensitiveContains("Invalid device state")
+        guard result.exitCode == 0 || alreadyShutdown else {
+            throw CommandRunnerError.commandFailed(
+                command: "Shut down \(device.name)",
+                code: result.exitCode,
+                message: result.standardError.isEmpty
+                    ? result.standardOutput
+                    : result.standardError
+            )
+        }
+    }
+
+    /// Settings key — mirrors Android headless preference.
+    static let preferHeadlessUserDefaultsKey = "preferHeadlessIOSSimulators"
 
     static func parseDevices(_ data: Data) throws -> [LaunchableDevice] {
         let catalog = try JSONDecoder().decode(SimulatorCatalog.self, from: data)

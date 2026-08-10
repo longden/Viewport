@@ -53,7 +53,7 @@ final class ToolchainLocatorTests: XCTestCase {
         let locator = ToolchainLocator(
             environment: [
                 "ANDROID_SDK_ROOT": "/custom/android",
-                "DEVELOPER_DIR": "/custom/Xcode/Developer",
+                "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
                 "PATH": ""
             ],
             homeDirectory: URL(fileURLWithPath: "/Users/test")
@@ -62,12 +62,30 @@ final class ToolchainLocatorTests: XCTestCase {
         XCTAssertEqual(locator.androidSDK.path, "/custom/android")
         XCTAssertEqual(
             locator.developerDirectory.path,
-            "/custom/Xcode/Developer"
+            "/Applications/Xcode.app/Contents/Developer"
         )
         XCTAssertEqual(
             locator.developerEnvironment["DEVELOPER_DIR"],
-            "/custom/Xcode/Developer"
+            "/Applications/Xcode.app/Contents/Developer"
         )
+    }
+
+    func testIgnoresCommandLineToolsDeveloperDirectory() {
+        let locator = ToolchainLocator(
+            environment: [
+                "DEVELOPER_DIR": "/Library/Developer/CommandLineTools",
+                "PATH": ""
+            ],
+            homeDirectory: URL(fileURLWithPath: "/Users/test")
+        )
+
+        XCTAssertEqual(
+            locator.developerDirectory.path,
+            "/Applications/Xcode.app/Contents/Developer"
+        )
+        let command = locator.simctlCommand(["list", "devices"])
+        XCTAssertNotEqual(command.executable.lastPathComponent, "xcrun")
+        XCTAssertEqual(command.arguments, ["list", "devices"])
     }
 
     func testFallsBackToStandardAndroidSDKLocation() {
@@ -94,6 +112,16 @@ final class CaptureTransportPolicyTests: XCTestCase {
         )
     }
 
+    func testDirectSimulatorFallbackOrder() {
+        XCTAssertEqual(
+            CaptureTransportPolicy.strategies(
+                mode: .direct,
+                deviceKind: .iOSSimulator
+            ),
+            [.simulatorSurface, .hostWindow, .polling]
+        )
+    }
+
     func testClassicSimulatorSkipsPrivateSurface() {
         XCTAssertEqual(
             CaptureTransportPolicy.strategies(
@@ -101,6 +129,42 @@ final class CaptureTransportPolicyTests: XCTestCase {
                 deviceKind: .iOSSimulator
             ),
             [.hostWindow, .polling]
+        )
+    }
+
+    func testClassicEmulatorFallbackOrder() {
+        XCTAssertEqual(
+            CaptureTransportPolicy.strategies(
+                mode: .classic,
+                deviceKind: .androidEmulator
+            ),
+            [.hostWindow, .scrcpy, .polling]
+        )
+    }
+
+    func testPhysicalDeviceStrategies() {
+        XCTAssertEqual(
+            CaptureTransportPolicy.strategies(
+                mode: .direct,
+                deviceKind: .iOSDevice
+            ),
+            [.usbDevice]
+        )
+        XCTAssertEqual(
+            CaptureTransportPolicy.strategies(
+                mode: .classic,
+                deviceKind: .androidDevice
+            ),
+            [.scrcpy, .polling]
+        )
+    }
+
+    func testTransportStatusLabels() {
+        XCTAssertEqual(CaptureTransport.screencap.shortLabel, "Screencap")
+        XCTAssertEqual(CaptureTransport.simulatorSurface.shortLabel, "Surface")
+        XCTAssertEqual(
+            CaptureTransport.windowStream(frameRate: 30).shortLabel,
+            "Window"
         )
     }
 }
@@ -211,6 +275,67 @@ final class DeviceManagerRaceTests: XCTestCase {
 
         XCTAssertEqual(manager.phase, .ready)
     }
+
+    func testRefreshDuringLaunchDoesNotAbortBoot() async {
+        let device = LaunchableDevice(
+            id: "iphone",
+            source: .iOS,
+            name: "iPhone",
+            runtime: "iOS 26",
+            state: .shutdown
+        )
+        let client = SlowLaunchDeviceClient(device: device)
+        let manager = DeviceManager(client: client)
+
+        manager.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(manager.devices, [device])
+
+        manager.launch(device)
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(manager.phase, .launching("iPhone"))
+
+        manager.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(manager.phase, .launching("iPhone"))
+
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(manager.phase, .ready)
+    }
+
+    func testSupersededLaunchReportsCancelledDeviceID() async {
+        let first = LaunchableDevice(
+            id: "first",
+            source: .android,
+            name: "First",
+            runtime: nil,
+            state: .shutdown
+        )
+        let second = LaunchableDevice(
+            id: "second",
+            source: .android,
+            name: "Second",
+            runtime: nil,
+            state: .shutdown
+        )
+        let client = SlowLaunchDeviceClient(device: first, extraDevices: [second])
+        let manager = DeviceManager(client: client)
+
+        manager.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(20))
+
+        manager.launch(first)
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(manager.phase, .launching("First"))
+
+        let priorFailureToken = manager.lastLaunchFailureToken
+        manager.launch(second)
+        try? await Task.sleep(for: .milliseconds(40))
+
+        XCTAssertNotEqual(manager.lastLaunchFailureToken, priorFailureToken)
+        XCTAssertEqual(manager.lastLaunchFailureDeviceID, "first")
+        XCTAssertEqual(manager.phase, .launching("Second"))
+    }
 }
 
 private final class LockedValues<Value>: @unchecked Sendable {
@@ -316,13 +441,41 @@ private actor RacingDeviceClient: DeviceClient {
         if listCount == 1 {
             return [device]
         }
-        try? await Task.sleep(for: .milliseconds(100))
-        throw TestError.staleRefresh
+        if listCount == 2 {
+            // Overlapping refresh that launch should invalidate.
+            try? await Task.sleep(for: .milliseconds(100))
+            throw TestError.staleRefresh
+        }
+        return [device]
     }
 
     func launch(_ device: LaunchableDevice) async throws {}
 
+    func shutdown(_ device: LaunchableDevice) async throws {}
+
     private enum TestError: Error {
         case staleRefresh
     }
+}
+
+private actor SlowLaunchDeviceClient: DeviceClient {
+    nonisolated let source: ViewerSource
+    private let device: LaunchableDevice
+    private let extraDevices: [LaunchableDevice]
+
+    init(device: LaunchableDevice, extraDevices: [LaunchableDevice] = []) {
+        self.device = device
+        self.extraDevices = extraDevices
+        source = device.source
+    }
+
+    func listDevices() async throws -> [LaunchableDevice] {
+        [device] + extraDevices
+    }
+
+    func launch(_ device: LaunchableDevice) async throws {
+        try await Task.sleep(for: .milliseconds(120))
+    }
+
+    func shutdown(_ device: LaunchableDevice) async throws {}
 }

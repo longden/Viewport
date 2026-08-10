@@ -7,11 +7,12 @@ enum DeviceManagerPhase: Equatable {
     case ready
     case launching(String)
     case creating(String)
+    case shuttingDown(String)
     case failed(String)
 
     var isBusy: Bool {
         switch self {
-        case .loading, .launching, .creating:
+        case .loading, .launching, .creating, .shuttingDown:
             true
         case .idle, .ready, .failed:
             false
@@ -26,11 +27,18 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var devices: [LaunchableDevice] = []
     @Published private(set) var phase: DeviceManagerPhase = .idle
     @Published private(set) var lastLaunchToken = UUID()
+    /// Bumped when a Play/boot attempt fails so panes can clear "Starting…" state.
+    @Published private(set) var lastLaunchFailureToken = UUID()
+    /// Device whose pending launch should clear when `lastLaunchFailureToken` bumps.
+    /// Scoped so superseding a boot into another pane does not wipe that pane’s pending.
+    @Published private(set) var lastLaunchFailureDeviceID: String?
+    @Published private(set) var lastLaunchFailureMessage: String?
 
     private let client: any DeviceClient
     private var refreshTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
-    private var operationGeneration = UUID()
+    private var refreshGeneration = UUID()
+    private var launchGeneration = UUID()
 
     init(client: any DeviceClient) {
         self.client = client
@@ -44,10 +52,21 @@ final class DeviceManager: ObservableObject {
 
     func refreshDevices() {
         refreshTask?.cancel()
-        launchTask?.cancel()
         let generation = UUID()
-        operationGeneration = generation
-        phase = .loading
+        refreshGeneration = generation
+
+        // Never abort an in-flight boot/create — that left panes stuck on
+        // "Starting…" with no process left to finish the launch.
+        let isLaunching: Bool
+        switch phase {
+        case .launching, .creating:
+            isLaunching = true
+        default:
+            isLaunching = false
+            launchTask?.cancel()
+            launchGeneration = UUID()
+            phase = .loading
+        }
 
         refreshTask = Task { [weak self] in
             guard let self else { return }
@@ -55,17 +74,29 @@ final class DeviceManager: ObservableObject {
             do {
                 let devices = try await client.listDevices()
                 guard !Task.isCancelled,
-                      operationGeneration == generation else {
+                      refreshGeneration == generation else {
                     return
                 }
                 self.devices = devices
-                self.phase = .ready
+                if !isLaunching {
+                    switch self.phase {
+                    case .launching, .creating:
+                        break
+                    default:
+                        self.phase = .ready
+                    }
+                }
             } catch {
                 guard !Task.isCancelled,
-                      operationGeneration == generation else {
+                      refreshGeneration == generation else {
                     return
                 }
-                self.phase = .failed(error.localizedDescription)
+                switch self.phase {
+                case .launching, .creating:
+                    break
+                default:
+                    self.phase = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -74,9 +105,12 @@ final class DeviceManager: ObservableObject {
         guard devices.contains(where: { $0.id == device.id }) else { return }
 
         refreshTask?.cancel()
+        refreshGeneration = UUID()
         launchTask?.cancel()
         let generation = UUID()
-        operationGeneration = generation
+        launchGeneration = generation
+        lastLaunchFailureMessage = nil
+        let deviceID = device.id
         phase = .launching(device.name)
 
         launchTask = Task { [weak self] in
@@ -85,22 +119,63 @@ final class DeviceManager: ObservableObject {
             do {
                 try await client.launch(device)
                 guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
+                      launchGeneration == generation else { return }
 
                 self.lastLaunchToken = UUID()
                 self.phase = .ready
-
-                try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
                 self.launchTask = nil
                 self.refreshDevices()
+            } catch is CancellationError {
+                // Superseded by another launch/create; the new operation owns phase.
+                // Clear only this device’s pending “Starting…” — not sibling panes.
+                self.lastLaunchFailureDeviceID = deviceID
+                self.lastLaunchFailureToken = UUID()
             } catch {
                 guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
+                      launchGeneration == generation else { return }
+                self.lastLaunchFailureMessage = error.localizedDescription
+                self.lastLaunchFailureDeviceID = deviceID
+                self.lastLaunchFailureToken = UUID()
                 self.phase = .failed(error.localizedDescription)
+                self.launchTask = nil
             }
         }
+    }
+
+    func shutdown(_ device: LaunchableDevice) {
+        guard devices.contains(where: { $0.id == device.id }) else { return }
+
+        refreshTask?.cancel()
+        refreshGeneration = UUID()
+        launchTask?.cancel()
+        let generation = UUID()
+        launchGeneration = generation
+        phase = .shuttingDown(device.name)
+
+        launchTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await client.shutdown(device)
+                guard !Task.isCancelled,
+                      launchGeneration == generation else { return }
+
+                self.phase = .ready
+                self.launchTask = nil
+                self.refreshDevices()
+            } catch is CancellationError {
+                // Superseded by another operation.
+            } catch {
+                guard !Task.isCancelled,
+                      launchGeneration == generation else { return }
+                self.phase = .failed(error.localizedDescription)
+                self.launchTask = nil
+            }
+        }
+    }
+
+    var bootedDevices: [LaunchableDevice] {
+        devices.filter { $0.state == .booted }
     }
 
     var supportsCreatingEmulators: Bool {
@@ -121,9 +196,10 @@ final class DeviceManager: ObservableObject {
         }
 
         refreshTask?.cancel()
+        refreshGeneration = UUID()
         launchTask?.cancel()
         let generation = UUID()
-        operationGeneration = generation
+        launchGeneration = generation
         phase = .creating(profile.displayName)
 
         launchTask = Task { [weak self] in
@@ -134,11 +210,11 @@ final class DeviceManager: ObservableObject {
                     profile: profile
                 )
                 guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
+                      launchGeneration == generation else { return }
 
                 let devices = try await androidClient.listDevices()
                 guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
+                      launchGeneration == generation else { return }
 
                 self.devices = devices
                 self.phase = .ready
@@ -148,10 +224,13 @@ final class DeviceManager: ObservableObject {
                    let device = devices.first(where: { $0.id == createdID }) {
                     self.launch(device)
                 }
+            } catch is CancellationError {
+                // Superseded by another operation.
             } catch {
                 guard !Task.isCancelled,
-                      operationGeneration == generation else { return }
+                      launchGeneration == generation else { return }
                 self.phase = .failed(error.localizedDescription)
+                self.launchTask = nil
             }
         }
     }

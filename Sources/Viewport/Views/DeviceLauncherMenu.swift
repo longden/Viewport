@@ -7,6 +7,20 @@ struct DeviceLauncherMenu: View {
     /// When set, Play routes through this instead of `manager.launch` directly
     /// so the caller can bind the launch to a specific pane.
     var onLaunch: ((LaunchableDevice) -> Void)?
+    var onShutdown: ((LaunchableDevice) -> Void)?
+
+    private var startableDevices: [LaunchableDevice] {
+        manager.devices.filter { device in
+            device.state != .unavailable
+                && !(device.source == .android && device.state == .booted)
+        }
+    }
+
+    private var runningGuests: [LaunchableDevice] {
+        manager.bootedDevices.filter { device in
+            device.source == .iOS || device.source == .android
+        }
+    }
 
     var body: some View {
         Menu {
@@ -23,26 +37,43 @@ struct DeviceLauncherMenu: View {
                 Divider()
             }
 
-            if manager.devices.isEmpty {
+            if startableDevices.isEmpty && runningGuests.isEmpty {
                 emptyMenuContent
             } else {
-                ForEach(manager.devices) { device in
-                    Button {
-                        if let onLaunch {
-                            onLaunch(device)
-                        } else {
-                            manager.launch(device)
+                if !startableDevices.isEmpty {
+                    ForEach(startableDevices) { device in
+                        Button {
+                            if let onLaunch {
+                                onLaunch(device)
+                            } else {
+                                manager.launch(device)
+                            }
+                        } label: {
+                            Label(
+                                menuTitle(for: device),
+                                systemImage: device.state.systemImage
+                            )
                         }
-                    } label: {
-                        Label(
-                            menuTitle(for: device),
-                            systemImage: device.state.systemImage
-                        )
                     }
-                    .disabled(
-                        device.state == .unavailable
-                            || (device.source == .android && device.state == .booted)
-                    )
+                }
+
+                if !runningGuests.isEmpty {
+                    Divider()
+
+                    ForEach(runningGuests) { device in
+                        Button(role: .destructive) {
+                            if let onShutdown {
+                                onShutdown(device)
+                            } else {
+                                manager.shutdown(device)
+                            }
+                        } label: {
+                            Label(
+                                "Shut down \(device.name)",
+                                systemImage: "stop.circle"
+                            )
+                        }
+                    }
                 }
             }
 
