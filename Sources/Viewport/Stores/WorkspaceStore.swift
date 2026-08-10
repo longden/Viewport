@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import CoreGraphics
 import Foundation
@@ -26,12 +25,8 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var perfHUDEnabled: Bool
     /// When off (default), unfinished tools stay hidden from the Settings menu.
     @Published private(set) var experimentalFeaturesEnabled: Bool
-    @Published private(set) var recentDeepLinks: [String]
-    @Published private(set) var lastPushBundleID: String
-    @Published private(set) var lastPushPayloadJSON: String
     @Published private(set) var preferHeadlessAndroidEmulators: Bool
     @Published private(set) var preferHeadlessIOSSimulators: Bool
-    @Published private(set) var locationFavorites: [DeviceLocationCoordinate]
     @Published var focusedCaptureSource: ViewerSource?
     @Published var focusedCapturePaneID: UUID?
 
@@ -51,12 +46,8 @@ final class WorkspaceStore: ObservableObject {
     private let synchronizedScrollingKey: String
     private let perfHUDKey: String
     private let experimentalFeaturesKey: String
-    private let recentDeepLinksKey: String
-    private let lastPushBundleIDKey: String
-    private let lastPushPayloadJSONKey: String
     private let preferHeadlessAndroidKey: String
     private let preferHeadlessIOSKey: String
-    private let locationFavoritesKey: String
     private let automation = DeviceAutomationService()
     private var captureRefreshTask: Task<Void, Never>?
 
@@ -74,12 +65,8 @@ final class WorkspaceStore: ObservableObject {
         synchronizedScrollingKey: String = "synchronizedScrollingEnabled",
         perfHUDKey: String = "perfHUDEnabled",
         experimentalFeaturesKey: String = "experimentalFeaturesEnabled",
-        recentDeepLinksKey: String = "recentDeepLinks",
-        lastPushBundleIDKey: String = "lastPushBundleID",
-        lastPushPayloadJSONKey: String = "lastPushPayloadJSON",
         preferHeadlessAndroidKey: String = AndroidEmulatorLaunchArguments.preferHeadlessUserDefaultsKey,
         preferHeadlessIOSKey: String = IOSSimulatorClient.preferHeadlessUserDefaultsKey,
-        locationFavoritesKey: String = "locationFavorites",
         androidClient: (any DeviceClient)? = nil,
         iOSClient: any DeviceClient = IOSSimulatorClient()
     ) {
@@ -96,12 +83,8 @@ final class WorkspaceStore: ObservableObject {
         self.synchronizedScrollingKey = synchronizedScrollingKey
         self.perfHUDKey = perfHUDKey
         self.experimentalFeaturesKey = experimentalFeaturesKey
-        self.recentDeepLinksKey = recentDeepLinksKey
-        self.lastPushBundleIDKey = lastPushBundleIDKey
-        self.lastPushPayloadJSONKey = lastPushPayloadJSONKey
         self.preferHeadlessAndroidKey = preferHeadlessAndroidKey
         self.preferHeadlessIOSKey = preferHeadlessIOSKey
-        self.locationFavoritesKey = locationFavoritesKey
         androidDevices = DeviceManager(
             client: androidClient ?? AndroidDeviceClient(defaults: defaults)
         )
@@ -171,25 +154,12 @@ final class WorkspaceStore: ObservableObject {
         experimentalFeaturesEnabled = defaults.object(
             forKey: experimentalFeaturesKey
         ) as? Bool ?? false
-        recentDeepLinks = defaults.stringArray(forKey: recentDeepLinksKey) ?? []
-        lastPushBundleID = defaults.string(forKey: lastPushBundleIDKey) ?? ""
-        lastPushPayloadJSON = defaults.string(forKey: lastPushPayloadJSONKey)
-            ?? DeviceAutomationService.defaultAPNsPayloadJSON
         preferHeadlessAndroidEmulators = defaults.object(
             forKey: preferHeadlessAndroidKey
         ) as? Bool ?? true
         preferHeadlessIOSSimulators = defaults.object(
             forKey: preferHeadlessIOSKey
         ) as? Bool ?? true
-        if let data = defaults.data(forKey: locationFavoritesKey),
-           let favorites = try? JSONDecoder().decode(
-            [DeviceLocationCoordinate].self,
-            from: data
-           ) {
-            locationFavorites = favorites
-        } else {
-            locationFavorites = Self.defaultLocationFavorites
-        }
 
         androidCapture.isPerfHUDEnabled = perfHUDEnabled
         androidCaptureSecondary.isPerfHUDEnabled = perfHUDEnabled
@@ -655,8 +625,6 @@ final class WorkspaceStore: ObservableObject {
             result.succeeded.append("Web")
         }
 
-        rememberDeepLink(normalized)
-
         if !result.didSucceed {
             if let firstSkip = result.skipped.first {
                 throw DeviceAutomationError.commandFailed(firstSkip)
@@ -666,119 +634,6 @@ final class WorkspaceStore: ObservableObject {
             )
         }
         return result
-    }
-
-    @discardableResult
-    func broadcastPush(
-        payloadJSON: String,
-        bundleID: String
-    ) async throws -> DeviceInjectionResult {
-        let devices = selectedCaptureDevices(matching: .iOS)
-            .filter { $0.kind == .iOSSimulator }
-        guard !devices.isEmpty else {
-            throw DeviceAutomationError.noTarget(
-                "Show iOS and select a Simulator. Push injection does not work on physical iPhones."
-            )
-        }
-
-        var result = DeviceInjectionResult()
-        for device in devices {
-            do {
-                try await automation.sendPush(
-                    payloadJSON: payloadJSON,
-                    bundleID: bundleID,
-                    on: device
-                )
-                result.succeeded.append(device.name)
-            } catch let error as DeviceAutomationError {
-                if case .unsupported(let message) = error {
-                    result.skipped.append(message)
-                } else {
-                    throw error
-                }
-            }
-        }
-
-        if result.didSucceed {
-            setLastPushBundleID(bundleID)
-            setLastPushPayloadJSON(payloadJSON)
-        }
-
-        if !result.didSucceed {
-            if let firstSkip = result.skipped.first {
-                throw DeviceAutomationError.commandFailed(firstSkip)
-            }
-            throw DeviceAutomationError.noTarget(
-                "Show iOS and select a Simulator. Push injection does not work on physical iPhones."
-            )
-        }
-        return result
-    }
-
-    @discardableResult
-    func broadcastLocalNotification(
-        title: String,
-        body: String,
-        tag: String
-    ) async throws -> DeviceInjectionResult {
-        let devices = selectedCaptureDevices(matching: .android)
-        guard !devices.isEmpty else {
-            throw DeviceAutomationError.noTarget(
-                "Show Android and select a device or emulator."
-            )
-        }
-
-        var result = DeviceInjectionResult()
-        for device in devices {
-            do {
-                try await automation.postLocalNotification(
-                    title: title,
-                    body: body,
-                    tag: tag,
-                    on: device
-                )
-                result.succeeded.append(device.name)
-            } catch {
-                result.skipped.append(
-                    "\(device.name): \(error.localizedDescription)"
-                )
-            }
-        }
-
-        if !result.didSucceed {
-            if let firstSkip = result.skipped.first {
-                throw DeviceAutomationError.commandFailed(firstSkip)
-            }
-            throw DeviceAutomationError.noTarget(
-                "Show Android and select a device or emulator."
-            )
-        }
-        return result
-    }
-
-    func setLastPushBundleID(_ bundleID: String) {
-        let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        lastPushBundleID = trimmed
-        defaults.set(trimmed, forKey: lastPushBundleIDKey)
-    }
-
-    func setLastPushPayloadJSON(_ json: String) {
-        lastPushPayloadJSON = json
-        defaults.set(json, forKey: lastPushPayloadJSONKey)
-    }
-
-    var hasAndroidInjectionTarget: Bool {
-        !selectedCaptureDevices(matching: .android).isEmpty
-    }
-
-    var hasIOSSimulatorInjectionTarget: Bool {
-        selectedCaptureDevices(matching: .iOS)
-            .contains { $0.kind == .iOSSimulator }
-    }
-
-    var hasPhysicalIOSSelected: Bool {
-        selectedCaptureDevices(matching: .iOS)
-            .contains { $0.kind == .iOSDevice }
     }
 
     func broadcastAppearance(_ appearance: DeviceAppearance) async throws {
@@ -807,64 +662,6 @@ final class WorkspaceStore: ObservableObject {
         guard preferHeadlessIOSSimulators != isEnabled else { return }
         preferHeadlessIOSSimulators = isEnabled
         defaults.set(isEnabled, forKey: preferHeadlessIOSKey)
-    }
-
-    func broadcastSetClipboard(_ text: String) async throws {
-        try await broadcast { try await automation.setClipboard(text, on: $0) }
-    }
-
-    func pasteClipboard(_ text: String, to source: ViewerSource) async throws {
-        guard let device = selectedCaptureDevice(for: source) else {
-            throw DeviceAutomationError.noTarget(
-                missingTargetMessage(for: source == .android ? .android : .iOS)
-            )
-        }
-        try await automation.setClipboard(text, on: device)
-    }
-
-    func pasteClipboardToFocusedDevice() async throws {
-        let text = NSPasteboard.general.string(forType: .string)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !text.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Mac clipboard is empty.")
-        }
-
-        if let source = focusedCaptureSource {
-            try await pasteClipboard(text, to: source)
-            return
-        }
-
-        try await broadcastSetClipboard(text)
-    }
-
-    func copyClipboardFromDevice(source: ViewerSource) async throws -> String {
-        guard let device = selectedCaptureDevice(for: source) else {
-            throw DeviceAutomationError.noTarget(
-                missingTargetMessage(for: source == .android ? .android : .iOS)
-            )
-        }
-        let text = try await automation.getClipboard(from: device)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        return text
-    }
-
-    func broadcastLocation(
-        latitude: Double,
-        longitude: Double,
-        alsoSetWeb: Bool = false,
-        web: WebViewModel? = nil
-    ) async throws {
-        try await broadcast {
-            try await automation.setLocation(
-                latitude: latitude,
-                longitude: longitude,
-                on: $0
-            )
-        }
-        if alsoSetWeb, isVisible(.web), let web {
-            web.setMockGeolocation(latitude: latitude, longitude: longitude)
-        }
     }
 
     func broadcastRotateClockwise() async throws {
@@ -943,65 +740,6 @@ final class WorkspaceStore: ObservableObject {
         return nil
     }
 
-    func addLocationFavorite(
-        name: String,
-        latitude: Double,
-        longitude: Double
-    ) throws {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Enter a favorite name.")
-        }
-        try DeviceAutomationService.validateCoordinate(
-            latitude: latitude,
-            longitude: longitude
-        )
-        var updated = locationFavorites.filter { $0.name != trimmedName }
-        updated.insert(
-            DeviceLocationCoordinate(
-                name: trimmedName,
-                latitude: latitude,
-                longitude: longitude
-            ),
-            at: 0
-        )
-        if updated.count > 12 {
-            updated = Array(updated.prefix(12))
-        }
-        locationFavorites = updated
-        persistLocationFavorites()
-    }
-
-    func removeLocationFavorite(_ favorite: DeviceLocationCoordinate) {
-        locationFavorites.removeAll { $0.id == favorite.id }
-        persistLocationFavorites()
-    }
-
-    private static let defaultLocationFavorites: [DeviceLocationCoordinate] = [
-        DeviceLocationCoordinate(
-            name: "Apple Park",
-            latitude: 37.3349,
-            longitude: -122.0090
-        ),
-        DeviceLocationCoordinate(
-            name: "London",
-            latitude: 51.5074,
-            longitude: -0.1278
-        ),
-        DeviceLocationCoordinate(
-            name: "Tokyo",
-            latitude: 35.6762,
-            longitude: 139.6503
-        )
-    ]
-
-    private func persistLocationFavorites() {
-        guard let data = try? JSONEncoder().encode(locationFavorites) else {
-            return
-        }
-        defaults.set(data, forKey: locationFavoritesKey)
-    }
-
     private func selectedCaptureDevice(for source: ViewerSource) -> StreamedDevice? {
         switch source {
         case .android:
@@ -1026,16 +764,6 @@ final class WorkspaceStore: ObservableObject {
         case .web:
             return nil
         }
-    }
-
-    private func rememberDeepLink(_ url: String) {
-        var updated = recentDeepLinks.filter { $0 != url }
-        updated.insert(url, at: 0)
-        if updated.count > 8 {
-            updated = Array(updated.prefix(8))
-        }
-        recentDeepLinks = updated
-        defaults.set(updated, forKey: recentDeepLinksKey)
     }
 
     private func missingTargetMessage(
@@ -1117,19 +845,6 @@ final class WorkspaceStore: ObservableObject {
             } else {
                 session.setMirrorTargets([])
             }
-        }
-    }
-
-    /// Capture sessions for macro replay on the chosen OS target(s).
-    func captureSessions(forMacroTarget target: MacroReplayTarget) -> [WindowCaptureSession] {
-        let visible = orderedVisiblePanes.compactMap { captureSession(for: $0) }
-        switch target {
-        case .android:
-            return visible.filter { $0.source == .android }
-        case .iOS:
-            return visible.filter { $0.source == .iOS }
-        case .both:
-            return visible
         }
     }
 

@@ -7,7 +7,6 @@ struct WebViewerPane: View {
     var onCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     /// Composite recording squares the live web clip so it matches device panes.
     var squareContentCorners: Bool = false
-    var showNetworkOverlay: Bool = false
     var onClose: (() -> Void)? = nil
     @FocusState private var addressIsFocused: Bool
     @State private var showCloseConfirm = false
@@ -26,12 +25,6 @@ struct WebViewerPane: View {
         } content: {
             ZStack(alignment: .bottom) {
                 viewportContent
-                    .overlay(alignment: .topTrailing) {
-                        if showNetworkOverlay {
-                            WebNetworkOverlayPanel(model: model.networkOverlay)
-                                .padding(12)
-                        }
-                    }
 
                 if let message = model.noticeMessage ?? model.errorMessage {
                     Text(message)
@@ -42,12 +35,6 @@ struct WebViewerPane: View {
                         .glassEffect(.regular, in: Capsule())
                         .padding(12)
                 }
-            }
-            .onChange(of: showNetworkOverlay) { _, enabled in
-                model.networkOverlay.setEnabled(enabled)
-            }
-            .onAppear {
-                model.networkOverlay.setEnabled(showNetworkOverlay)
             }
         }
         .alert("Hide Web pane?", isPresented: $showCloseConfirm) {

@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
@@ -120,30 +119,6 @@ struct CaptureViewerPane: View {
             .onTapGesture {
                 workspace.focusedCaptureSource = session.source
                 workspace.focusedCapturePaneID = paneID
-            }
-            .onPasteCommand(of: [.plainText]) { providers in
-                guard let provider = providers.first else { return }
-                provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { item, _ in
-                    let text: String?
-                    if let data = item as? Data {
-                        text = String(data: data, encoding: .utf8)
-                    } else {
-                        text = item as? String
-                    }
-                    guard let text,
-                          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        return
-                    }
-                    Task { @MainActor in
-                        workspace.focusedCaptureSource = session.source
-                        workspace.focusedCapturePaneID = paneID
-                        do {
-                            try await workspace.pasteClipboard(text, to: session.source)
-                        } catch {
-                            presentAutomationError(error)
-                        }
-                    }
-                }
             }
         }
         .sheet(isPresented: $showCreateEmulator) {

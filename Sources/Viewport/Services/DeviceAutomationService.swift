@@ -37,13 +37,6 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
     }
 }
 
-struct DeviceLocationCoordinate: Codable, Equatable, Identifiable, Hashable {
-    var id: String { name }
-    let name: String
-    let latitude: Double
-    let longitude: Double
-}
-
 enum DeviceFontScale: String, CaseIterable, Identifiable {
     case small
     case defaultScale
@@ -129,7 +122,7 @@ struct DeviceInjectionResult: Sendable, Equatable {
     var didSucceed: Bool { !succeeded.isEmpty }
 }
 
-/// Cross-device helpers for compare workflows: open URL, push, appearance,
+/// Cross-device helpers for compare workflows: open URL, appearance,
 /// font scale, and clean status bars.
 actor DeviceAutomationService {
     private let runner: CommandRunner
@@ -172,80 +165,6 @@ actor DeviceAutomationService {
         case .iOSDevice:
             throw DeviceAutomationError.unsupported(
                 "Deep links on physical iPhones need a signed app that handles the URL. Use Simulator for open-URL compares."
-            )
-        }
-    }
-
-    /// Sends a simulated remote push to an iOS Simulator via `simctl push`.
-    func sendPush(
-        payloadJSON: String,
-        bundleID: String,
-        on device: StreamedDevice
-    ) async throws {
-        let trimmedBundle = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBundle.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Enter an app bundle ID.")
-        }
-        let payload = try Self.validatedAPNsPayloadData(payloadJSON)
-
-        switch device.kind {
-        case .iOSSimulator:
-            let fileURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("viewport-push-\(UUID().uuidString).apns")
-            try payload.write(to: fileURL, options: .atomic)
-            defer { try? FileManager.default.removeItem(at: fileURL) }
-            try await runXcrun(
-                arguments: [
-                    "simctl", "push", device.id, trimmedBundle, fileURL.path
-                ],
-                label: "Push notification"
-            )
-        case .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "Push injection works on iOS Simulator only. Physical iPhones need real APNs."
-            )
-        case .androidEmulator, .androidDevice:
-            throw DeviceAutomationError.unsupported(
-                "Use Post local notification for Android. Simulator push is iOS-only."
-            )
-        }
-    }
-
-    /// Posts a local system notification on Android (not FCM).
-    func postLocalNotification(
-        title: String,
-        body: String,
-        tag: String,
-        on device: StreamedDevice
-    ) async throws {
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Enter a notification title.")
-        }
-        guard !trimmedBody.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Enter notification text.")
-        }
-        let resolvedTag = trimmedTag.isEmpty ? "viewport" : trimmedTag
-
-        switch device.kind {
-        case .androidEmulator, .androidDevice:
-            // Quote for the device shell so spaces and punctuation survive.
-            let shell = [
-                "cmd", "notification", "post",
-                "-t", Self.shellSingleQuoted(trimmedTitle),
-                Self.shellSingleQuoted(resolvedTag),
-                Self.shellSingleQuoted(trimmedBody)
-            ].joined(separator: " ")
-            try await runADB(
-                serial: device.id,
-                arguments: ["shell", shell],
-                label: "Post notification"
-            )
-        case .iOSSimulator, .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "Local notification posting is Android-only. Use Send push on iOS Simulator."
             )
         }
     }
@@ -359,94 +278,6 @@ actor DeviceAutomationService {
         case .iOSDevice:
             throw DeviceAutomationError.unsupported(
                 "Status bar overrides are Simulator / Android only."
-            )
-        }
-    }
-
-    func setClipboard(_ text: String, on device: StreamedDevice) async throws {
-        switch device.kind {
-        case .androidEmulator, .androidDevice:
-            let shell = [
-                "cmd", "clipboard", "set", "--user", "0",
-                Self.shellSingleQuoted(text)
-            ].joined(separator: " ")
-            try await runADB(
-                serial: device.id,
-                arguments: ["shell", shell],
-                label: "Set clipboard"
-            )
-            try await runADB(
-                serial: device.id,
-                arguments: ["shell", "input", "keyevent", "279"],
-                label: "Paste"
-            )
-        case .iOSSimulator:
-            guard let data = text.data(using: .utf8) else {
-                throw DeviceAutomationError.commandFailed(
-                    "Clipboard text must be UTF-8."
-                )
-            }
-            try await runXcrun(
-                arguments: ["simctl", "pbcopy", device.id],
-                standardInput: data,
-                label: "Set clipboard"
-            )
-            try await runAppleScript(
-                """
-                tell application "Simulator" to activate
-                delay 0.05
-                tell application "System Events" to keystroke "v" using {command down}
-                """,
-                label: "Paste"
-            )
-        case .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "Clipboard sync works on Simulator and Android only."
-            )
-        }
-    }
-
-    func getClipboard(from device: StreamedDevice) async throws -> String {
-        switch device.kind {
-        case .androidEmulator, .androidDevice:
-            guard let adb else {
-                throw DeviceAutomationError.commandFailed("adb is not available.")
-            }
-            let result = try await runner.run(
-                executable: adb,
-                arguments: ["-s", device.id, "shell", "cmd", "clipboard", "get"],
-                timeout: 12
-            )
-            guard result.exitCode == 0 else {
-                throw DeviceAutomationError.unsupported(
-                    "Clipboard read is not supported on this Android build."
-                )
-            }
-            let text = result.standardOutput.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            guard !text.isEmpty else {
-                throw DeviceAutomationError.commandFailed(
-                    "Android clipboard is empty."
-                )
-            }
-            return text
-        case .iOSSimulator:
-            let result = try await runXcrunData(
-                arguments: ["simctl", "pbpaste", device.id],
-                label: "Get clipboard"
-            )
-            let text = String(decoding: result, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
-                throw DeviceAutomationError.commandFailed(
-                    "Simulator clipboard is empty."
-                )
-            }
-            return text
-        case .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "Clipboard read works on Simulator and Android only."
             )
         }
     }
@@ -586,64 +417,6 @@ actor DeviceAutomationService {
         }
     }
 
-    func setLocation(
-        latitude: Double,
-        longitude: Double,
-        on device: StreamedDevice
-    ) async throws {
-        try Self.validateCoordinate(latitude: latitude, longitude: longitude)
-
-        switch device.kind {
-        case .androidEmulator, .androidDevice:
-            try await runADB(
-                serial: device.id,
-                arguments: Self.androidGeoFixArguments(
-                    latitude: latitude,
-                    longitude: longitude
-                ),
-                label: "Set location"
-            )
-        case .iOSSimulator:
-            try await runXcrun(
-                arguments: [
-                    "simctl", "location", device.id, "set",
-                    Self.iosLocationArgument(latitude: latitude, longitude: longitude)
-                ],
-                label: "Set location"
-            )
-        case .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "Location spoofing works on Simulator and Android emulators only."
-            )
-        }
-    }
-
-    func startGPXPlayback(
-        _ gpxURL: URL,
-        on device: StreamedDevice
-    ) async throws {
-        switch device.kind {
-        case .iOSSimulator:
-            try await runXcrun(
-                arguments: [
-                    "simctl", "location", device.id, "start", gpxURL.path
-                ],
-                label: "GPX playback"
-            )
-        case .androidEmulator, .androidDevice:
-            let coordinate = try Self.firstGPXCoordinate(from: gpxURL)
-            try await setLocation(
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude,
-                on: device
-            )
-        case .iOSDevice:
-            throw DeviceAutomationError.unsupported(
-                "GPX playback works on Simulator and Android emulators only."
-            )
-        }
-    }
-
     nonisolated static func normalizedURL(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -653,122 +426,6 @@ actor DeviceAutomationService {
         }
         // Custom schemes like myapp://path
         return trimmed
-    }
-
-    nonisolated static let defaultAPNsPayloadJSON = """
-        {
-          "aps": {
-            "alert": { "title": "Viewport", "body": "Test notification" },
-            "sound": "default",
-            "badge": 1
-          }
-        }
-        """
-
-    nonisolated static let silentAPNsPayloadJSON = """
-        {
-          "aps": {
-            "content-available": 1
-          }
-        }
-        """
-
-    nonisolated static let customDataAPNsPayloadJSON = """
-        {
-          "aps": {
-            "alert": { "title": "Viewport", "body": "Open a deep link" },
-            "sound": "default"
-          },
-          "deepLink": "myapp://home"
-        }
-        """
-
-    /// Validates APNs JSON and returns UTF-8 data for `simctl push`.
-    nonisolated static func validatedAPNsPayloadData(_ json: String) throws -> Data {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw DeviceAutomationError.commandFailed("Enter an APNs JSON payload.")
-        }
-        guard let data = trimmed.data(using: .utf8) else {
-            throw DeviceAutomationError.commandFailed("APNs payload must be UTF-8 JSON.")
-        }
-        let object: Any
-        do {
-            object = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw DeviceAutomationError.commandFailed(
-                "APNs payload is not valid JSON."
-            )
-        }
-        guard let dictionary = object as? [String: Any],
-              dictionary["aps"] != nil else {
-            throw DeviceAutomationError.commandFailed(
-                "APNs payload must be an object with a top-level \"aps\" key."
-            )
-        }
-        guard data.count <= 4096 else {
-            throw DeviceAutomationError.commandFailed(
-                "APNs payload must be 4096 bytes or less."
-            )
-        }
-        return data
-    }
-
-    nonisolated static func shellSingleQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    nonisolated static func androidGeoFixArguments(
-        latitude: Double,
-        longitude: Double
-    ) -> [String] {
-        [
-            "emu", "geo", "fix",
-            formattedCoordinate(longitude),
-            formattedCoordinate(latitude)
-        ]
-    }
-
-    nonisolated static func iosLocationArgument(
-        latitude: Double,
-        longitude: Double
-    ) -> String {
-        "\(formattedCoordinate(latitude)),\(formattedCoordinate(longitude))"
-    }
-
-    nonisolated static func validateCoordinate(
-        latitude: Double,
-        longitude: Double
-    ) throws {
-        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else {
-            throw DeviceAutomationError.commandFailed(
-                "Latitude must be between -90 and 90, longitude between -180 and 180."
-            )
-        }
-    }
-
-    nonisolated static func formattedCoordinate(_ value: Double) -> String {
-        String(format: "%.6f", value)
-    }
-
-    nonisolated static func firstGPXCoordinate(from url: URL) throws -> (
-        latitude: Double,
-        longitude: Double
-    ) {
-        let data = try Data(contentsOf: url)
-        let collector = GPXFirstCoordinateParser()
-        let parser = XMLParser(data: data)
-        parser.delegate = collector
-        // abortParsing() after the first point makes parse() return false — ignore that.
-        _ = parser.parse()
-        guard let latitude = collector.latitude,
-              let longitude = collector.longitude else {
-            throw DeviceAutomationError.commandFailed(
-                "Could not find a track point in the GPX file."
-            )
-        }
-        try validateCoordinate(latitude: latitude, longitude: longitude)
-        return (latitude, longitude)
     }
 
     private static let androidDemoModeCommands: [[String]] = [
@@ -851,29 +508,6 @@ actor DeviceAutomationService {
                 )
             )
         }
-    }
-
-    private func runXcrunData(
-        arguments: [String],
-        label: String
-    ) async throws -> Data {
-        let invocation = simctlInvocation(for: arguments)
-        let result = try await runner.runData(
-            executable: invocation.executable,
-            arguments: invocation.arguments,
-            environment: developerEnvironment,
-            timeout: 12
-        )
-        guard result.exitCode == 0 else {
-            throw DeviceAutomationError.commandFailed(
-                Self.cleanMessage(
-                    stdout: String(decoding: result.standardOutput, as: UTF8.self),
-                    stderr: String(decoding: result.standardError, as: UTF8.self),
-                    fallback: "\(label) failed."
-                )
-            )
-        }
-        return result.standardOutput
     }
 
     private func simctlInvocation(for arguments: [String]) -> SimctlCommand {
@@ -1131,39 +765,5 @@ actor DeviceAutomationService {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         return lines.last.map { String($0) } ?? fallback
-    }
-}
-
-/// Finds the first GPX waypoint / track / route point via XML parsing.
-private final class GPXFirstCoordinateParser: NSObject, XMLParserDelegate {
-    private static let pointLocalNames: Set<String> = ["wpt", "trkpt", "rtept"]
-
-    private(set) var latitude: Double?
-    private(set) var longitude: Double?
-    private var finished = false
-
-    func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?,
-        attributes attributeDict: [String: String] = [:]
-    ) {
-        guard !finished else { return }
-        let localName = elementName.split(separator: ":").last.map(String.init) ?? elementName
-        guard Self.pointLocalNames.contains(localName) else { return }
-
-        let latRaw = attributeDict["lat"] ?? attributeDict.first { $0.key.hasSuffix(":lat") }?.value
-        let lonRaw = attributeDict["lon"] ?? attributeDict.first { $0.key.hasSuffix(":lon") }?.value
-        guard let latRaw,
-              let lonRaw,
-              let lat = Double(latRaw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let lon = Double(lonRaw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return
-        }
-        latitude = lat
-        longitude = lon
-        finished = true
-        parser.abortParsing()
     }
 }

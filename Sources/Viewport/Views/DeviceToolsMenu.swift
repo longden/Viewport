@@ -4,12 +4,7 @@ import SwiftUI
 /// experimental compare helpers.
 struct DeviceToolsMenu: View {
     @ObservedObject var workspace: WorkspaceStore
-    @Binding var showInjector: Bool
-    @Binding var showLocation: Bool
-    @Binding var showNetworkOverlay: Bool
-    @Binding var showOverlayDiff: Bool
     @Binding var showBatchSnapshots: Bool
-    @Binding var showInteractionMacros: Bool
     @Binding var showBuildPlay: Bool
     @State private var isBusy = false
     @State private var statusMessage: String?
@@ -59,41 +54,6 @@ struct DeviceToolsMenu: View {
                 .disabled(isBusy)
             }
 
-            Section("Clipboard") {
-                Button("Paste Mac clipboard to devices") {
-                    run {
-                        try await workspace.pasteClipboardToFocusedDevice()
-                    }
-                }
-                .disabled(isBusy)
-
-                Button("Copy from Android") {
-                    run {
-                        _ = try await workspace.copyClipboardFromDevice(source: .android)
-                    }
-                }
-                .disabled(isBusy || !workspace.hasAndroidInjectionTarget)
-
-                Button("Copy from iOS") {
-                    run {
-                        _ = try await workspace.copyClipboardFromDevice(source: .iOS)
-                    }
-                }
-                .disabled(isBusy || !workspace.hasIOSSimulatorInjectionTarget)
-            }
-
-            Section("Location") {
-                Button("Set location…") {
-                    showLocation = true
-                }
-            }
-
-            Section("Inject") {
-                Button("Open URL & Push…") {
-                    showInjector = true
-                }
-            }
-
             Section("Compare") {
                 Toggle(
                     "Mirror input across devices",
@@ -105,20 +65,10 @@ struct DeviceToolsMenu: View {
                 .help(
                     "Replay taps and scrolls from any device pane onto every other visible device pane."
                 )
-
-                Button("Interaction macros…") {
-                    showInteractionMacros = true
-                }
             }
 
             if workspace.experimentalFeaturesEnabled {
                 Section("Experimental") {
-                    Toggle("Web network overlay", isOn: $showNetworkOverlay)
-
-                    Button("Onion-skin overlay…") {
-                        showOverlayDiff = true
-                    }
-
                     Button("Batch URL snapshots…") {
                         showBatchSnapshots = true
                     }
@@ -146,7 +96,7 @@ struct DeviceToolsMenu: View {
         } label: {
             Label("Device tools", systemImage: "wrench.and.screwdriver")
         }
-        .help("Appearance, status bars, inject, compare tools, and optional experimental helpers")
+        .help("Appearance, status bars, compare tools, and optional experimental helpers")
         .disabled(isBusy)
     }
 
