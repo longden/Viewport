@@ -209,6 +209,46 @@ struct SettingsSheet: View {
                 .buttonStyle(.plain)
             }
 
+            Section("iOS") {
+                Button {
+                    workspace.setPreferHeadlessIOSSimulators(
+                        !workspace.preferHeadlessIOSSimulators
+                    )
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(
+                            systemName: workspace.preferHeadlessIOSSimulators
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(
+                            workspace.preferHeadlessIOSSimulators
+                                ? Color.accentColor
+                                : Color.secondary
+                        )
+                        .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Launch Simulators without Simulator.app")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(
+                                "Boots with simctl bootstatus and attaches when Booted. Direct Surface capture does not need Simulator.app — turn this off for Legacy host-window capture."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
             Section("Experiment") {
                 Button {
                     workspace.setExperimentalFeaturesEnabled(

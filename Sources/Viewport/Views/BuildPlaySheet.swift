@@ -70,10 +70,10 @@ struct BuildPlaySheet: View {
     }
 
     private var iosSection: some View {
-        Section("iOS") {
+        Section("iOS (Xcode project or workspace)") {
             HStack {
                 TextField(
-                    "Xcode project or workspace",
+                    "Path",
                     text: Binding(
                         get: { settings.iosProjectPath ?? "" },
                         set: { settings.iosProjectPath = $0.isEmpty ? nil : $0 }
@@ -112,10 +112,10 @@ struct BuildPlaySheet: View {
     }
 
     private var androidSection: some View {
-        Section("Android") {
+        Section("Android (Gradle project directory)") {
             HStack {
                 TextField(
-                    "Gradle project directory",
+                    "Path",
                     text: Binding(
                         get: { settings.androidProjectPath ?? "" },
                         set: { settings.androidProjectPath = $0.isEmpty ? nil : $0 }

@@ -1,11 +1,36 @@
 import SwiftUI
 
+struct PendingTerminationAction: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let action: () -> Void
+}
+
 struct SourceVisibilityButton: View {
     @ObservedObject var workspace: WorkspaceStore
     let source: ViewerSource
+    let onRequestConfirm: (PendingTerminationAction) -> Void
 
     var body: some View {
         Button {
+            if workspace.isVisible(source) {
+                let guests = workspace.guestsToTerminate(for: source)
+                if let guest = guests.first {
+                    let title = guest.kind == .iOSSimulator
+                        ? "Shut down Simulator?"
+                        : "Shut down emulator?"
+                    let message = "Hiding \(source.title) will shut down \(guest.name)."
+                    onRequestConfirm(
+                        PendingTerminationAction(
+                            title: title,
+                            message: message,
+                            action: { workspace.setVisible(false, for: source) }
+                        )
+                    )
+                    return
+                }
+            }
             workspace.toggle(source)
         } label: {
             Label(
@@ -37,6 +62,7 @@ struct SourceVisibilityButton: View {
 
 struct SourceVisibilityControls: View {
     @ObservedObject var workspace: WorkspaceStore
+    @State private var pendingConfirm: PendingTerminationAction?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -44,7 +70,8 @@ struct SourceVisibilityControls: View {
                 ForEach(ViewerSource.allCases) { source in
                     SourceVisibilityButton(
                         workspace: workspace,
-                        source: source
+                        source: source,
+                        onRequestConfirm: { pendingConfirm = $0 }
                     )
                 }
             }
@@ -66,12 +93,12 @@ struct SourceVisibilityControls: View {
 
                 Section("Remove extra") {
                     Button("Remove extra Android pane") {
-                        _ = workspace.removeExtraPane(.android)
+                        requestRemoveExtra(.android)
                     }
                     .disabled(workspace.paneCount(of: .android) < 2)
 
                     Button("Remove extra iOS pane") {
-                        _ = workspace.removeExtraPane(.iOS)
+                        requestRemoveExtra(.iOS)
                     }
                     .disabled(workspace.paneCount(of: .iOS) < 2)
                 }
@@ -88,5 +115,38 @@ struct SourceVisibilityControls: View {
         }
         .padding(.trailing, 10)
         .accessibilityLabel("Visible sources")
+        .alert(
+            pendingConfirm?.title ?? "",
+            isPresented: Binding(
+                get: { pendingConfirm != nil },
+                set: { if !$0 { pendingConfirm = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingConfirm = nil
+            }
+            Button("Shut Down & Close", role: .destructive) {
+                pendingConfirm?.action()
+                pendingConfirm = nil
+            }
+        } message: {
+            Text(pendingConfirm?.message ?? "")
+        }
+    }
+
+    private func requestRemoveExtra(_ source: ViewerSource) {
+        if let guest = workspace.guestToTerminate(forExtraPane: source) {
+            let title = guest.kind == .iOSSimulator
+                ? "Shut down Simulator?"
+                : "Shut down emulator?"
+            let message = "Removing this pane will shut down \(guest.name)."
+            pendingConfirm = PendingTerminationAction(
+                title: title,
+                message: message,
+                action: { _ = workspace.removeExtraPane(source) }
+            )
+        } else {
+            _ = workspace.removeExtraPane(source)
+        }
     }
 }

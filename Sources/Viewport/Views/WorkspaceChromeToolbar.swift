@@ -121,6 +121,17 @@ struct WorkspaceUtilityToolbar: View {
 
             Divider()
 
+            Button {
+                workspace.resetPaneWindows()
+            } label: {
+                Label("Reset Windows", systemImage: "rectangle.split.3x1")
+            }
+            .help(
+                "Size Android/iOS panes to the live phone aspect and give leftover width to web."
+            )
+
+            Divider()
+
             Button(action: onExportBugReport) {
                 Label(
                     isExportingBugReport
@@ -135,8 +146,10 @@ struct WorkspaceUtilityToolbar: View {
                     || recording.isRecording
             )
 
-            Button("Settings…") {
+            Button {
                 showSettings = true
+            } label: {
+                Label("Settings…", systemImage: "gearshape")
             }
         } label: {
             Label("Settings", systemImage: "gearshape")

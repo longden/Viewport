@@ -8,6 +8,8 @@ struct CaptureViewerPane: View {
     var paneID: UUID?
     var paneTitleSuffix: String?
     var isClosable: Bool = false
+    /// Extra (slot ≥ 1) panes are removed from the layout; primary panes stay empty.
+    var isExtraPane: Bool = false
     var onScreenshot: (() -> Void)?
     var showPerfHUD: Bool = false
     var showDeviceBezels: Bool = false
@@ -52,6 +54,17 @@ struct CaptureViewerPane: View {
 
                     VStack {
                         HStack {
+                            if session.phase == .live {
+                                Text(session.liveStatus)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.82))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        .black.opacity(0.54),
+                                        in: Capsule()
+                                    )
+                            }
                             if showPerfHUD, session.framesPerSecond > 0 {
                                 PaneFPSHud(framesPerSecond: session.framesPerSecond)
                             }
@@ -136,17 +149,15 @@ struct CaptureViewerPane: View {
         .sheet(isPresented: $showCreateEmulator) {
             CreateAndroidEmulatorSheet(manager: deviceManager)
         }
-        .alert("Remove this pane?", isPresented: $showCloseConfirm) {
-            Button("Remove", role: .destructive) {
+        .alert(closeAlertTitle, isPresented: $showCloseConfirm) {
+            Button(closeConfirmButtonTitle, role: .destructive) {
                 if let paneID {
-                    _ = workspace.removePane(id: paneID)
+                    _ = workspace.closePane(id: paneID)
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
-                "This closes the live view and shuts down the emulator or Simulator shown in this pane."
-            )
+            Text(closeAlertMessage)
         }
         .onDisappear {
             installTask?.cancel()
@@ -182,6 +193,7 @@ struct CaptureViewerPane: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 Button {
@@ -191,6 +203,32 @@ struct CaptureViewerPane: View {
                 }
                 .labelStyle(.iconOnly)
                 .help("Refresh devices")
+
+                Button {
+                    pressBack()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(session.selectedDevice?.supportsInput != true)
+                .help(
+                    session.source == .iOS
+                        ? "Swipe back (left-edge gesture)"
+                        : "Android Back"
+                )
+
+                Button {
+                    pressHome()
+                } label: {
+                    Label("Home", systemImage: "house")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(session.selectedDevice?.supportsInput != true)
+                .help(
+                    session.source == .iOS
+                        ? "Go Home (Simulator Home button)"
+                        : "Android Home"
+                )
 
                 Button {
                     onScreenshot?()
@@ -211,7 +249,7 @@ struct CaptureViewerPane: View {
                     Label("Rotate", systemImage: "rotate.right")
                 }
                 .labelStyle(.iconOnly)
-                .disabled(session.selectedDevice == nil)
+                .disabled(session.selectedDevice?.supportsInput != true)
                 .help("Rotate the selected device")
 
                 DeviceLauncherMenu(
@@ -221,10 +259,15 @@ struct CaptureViewerPane: View {
                         : nil,
                     onLaunch: { device in
                         workspace.launch(device, into: session)
+                    },
+                    onShutdown: { device in
+                        workspace.shutdownGuest(device)
                     }
                 )
+                .paneChromeHover()
             }
             .controlSize(.small)
+            .buttonStyle(PaneToolbarButtonStyle())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -236,6 +279,32 @@ struct CaptureViewerPane: View {
         Task {
             do {
                 try await workspace.rotateFocusedDevice()
+            } catch {
+                presentAutomationError(error)
+            }
+        }
+    }
+
+    private func pressHome() {
+        workspace.focusedCaptureSource = session.source
+        workspace.focusedCapturePaneID = paneID
+        automationStatus = nil
+        Task {
+            do {
+                try await workspace.pressHomeOnFocusedDevice()
+            } catch {
+                presentAutomationError(error)
+            }
+        }
+    }
+
+    private func pressBack() {
+        workspace.focusedCaptureSource = session.source
+        workspace.focusedCapturePaneID = paneID
+        automationStatus = nil
+        Task {
+            do {
+                try await workspace.pressBackOnFocusedDevice()
             } catch {
                 presentAutomationError(error)
             }
@@ -347,6 +416,9 @@ struct CaptureViewerPane: View {
                         : nil,
                     onLaunch: { device in
                         workspace.launch(device, into: session)
+                    },
+                    onShutdown: { device in
+                        workspace.shutdownGuest(device)
                     }
                 )
             }
@@ -360,6 +432,9 @@ struct CaptureViewerPane: View {
         }
         // Creating an AVD is global; only show it on panes that are not live yet.
         if case .creating = deviceManager.phase, session.phase != .live {
+            return true
+        }
+        if case .launching = deviceManager.phase, session.phase != .live {
             return true
         }
         switch session.phase {
@@ -383,8 +458,14 @@ struct CaptureViewerPane: View {
         if let pendingLaunchName = session.pendingLaunchName {
             return "Starting \(pendingLaunchName)"
         }
+        if case let .launching(name) = deviceManager.phase {
+            return "Starting \(name)"
+        }
         if case let .creating(name) = deviceManager.phase {
             return "Creating \(name)"
+        }
+        if case .failed = deviceManager.phase {
+            return "Could not start device"
         }
 
         return switch session.phase {
@@ -405,6 +486,9 @@ struct CaptureViewerPane: View {
         }
 
         if session.pendingLaunchName != nil {
+            return "The live view will connect when the device finishes booting."
+        }
+        if case .launching = deviceManager.phase {
             return "The live view will connect when the device finishes booting."
         }
 
@@ -467,6 +551,54 @@ struct CaptureViewerPane: View {
             return device.displayName
         }
         return "\(device.displayName) (\(session.transport.shortLabel))"
+    }
+
+    private var closeAlertTitle: String {
+        guard let guest = session.guestToTerminate else {
+            return isExtraPane ? "Remove this pane?" : "Clear this pane?"
+        }
+        switch guest.kind {
+        case .iOSSimulator:
+            return "Shut down Simulator?"
+        case .androidEmulator:
+            return "Shut down emulator?"
+        case .iOSDevice, .androidDevice:
+            return isExtraPane ? "Remove this pane?" : "Disconnect device?"
+        }
+    }
+
+    private var closeAlertMessage: String {
+        guard let guest = session.guestToTerminate else {
+            return isExtraPane
+                ? "This removes the empty pane from the workspace."
+                : "This clears the live view. No emulator or Simulator is running in this pane."
+        }
+        switch guest.kind {
+        case .iOSSimulator:
+            return isExtraPane
+                ? "This shuts down \(guest.name) and removes this pane."
+                : "This shuts down \(guest.name) and clears this pane."
+        case .androidEmulator:
+            return isExtraPane
+                ? "This shuts down the \(guest.name) emulator and removes this pane."
+                : "This shuts down the \(guest.name) emulator and clears this pane."
+        case .iOSDevice, .androidDevice:
+            return isExtraPane
+                ? "This disconnects \(guest.displayName) from Viewport and removes this pane. The physical device stays on."
+                : "This disconnects \(guest.displayName) from Viewport. The physical device stays on."
+        }
+    }
+
+    private var closeConfirmButtonTitle: String {
+        guard let guest = session.guestToTerminate else {
+            return isExtraPane ? "Remove" : "Clear"
+        }
+        switch guest.kind {
+        case .iOSSimulator, .androidEmulator:
+            return "Shut Down"
+        case .iOSDevice, .androidDevice:
+            return isExtraPane ? "Remove" : "Disconnect"
+        }
     }
 
     private var dropPromptDetail: String {
