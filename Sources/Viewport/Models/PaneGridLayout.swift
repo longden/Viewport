@@ -40,9 +40,131 @@ struct PaneGridLayout: Codable, Equatable {
     static let maximumPaneCount = 4
     static let maximumDevicePanesPerSource = 2
 
+    /// Matches ``WorkspaceSplitView`` divider / clamp metrics.
+    static let splitDividerWidth: Double = 12
+    static let minimumPaneWidth: Double = 190
+    /// Title + controls + padding above the live preview inside a pane.
+    static let paneChromeHeight: Double = 140
+    /// Typical modern phone width÷height when no live frame is available.
+    static let fallbackDeviceAspect: Double = 9.0 / 19.5
+
+    /// Default desk used for first-launch weights before GeometryReader reports.
+    static let defaultSplitContentSize = CGSize(width: 1_596, height: 860)
+
+    static func preferredWeight(for source: ViewerSource) -> Double {
+        preferredSourceWeights[source] ?? minimumPaneWidth
+    }
+
+    /// Source-level defaults derived from the aspect-fit layout at the default desk.
+    static var preferredSourceWeights: [ViewerSource: Double] {
+        let nodes = ViewerSource.allCases.map {
+            PaneGridNode(source: $0, weight: 1, slot: 0)
+        }
+        let widths = balancedPaneWidths(
+            nodes: nodes,
+            contentSize: defaultSplitContentSize,
+            deviceAspectByNodeID: [:]
+        )
+        var weights: [ViewerSource: Double] = [:]
+        for node in nodes {
+            guard let source = node.viewerSource else { continue }
+            weights[source] = widths[node.id] ?? preferredWeight(for: source)
+        }
+        return weights
+    }
+
+    /// Sizes device panes to fill preview height at phone aspect; web gets the rest.
+    static func balancedPaneWidths(
+        nodes: [PaneGridNode],
+        contentSize: CGSize,
+        deviceAspectByNodeID: [UUID: Double]
+    ) -> [UUID: Double] {
+        guard !nodes.isEmpty else { return [:] }
+
+        let dividerTotal = splitDividerWidth * Double(max(nodes.count - 1, 0))
+        let availableWidth = max(Double(contentSize.width) - dividerTotal, minimumPaneWidth)
+        let previewHeight = max(
+            Double(contentSize.height) - paneChromeHeight,
+            minimumPaneWidth
+        )
+
+        let deviceNodes = nodes.filter {
+            $0.viewerSource == .android || $0.viewerSource == .iOS
+        }
+        let webNodes = nodes.filter { $0.viewerSource == .web }
+        let otherNodes = nodes.filter {
+            $0.viewerSource != .android
+                && $0.viewerSource != .iOS
+                && $0.viewerSource != .web
+        }
+
+        var widths: [UUID: Double] = [:]
+
+        for node in deviceNodes {
+            let aspect = deviceAspectByNodeID[node.id] ?? fallbackDeviceAspect
+            let clampedAspect = min(max(aspect, 0.35), 0.75)
+            widths[node.id] = previewHeight * clampedAspect
+        }
+        for node in otherNodes {
+            widths[node.id] = minimumPaneWidth
+        }
+
+        let reservedNonWeb = deviceNodes.reduce(0.0) { $0 + (widths[$1.id] ?? 0) }
+            + Double(otherNodes.count) * minimumPaneWidth
+        let webFloor = minimumPaneWidth * Double(webNodes.count)
+        let deviceFloor = minimumPaneWidth * Double(deviceNodes.count)
+
+        if webNodes.isEmpty {
+            // Spread leftover across device panes so the row still fills.
+            let leftover = max(availableWidth - reservedNonWeb, 0)
+            let bonus = deviceNodes.isEmpty
+                ? 0
+                : leftover / Double(deviceNodes.count)
+            for node in deviceNodes {
+                widths[node.id, default: minimumPaneWidth] += bonus
+            }
+        } else if reservedNonWeb + webFloor > availableWidth {
+            // Shrink devices (and others) so web keeps a usable column.
+            let shrinkable = max(reservedNonWeb, 0.01)
+            let target = max(availableWidth - webFloor, deviceFloor)
+            let scale = target / shrinkable
+            for node in deviceNodes + otherNodes {
+                widths[node.id] = max(
+                    (widths[node.id] ?? minimumPaneWidth) * scale,
+                    minimumPaneWidth
+                )
+            }
+            let used = nodes.reduce(0.0) { partial, node in
+                if node.viewerSource == .web { return partial }
+                return partial + (widths[node.id] ?? minimumPaneWidth)
+            }
+            let webShare = max(availableWidth - used, webFloor) / Double(webNodes.count)
+            for node in webNodes {
+                widths[node.id] = webShare
+            }
+        } else {
+            let webShare = (availableWidth - reservedNonWeb) / Double(webNodes.count)
+            for node in webNodes {
+                widths[node.id] = max(webShare, minimumPaneWidth)
+            }
+        }
+
+        // Final pass: if rounding left a gap or overflow, leave as relative weights.
+        for node in nodes where widths[node.id] == nil {
+            widths[node.id] = minimumPaneWidth
+        }
+        return widths
+    }
+
     static let defaultTriple = PaneGridLayout(
         axis: .horizontal,
-        nodes: ViewerSource.allCases.map { PaneGridNode(source: $0, slot: 0) }
+        nodes: ViewerSource.allCases.map {
+            PaneGridNode(
+                source: $0,
+                weight: preferredWeight(for: $0),
+                slot: 0
+            )
+        }
     )
 
     static func fromVisibleSources(
@@ -80,7 +202,7 @@ struct PaneGridLayout: Codable, Equatable {
         guard canAddPane(source: source) else { return nil }
         let slot = count(of: source)
         let node = PaneGridNode(source: source, weight: weight, slot: slot)
-        nodes.append(node)
+        nodes.insert(node, at: insertionIndex(for: source))
         return node
     }
 
@@ -106,8 +228,51 @@ struct PaneGridLayout: Codable, Equatable {
         return true
     }
 
+    /// Stable left-to-right order: Web, Android, iOS (by slot within a source).
+    mutating func normalizeCanonicalOrder() {
+        nodes.sort(by: Self.canonicalPaneOrder)
+        reindexSlots()
+    }
+
+    var canonicallyOrderedNodes: [PaneGridNode] {
+        nodes.sorted(by: Self.canonicalPaneOrder)
+    }
+
+    nonisolated static func canonicalPaneOrder(
+        _ lhs: PaneGridNode,
+        _ rhs: PaneGridNode
+    ) -> Bool {
+        let left = sourceOrderIndex(lhs.viewerSource)
+        let right = sourceOrderIndex(rhs.viewerSource)
+        if left != right {
+            return left < right
+        }
+        return lhs.slot < rhs.slot
+    }
+
+    private func insertionIndex(for source: ViewerSource) -> Int {
+        let newOrder = Self.sourceOrderIndex(source)
+        if let lastSame = nodes.lastIndex(where: { $0.source == source.rawValue }) {
+            return lastSame + 1
+        }
+        if let next = nodes.firstIndex(where: {
+            Self.sourceOrderIndex($0.viewerSource) > newOrder
+        }) {
+            return next
+        }
+        return nodes.endIndex
+    }
+
+    private nonisolated static func sourceOrderIndex(_ source: ViewerSource?) -> Int {
+        guard let source,
+              let index = ViewerSource.allCases.firstIndex(of: source) else {
+            return ViewerSource.allCases.count
+        }
+        return index
+    }
+
     private mutating func reindexSlots() {
-        for source in [ViewerSource.android, .iOS, .web] {
+        for source in ViewerSource.allCases {
             var slot = 0
             for index in nodes.indices where nodes[index].source == source.rawValue {
                 nodes[index].slot = slot

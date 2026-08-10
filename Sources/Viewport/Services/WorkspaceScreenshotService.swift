@@ -181,16 +181,19 @@ struct WorkspaceScreenshotService {
 
     func capturePane(
         source: ViewerSource,
+        session: WindowCaptureSession? = nil,
         web: WebViewModel,
         workspace: WorkspaceStore
     ) async throws -> CGImage {
         switch source {
         case .web:
-            try await captureWeb(web)
+            return try await captureWeb(web)
         case .android:
-            try captureDevice(session: workspace.androidCapture)
+            let captureSession = session ?? workspace.androidCapture
+            return try captureDevice(session: captureSession)
         case .iOS:
-            try captureDevice(session: workspace.iOSCapture)
+            let captureSession = session ?? workspace.iOSCapture
+            return try captureDevice(session: captureSession)
         }
     }
 

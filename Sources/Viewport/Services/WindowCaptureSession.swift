@@ -27,7 +27,8 @@ enum CapturePhase: Equatable {
 }
 
 enum CaptureTransport: Equatable {
-    case direct
+    /// `simctl io` / `adb screencap` polling.
+    case screencap
     case usbDevice
     case scrcpy(frameRate: Int)
     case windowStream(frameRate: Int)
@@ -37,8 +38,8 @@ enum CaptureTransport: Equatable {
     /// Compact name for the device picker, e.g. `Pixel 7 (H.264)`.
     var shortLabel: String {
         switch self {
-        case .direct:
-            "ADB"
+        case .screencap:
+            "Screencap"
         case .usbDevice:
             "USB"
         case .scrcpy:
@@ -62,10 +63,35 @@ final class WindowCaptureSession: ObservableObject {
     @Published private(set) var phase: CapturePhase = .idle
     @Published private(set) var inputAccess: InputAccessPhase
     @Published private(set) var capturedFrameSize: CGSize?
-    @Published private(set) var transport: CaptureTransport = .direct
+    @Published private(set) var transport: CaptureTransport = .screencap
     @Published private(set) var framesPerSecond: Double = 0
     /// When set, this pane is waiting for a freshly launched emulator/Simulator.
     @Published private(set) var pendingLaunchName: String?
+    /// UDID/serial the pane should claim once it appears as running.
+    @Published private(set) var pendingLaunchDeviceID: String?
+
+    /// Guest that should be powered off when this pane is closed.
+    var guestToTerminate: StreamedDevice? {
+        if let selectedDevice {
+            return selectedDevice
+        }
+        guard let pendingLaunchDeviceID else { return nil }
+        if let match = availableDevices.first(where: {
+            $0.id == pendingLaunchDeviceID
+        }) {
+            return match
+        }
+        let kind: StreamedDeviceKind = source == .iOS
+            ? .iOSSimulator
+            : .androidEmulator
+        return StreamedDevice(
+            id: pendingLaunchDeviceID,
+            name: pendingLaunchName ?? source.launchDetail,
+            source: source,
+            pixelSize: nil,
+            kind: kind
+        )
+    }
 
     private let frameClient: DeviceFrameClient
     private let hostWindowStream: HostWindowStream
@@ -74,6 +100,7 @@ final class WindowCaptureSession: ObservableObject {
     private let androidInput: AndroidDeviceInput?
     private let iOSInput: IOSSimulatorHIDInput?
     private var captureTask: Task<Void, Never>?
+    private var captureGeneration = UUID()
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = UUID()
     private let framePresenter: CaptureFramePresenter
@@ -141,14 +168,14 @@ final class WindowCaptureSession: ObservableObject {
 
     var liveStatus: String {
         switch transport {
-        case .direct:
-            "Live · Direct"
+        case .screencap:
+            "Live · Screencap"
         case .usbDevice:
             "Live · USB"
         case let .scrcpy(frameRate):
             "Live · H.264 · \(frameRate) FPS"
         case let .windowStream(frameRate):
-            "Live · \(frameRate) FPS"
+            "Live · Window · \(frameRate) FPS"
         case .simulatorSurface:
             "Live · Surface"
         case let .emulatorGrpc(frameRate):
@@ -246,6 +273,7 @@ final class WindowCaptureSession: ObservableObject {
                 }
 
                 pendingLaunchName = nil
+                pendingLaunchDeviceID = nil
                 // Always re-run the capture strategy chain (Direct → … → ADB)
                 // so refresh recovers from sticky fallbacks like screencap
                 // polling after scrcpy/gRPC failed mid-session.
@@ -269,10 +297,11 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
-    /// Clears any current stream and shows a loading empty state until a free
-    /// device appears for this pane (used when Play starts an emulator here).
-    func prepareForPendingLaunch(named name: String) {
+    /// Clears any current stream and shows a loading empty state until the
+    /// launched device appears for this pane (used when Play starts a guest).
+    func prepareForPendingLaunch(named name: String, deviceID: String) {
         pendingLaunchName = name
+        pendingLaunchDeviceID = deviceID
         selectedDeviceID = nil
         stopCapture()
         phase = .connecting
@@ -280,10 +309,16 @@ final class WindowCaptureSession: ObservableObject {
 
     func clearPendingLaunch() {
         pendingLaunchName = nil
+        pendingLaunchDeviceID = nil
+        // Failure path clears the wait state; leave live captures alone.
+        if case .connecting = phase {
+            phase = .idle
+        }
     }
 
     func clearSelection() {
         pendingLaunchName = nil
+        pendingLaunchDeviceID = nil
         selectedDeviceID = nil
         stopCapture()
         phase = .idle
@@ -307,6 +342,11 @@ final class WindowCaptureSession: ObservableObject {
         previousSelection: String?,
         occupied: Set<String>
     ) -> StreamedDevice? {
+        if let pendingLaunchDeviceID,
+           let match = devices.first(where: { $0.id == pendingLaunchDeviceID }) {
+            return match
+        }
+
         if let previousSelection,
            let match = devices.first(where: { $0.id == previousSelection }) {
             return match
@@ -333,13 +373,14 @@ final class WindowCaptureSession: ObservableObject {
     func stopCapture() {
         captureTask?.cancel()
         captureTask = nil
+        captureGeneration = UUID()
         fpsPublishTask?.cancel()
         fpsPublishTask = nil
         frameRateMeter.reset()
         framesPerSecond = 0
         activePointer = nil
         usesHostWindowStream = false
-        transport = .direct
+        transport = .screencap
         stopDeviceStreams()
         iOSInput?.reset()
         capturedFrameSize = nil
@@ -466,7 +507,7 @@ final class WindowCaptureSession: ObservableObject {
             iOSInput.touchUp(at: point, udid: device.id)
             // Only kick the simctl poll loop. Live streams (Surface, window,
             // USB) must keep running across touches.
-            if transport == .direct {
+            if transport == .screencap {
                 startPollingCapture(
                     deviceID: device.id,
                     preservingCurrentFrame: true
@@ -609,31 +650,128 @@ final class WindowCaptureSession: ObservableObject {
 
         guard source == .iOS, let iOSInput else { return }
         Task { @MainActor in
-            iOSInput.touchDown(at: start, udid: device.id)
-            let steps = distance < 0.015
-                ? 1
-                : max(2, min(Int(duration * 60), 12))
-            if steps > 1 {
-                let delay = min(max(duration / Double(steps), 0.004), 0.012)
-                for step in 1...steps {
-                    let progress = CGFloat(step) / CGFloat(steps)
-                    iOSInput.touchMove(
-                        to: CGPoint(
-                            x: start.x + (end.x - start.x) * progress,
-                            y: start.y + (end.y - start.y) * progress
-                        ),
-                        udid: device.id
-                    )
-                    try? await Task.sleep(for: .seconds(delay))
-                }
-            }
-            iOSInput.touchUp(at: end, udid: device.id)
-            if transport == .direct {
+            _ = await iOSInput.swipe(
+                from: start,
+                to: end,
+                duration: duration,
+                udid: device.id
+            )
+            if transport == .screencap {
                 startPollingCapture(
                     deviceID: device.id,
                     preservingCurrentFrame: true
                 )
             }
+        }
+    }
+
+    /// Hardware Home button through this pane's existing Simulator HID client.
+    /// Falls back to a home-indicator swipe if the button symbol is unavailable.
+    func pressSystemHome() async throws {
+        guard source == .iOS else {
+            throw DeviceAutomationError.unsupported(
+                "Home gesture injection is iOS-only on capture sessions."
+            )
+        }
+        guard let device = selectedDevice else {
+            throw DeviceAutomationError.commandFailed(
+                "Select an iOS Simulator first."
+            )
+        }
+        guard device.supportsInput else {
+            throw DeviceAutomationError.unsupported(
+                "Home works on Simulator only. Use the device Home gesture."
+            )
+        }
+        guard let iOSInput, iOSInput.isAvailable else {
+            throw DeviceAutomationError.unsupported(
+                "SimulatorKit is unavailable for home."
+            )
+        }
+
+        if await iOSInput.pressHomeButton(udid: device.id) {
+            return
+        }
+
+        // Fresh client if the live session was wedged, then button again.
+        iOSInput.reset()
+        if await iOSInput.pressHomeButton(udid: device.id) {
+            return
+        }
+
+        let buttonError = iOSInput.lastErrorMessage
+        let swipeOK = await iOSInput.swipe(
+            from: DeviceAutomationService.iosHomeGesture.from,
+            to: DeviceAutomationService.iosHomeGesture.to,
+            duration: DeviceAutomationService.iosHomeGesture.duration,
+            udid: device.id
+        )
+        guard swipeOK else {
+            let detail = [
+                buttonError,
+                iOSInput.lastErrorMessage
+            ]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " — ")
+            throw DeviceAutomationError.commandFailed(
+                detail.isEmpty
+                    ? "Home failed to inject a Simulator HID gesture."
+                    : "Home failed to inject a Simulator HID gesture (\(detail))."
+            )
+        }
+    }
+
+    /// Left-edge back swipe through this pane's existing Simulator HID client.
+    func pressSystemBack() async throws {
+        try await pressSystemGesture(
+            DeviceAutomationService.iosBackGesture,
+            label: "Back"
+        )
+    }
+
+    private func pressSystemGesture(
+        _ gesture: (from: CGPoint, to: CGPoint, duration: TimeInterval),
+        label: String
+    ) async throws {
+        guard source == .iOS else {
+            throw DeviceAutomationError.unsupported(
+                "\(label) gesture injection is iOS-only on capture sessions."
+            )
+        }
+        guard let device = selectedDevice else {
+            throw DeviceAutomationError.commandFailed(
+                "Select an iOS Simulator first."
+            )
+        }
+        guard device.supportsInput else {
+            throw DeviceAutomationError.unsupported(
+                "\(label) works on Simulator only. Use the device \(label) gesture."
+            )
+        }
+        guard let iOSInput else {
+            throw DeviceAutomationError.unsupported(
+                "SimulatorKit is unavailable for \(label.lowercased())."
+            )
+        }
+        guard iOSInput.isAvailable else {
+            throw DeviceAutomationError.unsupported(
+                "SimulatorKit is unavailable for \(label.lowercased())."
+            )
+        }
+
+        let succeeded = await iOSInput.swipe(
+            from: gesture.from,
+            to: gesture.to,
+            duration: gesture.duration,
+            udid: device.id
+        )
+        guard succeeded else {
+            let detail = iOSInput.lastErrorMessage
+            throw DeviceAutomationError.commandFailed(
+                detail.map { "\(label) failed to inject a Simulator HID gesture (\($0))." }
+                    ?? "\(label) failed to inject a Simulator HID gesture."
+            )
         }
     }
 
@@ -678,6 +816,8 @@ final class WindowCaptureSession: ObservableObject {
         preservingCurrentFrame: Bool = false
     ) {
         captureTask?.cancel()
+        let generation = UUID()
+        captureGeneration = generation
         usesHostWindowStream = false
         iOSInput?.reset()
         stopDeviceStreams()
@@ -689,6 +829,7 @@ final class WindowCaptureSession: ObservableObject {
 
         captureTask = Task { [weak self] in
             guard let self else { return }
+            guard captureGeneration == generation else { return }
             guard let device = availableDevices.first(where: {
                 $0.id == deviceID
             }) else {
@@ -738,18 +879,42 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
-    private func startClassicCapture(
-        device: StreamedDevice,
+    /// Continues the current mode's ladder after a mid-session stream failure.
+    private func continueCaptureStrategies(
+        after failed: CaptureStrategy,
+        deviceID: String,
         preservingCurrentFrame: Bool
-    ) async {
-        await runCaptureStrategies(
-            CaptureTransportPolicy.strategies(
-                mode: .classic,
+    ) {
+        let generation = captureGeneration
+        captureTask?.cancel()
+        let task = Task { @MainActor [weak self] in
+            guard let self,
+                  captureGeneration == generation,
+                  selectedDeviceID == deviceID,
+                  let device = availableDevices.first(where: { $0.id == deviceID })
+            else { return }
+            let strategies = CaptureTransportPolicy.strategies(
+                mode: captureMode,
                 deviceKind: device.kind
-            ),
-            device: device,
-            preservingCurrentFrame: preservingCurrentFrame
-        )
+            )
+            guard let index = strategies.firstIndex(of: failed) else {
+                await runCaptureStrategies(
+                    strategies,
+                    device: device,
+                    preservingCurrentFrame: preservingCurrentFrame
+                )
+                return
+            }
+            let remaining = Array(strategies.suffix(from: index + 1))
+            guard !remaining.isEmpty else { return }
+            stopDeviceStreams()
+            await runCaptureStrategies(
+                remaining,
+                device: device,
+                preservingCurrentFrame: preservingCurrentFrame
+            )
+        }
+        captureTask = task
     }
 
     private func startSimulatorSurfaceCapture(deviceID: String) async -> Bool {
@@ -758,14 +923,15 @@ final class WindowCaptureSession: ObservableObject {
         do {
             try simulatorSurfaceStream.start(
                 deviceID: deviceID,
-                frameRate: 60
+                frameRate: performanceProfile.targetFrameRate
             ) {
                 [weak self] surface in
                 guard let self, selectedDeviceID == deviceID else { return }
                 display(surface: surface)
             } onFailure: { [weak self] _ in
                 guard let self, selectedDeviceID == deviceID else { return }
-                startPollingCapture(
+                continueCaptureStrategies(
+                    after: .simulatorSurface,
                     deviceID: deviceID,
                     preservingCurrentFrame: true
                 )
@@ -789,16 +955,11 @@ final class WindowCaptureSession: ObservableObject {
                 display(image)
             } onFailure: { [weak self] _ in
                 guard let self, selectedDeviceID == deviceID else { return }
-                // Keep the pane usable if the gRPC stream dies mid-session.
-                Task { [weak self] in
-                    guard let self,
-                          let device = availableDevices.first(where: { $0.id == deviceID }),
-                          selectedDeviceID == deviceID else { return }
-                    await startClassicCapture(
-                        device: device,
-                        preservingCurrentFrame: true
-                    )
-                }
+                continueCaptureStrategies(
+                    after: .emulatorGrpc,
+                    deviceID: deviceID,
+                    preservingCurrentFrame: true
+                )
             }
             if started {
                 transport = .emulatorGrpc(
@@ -825,7 +986,8 @@ final class WindowCaptureSession: ObservableObject {
                 display(pixelBuffer: pixelBuffer)
             } onFailure: { [weak self] _ in
                 guard let self, selectedDeviceID == deviceID else { return }
-                startPollingCapture(
+                continueCaptureStrategies(
+                    after: .scrcpy,
                     deviceID: deviceID,
                     preservingCurrentFrame: true
                 )
@@ -903,7 +1065,8 @@ final class WindowCaptureSession: ObservableObject {
                 guard let self,
                       selectedDeviceID == deviceID,
                       usesHostWindowStream else { return }
-                startPollingCapture(
+                continueCaptureStrategies(
+                    after: .hostWindow,
                     deviceID: deviceID,
                     preservingCurrentFrame: true
                 )
@@ -917,7 +1080,6 @@ final class WindowCaptureSession: ObservableObject {
             return started
         } catch {
             usesHostWindowStream = false
-            transport = .direct
             return false
         }
     }
@@ -928,7 +1090,7 @@ final class WindowCaptureSession: ObservableObject {
     ) {
         captureTask?.cancel()
         usesHostWindowStream = false
-        transport = .direct
+        transport = .screencap
         stopDeviceStreams()
         captureTask = Task { [weak self] in
             guard let self else { return }
@@ -943,7 +1105,7 @@ final class WindowCaptureSession: ObservableObject {
         deviceID: String,
         preservingCurrentFrame: Bool
     ) async {
-        transport = .direct
+        transport = .screencap
         var hasDisplayedFrame = preservingCurrentFrame
             && capturedFrameSize != nil
         var consecutiveFailures = 0
@@ -1028,13 +1190,28 @@ final class WindowCaptureSession: ObservableObject {
         ensureFPSPublishLoop()
     }
 
+    var isPerfHUDEnabled: Bool = false {
+        didSet {
+            if !isPerfHUDEnabled {
+                framesPerSecond = 0
+                fpsPublishTask?.cancel()
+                fpsPublishTask = nil
+            }
+        }
+    }
+
     /// Periodically republishes FPS so idle / stalled streams decay to 0.
     private func ensureFPSPublishLoop() {
-        guard fpsPublishTask == nil else { return }
+        guard isPerfHUDEnabled, fpsPublishTask == nil else { return }
         fpsPublishTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self else { return }
+                if !self.isPerfHUDEnabled {
+                    self.framesPerSecond = 0
+                    self.fpsPublishTask = nil
+                    return
+                }
                 let fps = self.frameRateMeter.age()
                 if abs(self.framesPerSecond - fps) > 0.4 {
                     self.framesPerSecond = fps
