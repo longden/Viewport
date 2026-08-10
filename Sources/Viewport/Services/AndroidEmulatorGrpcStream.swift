@@ -102,7 +102,12 @@ final class AndroidEmulatorGrpcStream {
                 self.onFrame?(image)
             }
         }, { [weak self] error in
+            // Only invoke onFailure if the stream was already delivering
+            // frames (post-startup failure). During startup, fail the gate
+            // instead — the caller handles the false return from start().
+            let wasLive = firstFrame.hasDelivered
             firstFrame.fail(error)
+            guard wasLive else { return }
             DispatchQueue.main.async {
                 guard let self,
                       self.generation == generation,
@@ -273,7 +278,15 @@ private final class FirstFrameGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     private var finished = false
+    private var fulfilled = false
     private var error: Error?
+
+    /// True once `fulfill()` was called — the stream delivered at least one frame.
+    var hasDelivered: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fulfilled
+    }
 
     func fulfill() {
         lock.lock()
@@ -282,6 +295,7 @@ private final class FirstFrameGate: @unchecked Sendable {
             return
         }
         finished = true
+        fulfilled = true
         let continuation = self.continuation
         self.continuation = nil
         lock.unlock()
@@ -505,7 +519,8 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
         let format = EmulatorProtobuf.imageFormat(
             rgba: true,
             width: UInt32(maxDimension),
-            height: UInt32(maxDimension)
+            height: UInt32(maxDimension),
+            fps: UInt32(targetFPS)
         )
         let message = EmulatorProtobuf.grpcMessage(format)
         let headers = EmulatorProtobuf.headersFrame(
