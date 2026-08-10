@@ -1,5 +1,15 @@
 import CoreGraphics
 
+/// Maps preview pointer locations into device input space.
+///
+/// Contract:
+/// - Output is **top-left normalized 0…1** relative to the currently displayed
+///   frame (aspect-fit inside the preview; AppKit Y is flipped).
+/// - Surface / screencap / gRPC / scrcpy / USB frames are already device pixels —
+///   do **not** apply chrome insets before HID or injection.
+/// - Host-window (ScreenCaptureKit) frames include Simulator/Emulator chrome;
+///   capture must crop with `hostWindowChromeInsets` + `hostWindowContentRect`
+///   so display space matches framebuffer space used by input.
 enum InputAccessPhase: Equatable {
     case ready
     case permissionNeeded
@@ -164,32 +174,6 @@ enum DevicePreviewInputGeometry {
             y: (imageSize.height - height) / 2,
             width: imageSize.width,
             height: height
-        )
-    }
-
-    /// Crops host-window chrome so the remaining frame matches the device
-    /// framebuffer aspect used for touch mapping.
-    static func centerCroppedImage(
-        _ image: CGImage,
-        matching aspectSize: CGSize
-    ) -> CGImage? {
-        let imageSize = CGSize(width: image.width, height: image.height)
-        guard let crop = centerCroppedRect(
-            of: imageSize,
-            matching: aspectSize
-        ) else {
-            return nil
-        }
-        if crop.origin == .zero, crop.size == imageSize {
-            return image
-        }
-        return image.cropping(
-            to: CGRect(
-                x: crop.origin.x.rounded(.down),
-                y: crop.origin.y.rounded(.down),
-                width: crop.size.width.rounded(.down),
-                height: crop.size.height.rounded(.down)
-            )
         )
     }
 

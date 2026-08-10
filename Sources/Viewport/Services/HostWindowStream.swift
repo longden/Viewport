@@ -157,10 +157,27 @@ final class HostWindowStream: NSObject {
                 && window.frame.width > 120
                 && window.frame.height > 180
         }
-        let normalizedName = deviceName.lowercased()
         return candidates.first(where: {
-            ($0.title ?? "").lowercased().contains(normalizedName)
-        }) ?? candidates.first
+            HostWindowDeviceTitleMatching.matches(
+                title: $0.title ?? "",
+                deviceName: deviceName
+            )
+        })
+    }
+}
+
+/// Exact host-window title matching for Simulator / Emulator windows.
+/// Avoids substring matches like "iPhone 16" → "iPhone 16 Pro…".
+enum HostWindowDeviceTitleMatching {
+    static func matches(title: String, deviceName: String) -> Bool {
+        let normalizedName = deviceName.lowercased()
+        let normalizedTitle = title.lowercased()
+        // Exact match on the full title, or the title starts with the
+        // device name followed by a separator (" — ", " – ", " - ").
+        return normalizedTitle == normalizedName
+            || normalizedTitle.hasPrefix(normalizedName + " \u{2014} ")
+            || normalizedTitle.hasPrefix(normalizedName + " \u{2013} ")
+            || normalizedTitle.hasPrefix(normalizedName + " - ")
     }
 }
 
