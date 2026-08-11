@@ -5,20 +5,20 @@ struct WebViewerPane: View {
     @ObservedObject var favorites: FavoritesStore
     var onScreenshot: (() -> Void)?
     var onCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
-    /// Composite recording squares the live web clip so it matches device panes.
+    /// Kept for recording callers; squares the live web clip while recording.
     var squareContentCorners: Bool = false
     var onClose: (() -> Void)? = nil
     @FocusState private var addressIsFocused: Bool
     @State private var showCloseConfirm = false
 
-    private var contentCornerRadius: CGFloat {
-        squareContentCorners ? 0 : 16
+    private var surfaceCornerRadius: CGFloat {
+        squareContentCorners ? 0 : ViewerSource.surfaceCornerRadius
     }
 
     var body: some View {
         ViewerPane(
             source: .web,
-            contentCornerRadius: contentCornerRadius,
+            contentCornerRadius: surfaceCornerRadius,
             onClose: onClose == nil ? nil : { showCloseConfirm = true }
         ) {
             addressBar
@@ -54,15 +54,13 @@ struct WebViewerPane: View {
             let layoutSize = preset.fittedLayoutSize(in: proxy.size)
 
             ZStack {
-                Color.primary.opacity(preset.size == nil ? 0 : 0.035)
-
                 Group {
                     if let target = preset.size {
                         WebContentView(model: model)
                             .frame(width: target.width, height: target.height)
                             .clipShape(
                                 RoundedRectangle(
-                                    cornerRadius: contentCornerRadius,
+                                    cornerRadius: surfaceCornerRadius,
                                     style: .continuous
                                 )
                             )
@@ -77,6 +75,12 @@ struct WebViewerPane: View {
                                 width: proxy.size.width,
                                 height: proxy.size.height
                             )
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: surfaceCornerRadius,
+                                    style: .continuous
+                                )
+                            )
                             .background {
                                 webCaptureAnchor
                             }
@@ -86,7 +90,7 @@ struct WebViewerPane: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        .background(.clear)
     }
 
     @ViewBuilder

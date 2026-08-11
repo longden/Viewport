@@ -13,10 +13,10 @@ private struct PaneToolbarButton: View {
 
     var body: some View {
         configuration.label
-            .padding(.horizontal, 5)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
             .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(fillColor)
             }
             .onHover { isHovered = $0 }
@@ -37,13 +37,13 @@ private struct PaneToolbarButton: View {
 
 /// Hover fill for `Menu` labels and other non-`Button` chrome controls.
 struct PaneChromeHoverModifier: ViewModifier {
-    var cornerRadius: CGFloat = 6
+    var cornerRadius: CGFloat = 3
     @State private var isHovered = false
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 5)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
@@ -54,7 +54,7 @@ struct PaneChromeHoverModifier: ViewModifier {
 }
 
 extension View {
-    func paneChromeHover(cornerRadius: CGFloat = 6) -> some View {
+    func paneChromeHover(cornerRadius: CGFloat = 3) -> some View {
         modifier(PaneChromeHoverModifier(cornerRadius: cornerRadius))
     }
 }

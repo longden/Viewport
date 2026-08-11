@@ -17,13 +17,7 @@ struct DeveloperLogPanel: View {
 
             logContent
         }
-        .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.primary.opacity(0.09))
-                .allowsHitTesting(false)
-        }
+        .background(Color.clear)
     }
 
     private var controls: some View {

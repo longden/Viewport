@@ -24,13 +24,13 @@ struct CaptureViewerPane: View {
         ViewerPane(
             source: session.source,
             titleSuffix: paneTitleSuffix,
+            contentCornerRadius: ViewerSource.surfaceCornerRadius,
             onClose: isClosable ? { showCloseConfirm = true } : nil
         ) {
             sourcePicker
         } content: {
             ZStack {
                 if session.phase == .live {
-                    Color.primary.opacity(0.035)
                     CapturePreviewView(session: session)
                         .padding(showDeviceBezels ? 12 : 0)
                         .background {
@@ -42,7 +42,9 @@ struct CaptureViewerPane: View {
                         }
                         .clipShape(
                             RoundedRectangle(
-                                cornerRadius: showDeviceBezels ? 22 : 0,
+                                cornerRadius: showDeviceBezels
+                                    ? 22
+                                    : ViewerSource.surfaceCornerRadius,
                                 style: .continuous
                             )
                         )
@@ -56,13 +58,10 @@ struct CaptureViewerPane: View {
                             if session.phase == .live {
                                 Text(session.liveStatus)
                                     .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.82))
+                                    .foregroundStyle(.primary.opacity(0.9))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
-                                    .background(
-                                        .black.opacity(0.54),
-                                        in: Capsule()
-                                    )
+                                    .glassEffect(.regular, in: Capsule())
                             }
                             if showPerfHUD, session.framesPerSecond > 0 {
                                 PaneFPSHud(framesPerSecond: session.framesPerSecond)
@@ -74,13 +73,10 @@ struct CaptureViewerPane: View {
                             Spacer()
                             Text(session.inputAccess.label)
                                 .font(.caption2.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.82))
+                                .foregroundStyle(.primary.opacity(0.9))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
-                                .background(
-                                    .black.opacity(0.54),
-                                    in: Capsule()
-                                )
+                                .glassEffect(.regular, in: Capsule())
                         }
                     }
                     .padding(10)
@@ -487,9 +483,15 @@ struct CaptureViewerPane: View {
 
     private var packageDropOverlay: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(
+                cornerRadius: ViewerSource.surfaceCornerRadius,
+                style: .continuous
+            )
                 .fill(session.source.accentColor.opacity(0.18))
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(
+                cornerRadius: ViewerSource.surfaceCornerRadius,
+                style: .continuous
+            )
                 .strokeBorder(
                     session.source.accentColor.opacity(0.85),
                     style: StrokeStyle(lineWidth: 2, dash: [7, 5])

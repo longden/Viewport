@@ -31,8 +31,9 @@ final class CapturePreviewNSView: NSView {
 
         displayLayer.contentsGravity = .resize
         displayLayer.backgroundColor = NSColor.black.cgColor
-        displayLayer.cornerRadius = 16
+        displayLayer.cornerRadius = ViewerSource.surfaceCornerRadius
         displayLayer.masksToBounds = true
+        displayLayer.cornerCurve = .continuous
         displayLayer.magnificationFilter = .linear
         displayLayer.minificationFilter = .linear
         layer?.addSublayer(displayLayer)

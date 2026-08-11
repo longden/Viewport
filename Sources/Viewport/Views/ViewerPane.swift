@@ -3,43 +3,61 @@ import SwiftUI
 struct ViewerPane<Controls: View, Content: View>: View {
     let source: ViewerSource
     var titleSuffix: String? = nil
-    var contentCornerRadius: CGFloat = 16
+    /// Clip radius for the live surface (ADB / Simulator / Web).
+    var contentCornerRadius: CGFloat = 14
     var onClose: (() -> Void)? = nil
     @ViewBuilder let controls: Controls
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                sourceMark
+        VStack(spacing: 10) {
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    sourceMark
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(source.title + (titleSuffix ?? ""))
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(source.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                if let onClose {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(source.title + (titleSuffix ?? ""))
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(source.detail)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                            .frame(width: 14, height: 14)
-                            .contentShape(Rectangle())
+                            .lineLimit(1)
                     }
-                    .buttonStyle(PaneToolbarButtonStyle())
-                    .help(closeHelp)
-                    .accessibilityLabel(closeAccessibilityLabel)
+
+                    Spacer(minLength: 8)
+
+                    if let onClose {
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14, height: 14)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(PaneToolbarButtonStyle())
+                        .help(closeHelp)
+                        .accessibilityLabel(closeAccessibilityLabel)
+                    }
                 }
+
+                controls
+            }
+            .padding(.horizontal, 6)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+            .background {
+                LinearGradient(
+                    colors: [
+                        Color.primary.opacity(0.045),
+                        Color.primary.opacity(0.012),
+                        Color.clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             }
 
-            controls
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(
@@ -49,28 +67,19 @@ struct ViewerPane<Controls: View, Content: View>: View {
                     )
                 )
         }
-        .padding(12)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.background)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(.primary.opacity(0.08))
-                .allowsHitTesting(false)
-        }
-        .clipped()
     }
 
     private var sourceMark: some View {
         Image(systemName: source.systemImage)
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(source.accentColor)
-            .frame(width: 34, height: 34)
+            .frame(width: 28, height: 28)
             .background(
-                source.accentColor.opacity(0.12),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                source.accentColor.opacity(0.14),
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
             )
             .accessibilityHidden(true)
     }
@@ -99,6 +108,9 @@ struct ViewerPane<Controls: View, Content: View>: View {
 }
 
 extension ViewerSource {
+    /// Shared live-surface corner radius for ADB / Simulator / Web previews.
+    static let surfaceCornerRadius: CGFloat = 14
+
     var accentColor: Color {
         switch self {
         case .web:

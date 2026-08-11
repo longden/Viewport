@@ -87,10 +87,8 @@ struct ContentView: View {
 
     private var workspaceChrome: some View {
         ZStack(alignment: .top) {
-            workspaceBackground
-
             workspaceLayout
-            .padding(16)
+                .padding(12)
 
             if let savedExportURL {
                 ScreenshotSavedToast(url: savedExportURL) {
@@ -102,6 +100,9 @@ struct ContentView: View {
             }
         }
         .animation(.snappy(duration: 0.22), value: savedExportURL)
+        // One continuous window surface — no opaque fill under the panes,
+        // and no separate toolbar plate (avoids the color/shadow seam).
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 workspaceUtilityToolbar
@@ -254,24 +255,6 @@ struct ContentView: View {
                 recording.updateCaptureTarget(target)
             }
         }
-    }
-
-    private var workspaceBackground: some View {
-        ZStack {
-            Rectangle()
-                .fill(.background)
-
-            LinearGradient(
-                colors: [
-                    ViewerSource.web.accentColor.opacity(0.08),
-                    Color.clear,
-                    ViewerSource.iOS.accentColor.opacity(0.07)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
-        .ignoresSafeArea()
     }
 
     private func refreshAll() {
