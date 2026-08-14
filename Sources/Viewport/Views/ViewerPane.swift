@@ -46,17 +46,6 @@ struct ViewerPane<Controls: View, Content: View>: View {
             .padding(.horizontal, 6)
             .padding(.top, 6)
             .padding(.bottom, 8)
-            .background {
-                LinearGradient(
-                    colors: [
-                        Color.primary.opacity(0.045),
-                        Color.primary.opacity(0.012),
-                        Color.clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
 
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

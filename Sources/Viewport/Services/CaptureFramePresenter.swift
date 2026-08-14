@@ -127,11 +127,28 @@ final class CaptureFramePresenter {
 
     func attach(_ view: CapturePreviewNSView) {
         previewView = view
+        redisplayLatest(on: view)
     }
 
     func detach(_ view: CapturePreviewNSView) {
         guard previewView === view else { return }
         previewView = nil
+    }
+
+    /// Pushes the cached live frame to the preview after a layout freeze.
+    func redisplayLatest() {
+        guard let previewView else { return }
+        redisplayLatest(on: previewView)
+    }
+
+    private func redisplayLatest(on view: CapturePreviewNSView) {
+        if let buffer = latestPixelBuffer {
+            view.display(pixelBuffer: buffer)
+        } else if let surface = latestSurface {
+            view.display(surface: surface)
+        } else if let image = cachedSnapshot {
+            view.display(image)
+        }
     }
 
     func clear() {

@@ -12,6 +12,7 @@ struct CaptureViewerPane: View {
     var onScreenshot: (() -> Void)?
     var showPerfHUD: Bool = false
     var showDeviceBezels: Bool = false
+    @Environment(\.isPaneResizing) private var isPaneResizing
     @State private var showCreateEmulator = false
     @State private var showCloseConfirm = false
     @State private var isDropTargeted = false
@@ -31,7 +32,10 @@ struct CaptureViewerPane: View {
         } content: {
             ZStack {
                 if session.phase == .live {
-                    CapturePreviewView(session: session)
+                    CapturePreviewView(session: session) {
+                        workspace.focusedCaptureSource = session.source
+                        workspace.focusedCapturePaneID = paneID
+                    }
                         .padding(showDeviceBezels ? 12 : 0)
                         .background {
                             if showDeviceBezels {
@@ -44,7 +48,7 @@ struct CaptureViewerPane: View {
                             RoundedRectangle(
                                 cornerRadius: showDeviceBezels
                                     ? 22
-                                    : ViewerSource.surfaceCornerRadius,
+                                    : 0,
                                 style: .continuous
                             )
                         )
@@ -55,7 +59,7 @@ struct CaptureViewerPane: View {
 
                     VStack {
                         HStack {
-                            if session.phase == .live {
+                            if session.phase == .live, !isPaneResizing {
                                 Text(session.liveStatus)
                                     .font(.caption2.weight(.medium))
                                     .foregroundStyle(.primary.opacity(0.9))
@@ -63,7 +67,7 @@ struct CaptureViewerPane: View {
                                     .padding(.vertical, 5)
                                     .glassEffect(.regular, in: Capsule())
                             }
-                            if showPerfHUD, session.framesPerSecond > 0 {
+                            if showPerfHUD, !isPaneResizing, session.framesPerSecond > 0 {
                                 PaneFPSHud(framesPerSecond: session.framesPerSecond)
                             }
                             Spacer()
@@ -71,12 +75,14 @@ struct CaptureViewerPane: View {
                         Spacer()
                         HStack {
                             Spacer()
-                            Text(session.inputAccess.label)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.primary.opacity(0.9))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .glassEffect(.regular, in: Capsule())
+                            if !isPaneResizing {
+                                Text(session.inputAccess.label)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.primary.opacity(0.9))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .glassEffect(.regular, in: Capsule())
+                            }
                         }
                     }
                     .padding(10)
@@ -111,10 +117,6 @@ struct CaptureViewerPane: View {
                 handleDroppedPackages(urls)
             } isTargeted: { targeted in
                 isDropTargeted = targeted
-            }
-            .onTapGesture {
-                workspace.focusedCaptureSource = session.source
-                workspace.focusedCapturePaneID = paneID
             }
         }
         .sheet(isPresented: $showCreateEmulator) {

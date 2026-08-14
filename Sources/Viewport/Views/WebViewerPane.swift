@@ -9,7 +9,10 @@ struct WebViewerPane: View {
     var squareContentCorners: Bool = false
     var onClose: (() -> Void)? = nil
     @FocusState private var addressIsFocused: Bool
+    @Environment(\.isPaneResizing) private var isPaneResizing
     @State private var showCloseConfirm = false
+    /// Keeps WKWebView from reflowing on every divider tick.
+    @State private var frozenViewportSize: CGSize?
 
     private var surfaceCornerRadius: CGFloat {
         squareContentCorners ? 0 : ViewerSource.surfaceCornerRadius
@@ -49,9 +52,10 @@ struct WebViewerPane: View {
 
     private var viewportContent: some View {
         GeometryReader { proxy in
+            let layoutBounds = frozenViewportSize ?? proxy.size
             let preset = model.viewportPreset
-            let scale = preset.scaleFitting(in: proxy.size)
-            let layoutSize = preset.fittedLayoutSize(in: proxy.size)
+            let scale = preset.scaleFitting(in: layoutBounds)
+            let layoutSize = preset.fittedLayoutSize(in: layoutBounds)
 
             ZStack {
                 Group {
@@ -72,8 +76,8 @@ struct WebViewerPane: View {
                     } else {
                         WebContentView(model: model)
                             .frame(
-                                width: proxy.size.width,
-                                height: proxy.size.height
+                                width: layoutBounds.width,
+                                height: layoutBounds.height
                             )
                             .clipShape(
                                 RoundedRectangle(
@@ -88,6 +92,18 @@ struct WebViewerPane: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .onAppear {
+                if isPaneResizing {
+                    frozenViewportSize = proxy.size
+                }
+            }
+            .onChange(of: isPaneResizing) { _, resizing in
+                if resizing {
+                    frozenViewportSize = proxy.size
+                } else {
+                    frozenViewportSize = nil
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.clear)
