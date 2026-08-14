@@ -189,20 +189,10 @@ actor DeviceFrameClient {
               let result = try? await runner.run(
                 executable: adb,
                 arguments: ["-s", serial, "shell", "wm", "size"]
-              ),
-              let range = result.standardOutput.range(
-                of: #"\d+x\d+"#,
-                options: .regularExpression
               ) else {
             return nil
         }
-        let parts = result.standardOutput[range].split(separator: "x")
-        guard parts.count == 2,
-              let width = Double(parts[0]),
-              let height = Double(parts[1]) else {
-            return nil
-        }
-        return CGSize(width: width, height: height)
+        return AndroidDeviceClient.parseWMSize(result.standardOutput)
     }
 
     private func androidName(for device: ADBDeviceRecord) async -> String {
