@@ -88,6 +88,27 @@ final class DeviceClientParsingTests: XCTestCase {
         XCTAssertEqual(device.displayModel, "Pixel 8 Pro")
     }
 
+    func testParsesWMSizePreferringOverride() {
+        XCTAssertEqual(
+            AndroidDeviceClient.parseWMSize(
+                """
+                Physical size: 1440x3120
+                Override size: 1080x2400
+                """
+            ),
+            CGSize(width: 1_080, height: 2_400)
+        )
+        XCTAssertEqual(
+            AndroidDeviceClient.parseWMSize("Physical size: 1080x2400\n"),
+            CGSize(width: 1_080, height: 2_400)
+        )
+        XCTAssertEqual(
+            AndroidDeviceClient.parseWMSize("1080x1920"),
+            CGSize(width: 1_080, height: 1_920)
+        )
+        XCTAssertNil(AndroidDeviceClient.parseWMSize("unavailable"))
+    }
+
     func testParsesAVDNameBeforeOKMarker() {
         XCTAssertEqual(
             AndroidDeviceClient.parseAVDNameResponse(

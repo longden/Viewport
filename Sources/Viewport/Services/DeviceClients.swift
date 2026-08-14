@@ -267,6 +267,45 @@ struct AndroidDeviceClient: DeviceClient {
             .first(where: isPlausibleAVDIdentifier)
     }
 
+    /// Parses `adb shell wm size`. Prefers Override size when present — that
+    /// is the active display size input events must target.
+    static func parseWMSize(_ output: String) -> CGSize? {
+        let override = sizeMatching(
+            #"Override size:\s*(\d+)x(\d+)"#,
+            in: output
+        )
+        if let override { return override }
+
+        let physical = sizeMatching(
+            #"Physical size:\s*(\d+)x(\d+)"#,
+            in: output
+        )
+        if let physical { return physical }
+
+        return sizeMatching(#"(\d+)x(\d+)"#, in: output)
+    }
+
+    private static func sizeMatching(
+        _ pattern: String,
+        in output: String
+    ) -> CGSize? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: output,
+                range: NSRange(output.startIndex..., in: output)
+              ),
+              match.numberOfRanges >= 3,
+              let widthRange = Range(match.range(at: 1), in: output),
+              let heightRange = Range(match.range(at: 2), in: output),
+              let width = Double(output[widthRange]),
+              let height = Double(output[heightRange]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+
     private static func isPlausibleAVDIdentifier(_ line: String) -> Bool {
         guard !line.isEmpty else { return false }
 
