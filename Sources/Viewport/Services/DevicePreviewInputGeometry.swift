@@ -58,7 +58,8 @@ enum DevicePreviewInputGeometry {
         _ point: CGPoint,
         in destinationBounds: CGRect,
         sourceSize: CGSize,
-        clampsToDisplayedFrame: Bool = false
+        clampsToDisplayedFrame: Bool = false,
+        flipsYFromAppKit: Bool = true
     ) -> CGPoint? {
         guard destinationBounds.width > 0,
               destinationBounds.height > 0,
@@ -82,6 +83,26 @@ enum DevicePreviewInputGeometry {
             height: displayedSize.height
         )
 
+        return normalizedPoint(
+            point,
+            displayedFrame: displayedFrame,
+            clampsToDisplayedFrame: clampsToDisplayedFrame,
+            flipsYFromAppKit: flipsYFromAppKit
+        )
+    }
+
+    /// Maps a pointer into the **actually drawn** preview rect (e.g. the
+    /// aspect-fitted `displayLayer.frame`), not a second recomputed fit.
+    static func normalizedPoint(
+        _ point: CGPoint,
+        displayedFrame: CGRect,
+        clampsToDisplayedFrame: Bool = false,
+        flipsYFromAppKit: Bool = true
+    ) -> CGPoint? {
+        guard displayedFrame.width > 0, displayedFrame.height > 0 else {
+            return nil
+        }
+
         let isInside = point.x >= displayedFrame.minX
             && point.x <= displayedFrame.maxX
             && point.y >= displayedFrame.minY
@@ -90,12 +111,12 @@ enum DevicePreviewInputGeometry {
             return nil
         }
 
-        return CGPoint(
-            x: clamp((point.x - displayedFrame.minX) / displayedFrame.width),
-            // AppKit view coordinates start at the bottom-left; device
-            // screenshot and HID coordinates start at the top-left.
-            y: clamp(1 - (point.y - displayedFrame.minY) / displayedFrame.height)
-        )
+        let x = clamp((point.x - displayedFrame.minX) / displayedFrame.width)
+        let yInFrame = (point.y - displayedFrame.minY) / displayedFrame.height
+        // AppKit view coordinates start at the bottom-left unless the view is
+        // flipped; device framebuffer / HID coordinates are top-left.
+        let y = flipsYFromAppKit ? clamp(1 - yInFrame) : clamp(yInFrame)
+        return CGPoint(x: x, y: y)
     }
 
     /// Content rect inside a host window: chrome removed, then fitted to the

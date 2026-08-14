@@ -1,5 +1,18 @@
 import SwiftUI
 
+private struct PaneResizingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// True while the user is dragging a pane divider. Panes should avoid
+    /// expensive per-frame work (glass HUDs, live buffer swaps) until it ends.
+    var isPaneResizing: Bool {
+        get { self[PaneResizingKey.self] }
+        set { self[PaneResizingKey.self] = newValue }
+    }
+}
+
 struct WorkspaceSplitView: View {
     @ObservedObject var workspace: WorkspaceStore
     @ObservedObject var web: WebViewModel
@@ -26,6 +39,7 @@ struct WorkspaceSplitView: View {
                 availableWidth: contentWidth
             )
             let widths = transientPaneWidths ?? persistedWidths
+            let isResizing = transientPaneWidths != nil
 
             HStack(spacing: 0) {
                 ForEach(Array(panes.enumerated()), id: \.element.id) {
@@ -55,6 +69,13 @@ struct WorkspaceSplitView: View {
                 alignment: .topLeading
             )
             .clipped()
+            .environment(\.isPaneResizing, isResizing)
+            .transaction { transaction in
+                if isResizing {
+                    transaction.disablesAnimations = true
+                    transaction.animation = nil
+                }
+            }
             .onAppear {
                 workspace.noteSplitContentSize(proxy.size)
             }
@@ -142,16 +163,23 @@ struct WorkspaceSplitView: View {
                 let combinedWidth = state.leadingWidth + state.trailingWidth
                 let leadingWidth = min(
                     max(
-                        state.leadingWidth + value.translation.width,
+                        (state.leadingWidth + value.translation.width).rounded(),
                         minimumPaneWidth
                     ),
                     combinedWidth - minimumPaneWidth
-                )
+                ).rounded()
+                let trailingWidth = (combinedWidth - leadingWidth).rounded()
+
                 var updatedWidths = transientPaneWidths ?? widths
+                if updatedWidths[leading.id] == leadingWidth,
+                   updatedWidths[trailing.id] == trailingWidth {
+                    return
+                }
                 updatedWidths[leading.id] = leadingWidth
-                updatedWidths[trailing.id] = combinedWidth - leadingWidth
+                updatedWidths[trailing.id] = trailingWidth
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
+                transaction.animation = nil
                 withTransaction(transaction) {
                     transientPaneWidths = updatedWidths
                 }
@@ -179,6 +207,7 @@ struct WorkspaceSplitView: View {
                 )
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
+                transaction.animation = nil
                 withTransaction(transaction) {
                     dragState = nil
                     transientPaneWidths = nil
@@ -244,7 +273,6 @@ private struct PaneResizeHandle: View {
                 Capsule()
                     .fill(.primary.opacity(isHovered ? 0.22 : 0.10))
                     .frame(width: isHovered ? 3 : 1, height: 42)
-                    .animation(.easeOut(duration: 0.12), value: isHovered)
             }
             .onHover { isHovered = $0 }
             .help("Drag to resize panes")

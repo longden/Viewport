@@ -191,6 +191,10 @@ final class WindowCaptureSession: ObservableObject {
         framePresenter.detach(view)
     }
 
+    func redisplayPreview() {
+        framePresenter.redisplayLatest()
+    }
+
     func refreshInputAccess() {
         if selectedDevice?.supportsInput == false {
             inputAccess = .viewOnly

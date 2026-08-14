@@ -20,13 +20,22 @@ final class CapturePreviewNSView: NSView {
     private var scrollGesture: ScrollGesture?
     private var scrollEndWorkItem: DispatchWorkItem?
     weak var session: WindowCaptureSession?
+    /// Fired on mouse-down so SwiftUI can focus the pane without an
+    /// `onTapGesture` that steals AppKit clicks from this view.
+    var onActivate: (() -> Void)?
+    /// While true, keep showing the last frame but skip buffer swaps so
+    /// divider drags are not competing with 30–60 FPS layer updates.
+    var isResizingPanes = false
+    private var lastLaidOutBounds: CGRect = .null
+    private var lastLaidOutSourceSize: CGSize = .zero
 
     init(session: WindowCaptureSession) {
         self.session = session
         super.init(frame: .zero)
 
+        // Layer-backed (not layer-hosting): keep AppKit's geometry so the
+        // framebuffer and mouse coordinates share one space.
         wantsLayer = true
-        layer = CALayer()
         layer?.backgroundColor = NSColor.clear.cgColor
 
         displayLayer.contentsGravity = .resize
@@ -36,7 +45,14 @@ final class CapturePreviewNSView: NSView {
         displayLayer.cornerCurve = .continuous
         displayLayer.magnificationFilter = .linear
         displayLayer.minificationFilter = .linear
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard displayLayer.superlayer == nil else { return }
+        layer?.backgroundColor = NSColor.clear.cgColor
         layer?.addSublayer(displayLayer)
+        needsLayout = true
     }
 
     required init?(coder: NSCoder) {
@@ -53,9 +69,18 @@ final class CapturePreviewNSView: NSView {
 
     override func layout() {
         super.layout()
+        let sourceSize = session?.capturedFrameSize
+        if !lastLaidOutBounds.isNull,
+           lastLaidOutBounds == bounds,
+           lastLaidOutSourceSize == (sourceSize ?? .zero) {
+            return
+        }
+        lastLaidOutBounds = bounds
+        lastLaidOutSourceSize = sourceSize ?? .zero
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if let sourceSize = session?.capturedFrameSize,
+        if let sourceSize,
            sourceSize.width > 0,
            sourceSize.height > 0 {
             let scale = min(
@@ -79,6 +104,7 @@ final class CapturePreviewNSView: NSView {
     }
 
     func display(_ image: CGImage) {
+        guard !isResizingPanes else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = image
@@ -86,6 +112,7 @@ final class CapturePreviewNSView: NSView {
     }
 
     func display(surface: IOSurfaceRef) {
+        guard !isResizingPanes else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = surface
@@ -93,6 +120,7 @@ final class CapturePreviewNSView: NSView {
     }
 
     func display(pixelBuffer: CVPixelBuffer) {
+        guard !isResizingPanes else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = pixelBuffer
@@ -100,6 +128,7 @@ final class CapturePreviewNSView: NSView {
     }
 
     func sourceSizeDidChange() {
+        lastLaidOutSourceSize = .zero
         needsLayout = true
     }
 
@@ -111,6 +140,7 @@ final class CapturePreviewNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         finishScrollGesture()
         window?.makeFirstResponder(self)
+        onActivate?()
         guard let point = normalizedPoint(for: event) else {
             gestureStart = nil
             return
@@ -236,13 +266,27 @@ final class CapturePreviewNSView: NSView {
         for event: NSEvent,
         clampsToDisplayedFrame: Bool = false
     ) -> CGPoint? {
-        guard let sourceSize = session?.capturedWindowSize else { return nil }
+        // Prefer the layer that actually shows the frame so layout and hit
+        // testing cannot drift (e.g. after a size change before the next
+        // layout pass finishes). Fall back to recomputing the aspect-fit.
+        let point = convert(event.locationInWindow, from: nil)
+        let drawnFrame = displayLayer.frame
+        if drawnFrame.width > 1, drawnFrame.height > 1 {
+            return DevicePreviewInputGeometry.normalizedPoint(
+                point,
+                displayedFrame: drawnFrame,
+                clampsToDisplayedFrame: clampsToDisplayedFrame,
+                flipsYFromAppKit: !isFlipped
+            )
+        }
 
+        guard let sourceSize = session?.capturedWindowSize else { return nil }
         return DevicePreviewInputGeometry.normalizedPoint(
-            convert(event.locationInWindow, from: nil),
+            point,
             in: bounds,
             sourceSize: sourceSize,
-            clampsToDisplayedFrame: clampsToDisplayedFrame
+            clampsToDisplayedFrame: clampsToDisplayedFrame,
+            flipsYFromAppKit: !isFlipped
         )
     }
 
@@ -275,6 +319,8 @@ final class CapturePreviewNSView: NSView {
 
 struct CapturePreviewView: NSViewRepresentable {
     @ObservedObject var session: WindowCaptureSession
+    var onActivate: (() -> Void)? = nil
+    @Environment(\.isPaneResizing) private var isPaneResizing
 
     func makeCoordinator() -> Coordinator {
         Coordinator(session: session)
@@ -282,14 +328,25 @@ struct CapturePreviewView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> CapturePreviewNSView {
         let view = CapturePreviewNSView(session: session)
+        view.onActivate = onActivate
+        view.isResizingPanes = isPaneResizing
         session.attachPreview(view)
         return view
     }
 
     func updateNSView(_ nsView: CapturePreviewNSView, context: Context) {
-        nsView.session = session
-        session.attachPreview(nsView)
-        nsView.needsLayout = true
+        if nsView.session !== session {
+            nsView.session = session
+            session.attachPreview(nsView)
+        }
+        nsView.onActivate = onActivate
+        if nsView.isResizingPanes != isPaneResizing {
+            nsView.isResizingPanes = isPaneResizing
+            // Leaving a drag: pull the freshest frame that was skipped.
+            if !isPaneResizing {
+                session.redisplayPreview()
+            }
+        }
     }
 
     static func dismantleNSView(

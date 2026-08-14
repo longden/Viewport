@@ -49,6 +49,41 @@ final class DevicePreviewInputGeometryTests: XCTestCase {
         XCTAssertEqual(unwrappedPoint.y, 1, accuracy: 0.001)
     }
 
+    func testMapsAgainstExplicitDrawnFrame() throws {
+        let drawn = CGRect(x: 40, y: 20, width: 200, height: 400)
+        let topLeft = try XCTUnwrap(
+            DevicePreviewInputGeometry.normalizedPoint(
+                CGPoint(x: 40, y: 420),
+                displayedFrame: drawn
+            )
+        )
+        let bottomRight = try XCTUnwrap(
+            DevicePreviewInputGeometry.normalizedPoint(
+                CGPoint(x: 240, y: 20),
+                displayedFrame: drawn
+            )
+        )
+
+        XCTAssertEqual(topLeft.x, 0, accuracy: 0.001)
+        XCTAssertEqual(topLeft.y, 0, accuracy: 0.001)
+        XCTAssertEqual(bottomRight.x, 1, accuracy: 0.001)
+        XCTAssertEqual(bottomRight.y, 1, accuracy: 0.001)
+    }
+
+    func testFlippedViewSkipsAppKitYInversion() throws {
+        let drawn = CGRect(x: 0, y: 0, width: 100, height: 200)
+        let top = try XCTUnwrap(
+            DevicePreviewInputGeometry.normalizedPoint(
+                CGPoint(x: 50, y: 0),
+                displayedFrame: drawn,
+                flipsYFromAppKit: false
+            )
+        )
+
+        XCTAssertEqual(top.x, 0.5, accuracy: 0.001)
+        XCTAssertEqual(top.y, 0, accuracy: 0.001)
+    }
+
     func testCenterCropMatchesDeviceAspectInsideHostWindow() throws {
         let crop = try XCTUnwrap(
             DevicePreviewInputGeometry.centerCroppedRect(
