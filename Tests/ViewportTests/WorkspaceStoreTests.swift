@@ -335,4 +335,259 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.androidCaptureSecondary.pendingLaunchName, "Pixel 8")
         XCTAssertEqual(store.androidCaptureSecondary.pendingLaunchDeviceID, "pixel8")
     }
+
+    func testTerminateRunningGuestsShutsDownLaunchedAndBootedDevices() async {
+        let android = LaunchableDevice(
+            id: "Pixel_7",
+            source: .android,
+            name: "Pixel 7",
+            runtime: nil,
+            state: .shutdown
+        )
+        let alreadyRunning = LaunchableDevice(
+            id: "Pixel_8",
+            source: .android,
+            name: "Pixel 8",
+            runtime: nil,
+            state: .booted
+        )
+        let simulator = LaunchableDevice(
+            id: "UDID-IPHONE",
+            source: .iOS,
+            name: "iPhone 16",
+            runtime: "iOS 26",
+            state: .shutdown
+        )
+        let androidClient = RecordingDeviceClient(
+            source: .android,
+            devices: [android, alreadyRunning]
+        )
+        let iOSClient = RecordingDeviceClient(
+            source: .iOS,
+            devices: [simulator]
+        )
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: androidClient,
+            iOSClient: iOSClient
+        )
+
+        store.androidDevices.refreshDevices()
+        store.iOSDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+
+        store.launch(android, into: store.androidCapture)
+        store.launch(simulator, into: store.iOSCapture)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(store.androidDevices.sessionStartedGuestIDs, ["Pixel_7"])
+        XCTAssertEqual(store.iOSDevices.sessionStartedGuestIDs, ["UDID-IPHONE"])
+
+        await store.terminateSessionStartedGuests()
+
+        XCTAssertEqual(androidClient.shutDownIDs, ["Pixel_7", "Pixel_8"])
+        XCTAssertEqual(iOSClient.shutDownIDs, ["UDID-IPHONE"])
+        XCTAssertEqual(store.androidDevices.sessionStartedGuestIDs, [])
+        XCTAssertEqual(store.iOSDevices.sessionStartedGuestIDs, [])
+
+        await store.terminateSessionStartedGuests()
+        XCTAssertEqual(androidClient.shutDownIDs, ["Pixel_7", "Pixel_8"])
+        XCTAssertEqual(iOSClient.shutDownIDs, ["UDID-IPHONE"])
+    }
+
+    func testPlayMenuShutdownRemovesGuestFromSessionSet() async {
+        let android = LaunchableDevice(
+            id: "Pixel_7",
+            source: .android,
+            name: "Pixel 7",
+            runtime: nil,
+            state: .shutdown
+        )
+        let androidClient = RecordingDeviceClient(
+            source: .android,
+            devices: [android]
+        )
+        let iOSClient = RecordingDeviceClient(source: .iOS, devices: [])
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: androidClient,
+            iOSClient: iOSClient
+        )
+
+        store.androidDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+        store.launch(android, into: store.androidCapture)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        store.shutdownGuest(android)
+        try? await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(store.androidDevices.sessionStartedGuestIDs, [])
+        await store.terminateSessionStartedGuests()
+        XCTAssertEqual(androidClient.shutDownIDs, ["Pixel_7"])
+    }
+
+    func testLaunchableDeviceMatchesAndroidPaneGuestByAVDName() {
+        let avd = LaunchableDevice(
+            id: "Pixel_7",
+            source: .android,
+            name: "Pixel 7",
+            runtime: nil,
+            state: .booted
+        )
+        let paneGuest = StreamedDevice(
+            id: "emulator-5554",
+            name: "Pixel 7",
+            source: .android,
+            pixelSize: nil,
+            kind: .androidEmulator
+        )
+        let pendingGuest = StreamedDevice(
+            id: "Pixel_7",
+            name: "Pixel 7",
+            source: .android,
+            pixelSize: nil,
+            kind: .androidEmulator
+        )
+        let other = StreamedDevice(
+            id: "emulator-5556",
+            name: "Pixel 8",
+            source: .android,
+            pixelSize: nil,
+            kind: .androidEmulator
+        )
+
+        XCTAssertTrue(avd.matchesSessionGuest(paneGuest))
+        XCTAssertTrue(avd.matchesSessionGuest(pendingGuest))
+        XCTAssertFalse(avd.matchesSessionGuest(other))
+    }
+
+    func testSessionGuestClosePromptListsStartedGuests() async {
+        let android = LaunchableDevice(
+            id: "Pixel_7",
+            source: .android,
+            name: "Pixel 7",
+            runtime: nil,
+            state: .shutdown
+        )
+        let simulator = LaunchableDevice(
+            id: "UDID-IPHONE",
+            source: .iOS,
+            name: "iPhone 16",
+            runtime: "iOS 26",
+            state: .shutdown
+        )
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: RecordingDeviceClient(
+                source: .android,
+                devices: [android]
+            ),
+            iOSClient: RecordingDeviceClient(
+                source: .iOS,
+                devices: [simulator]
+            )
+        )
+        XCTAssertNil(store.sessionGuestClosePrompt)
+
+        store.androidDevices.refreshDevices()
+        store.iOSDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+        store.launch(android, into: store.androidCapture)
+        store.launch(simulator, into: store.iOSCapture)
+
+        let prompt = store.sessionGuestClosePrompt
+        XCTAssertEqual(prompt?.title, "Close Viewport?")
+        XCTAssertEqual(prompt?.confirmButtonTitle, "Close and Shut Down")
+        XCTAssertEqual(
+            prompt?.message,
+            "Closing Viewport will also shut down the running emulators and Simulators: Pixel 7 and iPhone 16."
+        )
+    }
+
+    func testSessionGuestClosePromptCopy() {
+        XCTAssertNil(SessionGuestClosePrompt.make(androidNames: [], iOSNames: []))
+
+        let emulator = SessionGuestClosePrompt.make(
+            androidNames: ["Pixel 7"],
+            iOSNames: []
+        )
+        XCTAssertEqual(
+            emulator?.message,
+            "Closing Viewport will also shut down the running emulator: Pixel 7."
+        )
+
+        let simulators = SessionGuestClosePrompt.make(
+            androidNames: [],
+            iOSNames: ["iPhone 16", "iPad"]
+        )
+        XCTAssertEqual(
+            simulators?.message,
+            "Closing Viewport will also shut down the running Simulators: iPhone 16 and iPad."
+        )
+    }
+
+    func testClosePromptIncludesAlreadyBootedGuests() async {
+        let booted = LaunchableDevice(
+            id: "Pixel_8",
+            source: .android,
+            name: "Pixel 8",
+            runtime: nil,
+            state: .booted
+        )
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: RecordingDeviceClient(
+                source: .android,
+                devices: [booted]
+            ),
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [])
+        )
+        store.androidDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(
+            store.sessionGuestClosePrompt?.message,
+            "Closing Viewport will also shut down the running emulator: Pixel 8."
+        )
+    }
+
+    func testClosePromptIncludesPaneGuestWithoutPlayLaunch() {
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: RecordingDeviceClient(source: .android, devices: []),
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [])
+        )
+        store.iOSCapture.prepareForPendingLaunch(
+            named: "iPhone 17e",
+            deviceID: "UDID-17E"
+        )
+
+        XCTAssertEqual(
+            store.sessionGuestClosePrompt?.message,
+            "Closing Viewport will also shut down the running Simulator: iPhone 17e."
+        )
+    }
+}
+
+@MainActor
+private final class RecordingDeviceClient: DeviceClient {
+    let source: ViewerSource
+    private let devices: [LaunchableDevice]
+    private(set) var shutDownIDs: [String] = []
+
+    init(source: ViewerSource, devices: [LaunchableDevice]) {
+        self.source = source
+        self.devices = devices
+    }
+
+    func listDevices() async throws -> [LaunchableDevice] {
+        devices
+    }
+
+    func launch(_ device: LaunchableDevice) async throws {}
+
+    func shutdown(_ device: LaunchableDevice) async throws {
+        shutDownIDs.append(device.id)
+    }
 }

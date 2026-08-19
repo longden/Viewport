@@ -21,6 +21,23 @@ struct LaunchableDevice: Identifiable, Hashable {
             .compactMap { $0 }
             .joined(separator: " · ")
     }
+
+    /// Matches a live pane guest, including Android where the pane uses an ADB
+    /// serial while Play/boot uses the AVD name.
+    func matchesSessionGuest(_ guest: StreamedDevice) -> Bool {
+        switch guest.kind {
+        case .iOSSimulator:
+            return source == .iOS && id == guest.id
+        case .androidEmulator:
+            guard source == .android else { return false }
+            if id == guest.id { return true }
+            if name == guest.name { return true }
+            let avdName = guest.name.replacingOccurrences(of: " ", with: "_")
+            return id == avdName
+        case .androidDevice, .iOSDevice:
+            return false
+        }
+    }
 }
 
 extension DeviceState {

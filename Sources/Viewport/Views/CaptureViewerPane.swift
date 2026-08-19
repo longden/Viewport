@@ -1,9 +1,19 @@
 import SwiftUI
 
+struct CapturePaneHost {
+    var onFocus: () -> Void
+    var onClose: (() -> Void)?
+    var onLaunch: (LaunchableDevice) -> Void
+    var onShutdown: (LaunchableDevice) -> Void
+    var rotate: () async throws -> Void
+    var pressHome: () async throws -> Void
+    var pressBack: () async throws -> Void
+}
+
 struct CaptureViewerPane: View {
     @ObservedObject var session: WindowCaptureSession
     @ObservedObject var deviceManager: DeviceManager
-    @ObservedObject var workspace: WorkspaceStore
+    var host: CapturePaneHost
     var paneID: UUID?
     var paneTitleSuffix: String?
     var isClosable: Bool = false
@@ -33,8 +43,7 @@ struct CaptureViewerPane: View {
             ZStack {
                 if session.phase == .live {
                     CapturePreviewView(session: session) {
-                        workspace.focusedCaptureSource = session.source
-                        workspace.focusedCapturePaneID = paneID
+                        host.onFocus()
                     }
                         .padding(showDeviceBezels ? 12 : 0)
                         .background {
@@ -67,8 +76,8 @@ struct CaptureViewerPane: View {
                                     .padding(.vertical, 5)
                                     .glassEffect(.regular, in: Capsule())
                             }
-                            if showPerfHUD, !isPaneResizing, session.framesPerSecond > 0 {
-                                PaneFPSHud(framesPerSecond: session.framesPerSecond)
+                            if showPerfHUD, !isPaneResizing {
+                                PaneFPSHud(meter: session.frameRateMeter)
                             }
                             Spacer()
                         }
@@ -124,9 +133,7 @@ struct CaptureViewerPane: View {
         }
         .alert(closeAlertTitle, isPresented: $showCloseConfirm) {
             Button(closeConfirmButtonTitle, role: .destructive) {
-                if let paneID {
-                    _ = workspace.closePane(id: paneID)
-                }
+                host.onClose?()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -231,10 +238,10 @@ struct CaptureViewerPane: View {
                         ? { showCreateEmulator = true }
                         : nil,
                     onLaunch: { device in
-                        workspace.launch(device, into: session)
+                        host.onLaunch(device)
                     },
                     onShutdown: { device in
-                        workspace.shutdownGuest(device)
+                        host.onShutdown(device)
                     }
                 )
                 .paneChromeHover()
@@ -246,12 +253,11 @@ struct CaptureViewerPane: View {
     }
 
     private func rotateDevice() {
-        workspace.focusedCaptureSource = session.source
-        workspace.focusedCapturePaneID = paneID
+        host.onFocus()
         automationStatus = nil
         Task {
             do {
-                try await workspace.rotateFocusedDevice()
+                try await host.rotate()
             } catch {
                 presentAutomationError(error)
             }
@@ -259,12 +265,11 @@ struct CaptureViewerPane: View {
     }
 
     private func pressHome() {
-        workspace.focusedCaptureSource = session.source
-        workspace.focusedCapturePaneID = paneID
+        host.onFocus()
         automationStatus = nil
         Task {
             do {
-                try await workspace.pressHomeOnFocusedDevice()
+                try await host.pressHome()
             } catch {
                 presentAutomationError(error)
             }
@@ -272,12 +277,11 @@ struct CaptureViewerPane: View {
     }
 
     private func pressBack() {
-        workspace.focusedCaptureSource = session.source
-        workspace.focusedCapturePaneID = paneID
+        host.onFocus()
         automationStatus = nil
         Task {
             do {
-                try await workspace.pressBackOnFocusedDevice()
+                try await host.pressBack()
             } catch {
                 presentAutomationError(error)
             }
@@ -334,7 +338,7 @@ struct CaptureViewerPane: View {
     }
 
     private var canTakeScreenshot: Bool {
-        onScreenshot != nil && session.snapshotFrame() != nil
+        onScreenshot != nil && session.capturedFrameSize != nil
     }
 
     private var waitingForFrameOverlay: some View {
@@ -388,10 +392,10 @@ struct CaptureViewerPane: View {
                         ? { showCreateEmulator = true }
                         : nil,
                     onLaunch: { device in
-                        workspace.launch(device, into: session)
+                        host.onLaunch(device)
                     },
                     onShutdown: { device in
-                        workspace.shutdownGuest(device)
+                        host.onShutdown(device)
                     }
                 )
             }

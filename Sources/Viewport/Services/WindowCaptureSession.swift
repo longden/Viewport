@@ -64,7 +64,6 @@ final class WindowCaptureSession: ObservableObject {
     @Published private(set) var inputAccess: InputAccessPhase
     @Published private(set) var capturedFrameSize: CGSize?
     @Published private(set) var transport: CaptureTransport = .screencap
-    @Published private(set) var framesPerSecond: Double = 0
     /// When set, this pane is waiting for a freshly launched emulator/Simulator.
     @Published private(set) var pendingLaunchName: String?
     /// UDID/serial the pane should claim once it appears as running.
@@ -106,8 +105,7 @@ final class WindowCaptureSession: ObservableObject {
     private let framePresenter: CaptureFramePresenter
     /// Readable from composite encode without hopping to MainActor.
     nonisolated let recordingFrameSlot: LatestLiveFrameSlot
-    private let frameRateMeter = FrameRateMeter()
-    private var fpsPublishTask: Task<Void, Never>?
+    let frameRateMeter = FrameRateMeter()
     private var performanceProfile: CapturePerformanceProfile = .smooth
     private var captureMode: CaptureMode = .direct
     private var usesHostWindowStream = false
@@ -148,7 +146,6 @@ final class WindowCaptureSession: ObservableObject {
     deinit {
         captureTask?.cancel()
         refreshTask?.cancel()
-        fpsPublishTask?.cancel()
         // `stop()` is nonisolated on each stream; do not use
         // MainActor.assumeIsolated — deinit may run off the main thread.
         hostWindowStream.stop()
@@ -234,6 +231,10 @@ final class WindowCaptureSession: ObservableObject {
         )
     }
 
+    func setPreparesRecordingPixelBuffer(_ enabled: Bool) {
+        framePresenter.preparesRecordingPixelBuffer = enabled
+    }
+
     func snapshotFrame() -> CGImage? {
         framePresenter.latestFrame
     }
@@ -278,15 +279,23 @@ final class WindowCaptureSession: ObservableObject {
 
                 pendingLaunchName = nil
                 pendingLaunchDeviceID = nil
-                // Always re-run the capture strategy chain (Direct → … → ADB)
-                // so refresh recovers from sticky fallbacks like screencap
-                // polling after scrcpy/gRPC failed mid-session.
                 selectedDeviceID = selected.id
                 refreshInputAccess()
+                let sameLiveDevice = previousSelection == selected.id
+                    && phase == .live
+                if sameLiveDevice,
+                   CaptureTransportPolicy.shouldKeepLiveStream(
+                    transport: transport,
+                    mode: captureMode,
+                    deviceKind: selected.kind
+                   ) {
+                    return
+                }
+                // Re-run the ladder so refresh recovers from sticky fallbacks
+                // like screencap polling after scrcpy/gRPC failed mid-session.
                 startCapture(
                     deviceID: selected.id,
-                    preservingCurrentFrame: previousSelection == selected.id
-                        && phase == .live
+                    preservingCurrentFrame: sameLiveDevice
                 )
             } catch {
                 guard !Task.isCancelled,
@@ -378,10 +387,7 @@ final class WindowCaptureSession: ObservableObject {
         captureTask?.cancel()
         captureTask = nil
         captureGeneration = UUID()
-        fpsPublishTask?.cancel()
-        fpsPublishTask = nil
         frameRateMeter.reset()
-        framesPerSecond = 0
         activePointer = nil
         usesHostWindowStream = false
         transport = .screencap
@@ -410,7 +416,7 @@ final class WindowCaptureSession: ObservableObject {
         }
 
         if source == .android,
-           let deviceSize = device.pixelSize ?? capturedFrameSize {
+           let deviceSize = androidInputDeviceSize(for: device) {
             let useGrpc = captureMode == .direct
                 && device.kind == .androidEmulator
                 && {
@@ -523,8 +529,7 @@ final class WindowCaptureSession: ObservableObject {
 
         if source == .android,
            let deviceSize = activePointer.deviceSize
-            ?? device.pixelSize
-            ?? capturedFrameSize {
+            ?? androidInputDeviceSize(for: device) {
             if activePointer.usesLiveAndroidMotion {
                 if activePointer.usesEmulatorGrpc {
                     emulatorGrpcStream?.sendTouch(
@@ -629,7 +634,7 @@ final class WindowCaptureSession: ObservableObject {
 
         if source == .android,
            let androidInput,
-           let deviceSize = device.pixelSize ?? capturedFrameSize {
+           let deviceSize = androidInputDeviceSize(for: device) {
             if distance < 0.015 {
                 Task {
                     await androidInput.tap(
@@ -986,15 +991,19 @@ final class WindowCaptureSession: ObservableObject {
                 serial: deviceID,
                 profile: performanceProfile
             ) { [weak self] pixelBuffer in
-                guard let self, selectedDeviceID == deviceID else { return }
-                display(pixelBuffer: pixelBuffer)
+                MainActor.assumeIsolated {
+                    guard let self, self.selectedDeviceID == deviceID else { return }
+                    self.display(pixelBuffer: pixelBuffer)
+                }
             } onFailure: { [weak self] _ in
-                guard let self, selectedDeviceID == deviceID else { return }
-                continueCaptureStrategies(
-                    after: .scrcpy,
-                    deviceID: deviceID,
-                    preservingCurrentFrame: true
-                )
+                MainActor.assumeIsolated {
+                    guard let self, self.selectedDeviceID == deviceID else { return }
+                    self.continueCaptureStrategies(
+                        after: .scrcpy,
+                        deviceID: deviceID,
+                        preservingCurrentFrame: true
+                    )
+                }
             }
             if started {
                 transport = .scrcpy(
@@ -1162,6 +1171,7 @@ final class WindowCaptureSession: ObservableObject {
             sourceSize: sourceSize
         ) {
             capturedFrameSize = changedSize
+            syncAndroidListedSize(with: changedSize)
         }
         noteFrameDelivered()
         if phase != .live {
@@ -1172,6 +1182,7 @@ final class WindowCaptureSession: ObservableObject {
     private func display(surface: IOSurfaceRef) {
         if let changedSize = framePresenter.display(surface: surface) {
             capturedFrameSize = changedSize
+            syncAndroidListedSize(with: changedSize)
         }
         noteFrameDelivered()
         if phase != .live {
@@ -1182,6 +1193,7 @@ final class WindowCaptureSession: ObservableObject {
     private func display(pixelBuffer: CVPixelBuffer) {
         if let changedSize = framePresenter.display(pixelBuffer: pixelBuffer) {
             capturedFrameSize = changedSize
+            syncAndroidListedSize(with: changedSize)
         }
         noteFrameDelivered()
         if phase != .live {
@@ -1189,44 +1201,43 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
+    /// Prefer `wm size` for ADB, but rotate the listed size when the live
+    /// frame is clearly landscape/portrait swapped (stale probe cache).
+    private func androidInputDeviceSize(for device: StreamedDevice) -> CGSize? {
+        let listed = device.pixelSize
+        let live = capturedFrameSize
+        guard let listed else { return live }
+        guard let live else { return listed }
+        return AndroidDeviceProbeCache.sizeReconcilingOrientation(listed, to: live)
+    }
+
+    private func syncAndroidListedSize(with live: CGSize) {
+        guard source == .android,
+              let deviceID = selectedDeviceID,
+              let index = availableDevices.firstIndex(where: { $0.id == deviceID })
+        else { return }
+        let device = availableDevices[index]
+        guard let listed = device.pixelSize else { return }
+        let reconciled = AndroidDeviceProbeCache.sizeReconcilingOrientation(
+            listed,
+            to: live
+        )
+        guard reconciled != listed else { return }
+        AndroidDeviceProbeCache.storeSize(reconciled, for: deviceID)
+        availableDevices[index] = StreamedDevice(
+            id: device.id,
+            name: device.name,
+            source: device.source,
+            pixelSize: reconciled,
+            kind: device.kind
+        )
+    }
+
     private func noteFrameDelivered() {
         frameRateMeter.record()
-        ensureFPSPublishLoop()
     }
 
-    var isPerfHUDEnabled: Bool = false {
-        didSet {
-            if !isPerfHUDEnabled {
-                framesPerSecond = 0
-                fpsPublishTask?.cancel()
-                fpsPublishTask = nil
-            }
-        }
-    }
-
-    /// Periodically republishes FPS so idle / stalled streams decay to 0.
-    private func ensureFPSPublishLoop() {
-        guard isPerfHUDEnabled, fpsPublishTask == nil else { return }
-        fpsPublishTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard let self else { return }
-                if !self.isPerfHUDEnabled {
-                    self.framesPerSecond = 0
-                    self.fpsPublishTask = nil
-                    return
-                }
-                let fps = self.frameRateMeter.age()
-                if abs(self.framesPerSecond - fps) > 0.4 {
-                    self.framesPerSecond = fps
-                }
-                if fps <= 0, self.framesPerSecond <= 0 {
-                    self.fpsPublishTask = nil
-                    return
-                }
-            }
-        }
-    }
+    var isPerfHUDEnabled: Bool = false
 
     private func stopDeviceStreams() {
         var streams: [any DeviceStream] = [hostWindowStream]

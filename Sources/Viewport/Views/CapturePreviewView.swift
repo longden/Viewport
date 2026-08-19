@@ -113,6 +113,8 @@ final class CapturePreviewNSView: NSView {
 
     func display(surface: IOSurfaceRef) {
         guard !isResizingPanes else { return }
+        // Reassign even when the IOSurface identity is unchanged — SimulatorKit
+        // updates pixels in place, and setNeedsDisplay does not resample contents.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.contents = surface
@@ -318,7 +320,7 @@ final class CapturePreviewNSView: NSView {
 }
 
 struct CapturePreviewView: NSViewRepresentable {
-    @ObservedObject var session: WindowCaptureSession
+    var session: WindowCaptureSession
     var onActivate: (() -> Void)? = nil
     @Environment(\.isPaneResizing) private var isPaneResizing
 

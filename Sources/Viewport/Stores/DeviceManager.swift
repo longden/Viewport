@@ -39,6 +39,8 @@ final class DeviceManager: ObservableObject {
     private var launchTask: Task<Void, Never>?
     private var refreshGeneration = UUID()
     private var launchGeneration = UUID()
+    /// Guests this manager booted during the current app session.
+    private var sessionStartedGuests: [String: LaunchableDevice] = [:]
 
     init(client: any DeviceClient) {
         self.client = client
@@ -111,6 +113,7 @@ final class DeviceManager: ObservableObject {
         launchGeneration = generation
         lastLaunchFailureMessage = nil
         let deviceID = device.id
+        sessionStartedGuests[device.id] = device
         phase = .launching(device.name)
 
         launchTask = Task { [weak self] in
@@ -143,13 +146,15 @@ final class DeviceManager: ObservableObject {
     }
 
     func shutdown(_ device: LaunchableDevice) {
-        guard devices.contains(where: { $0.id == device.id }) else { return }
+        guard devices.contains(where: { $0.id == device.id })
+            || sessionStartedGuests[device.id] != nil else { return }
 
         refreshTask?.cancel()
         refreshGeneration = UUID()
         launchTask?.cancel()
         let generation = UUID()
         launchGeneration = generation
+        sessionStartedGuests.removeValue(forKey: device.id)
         phase = .shuttingDown(device.name)
 
         launchTask = Task { [weak self] in
@@ -176,6 +181,47 @@ final class DeviceManager: ObservableObject {
 
     var bootedDevices: [LaunchableDevice] {
         devices.filter { $0.state == .booted }
+    }
+
+    var sessionStartedGuestIDs: [String] {
+        sessionStartedGuests.keys.sorted()
+    }
+
+    var sessionStartedGuestNames: [String] {
+        sessionStartedGuests.values.map(\.name).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+    }
+
+    var sessionStartedGuestDevices: [LaunchableDevice] {
+        Array(sessionStartedGuests.values)
+    }
+
+    func forgetSessionStarted(matching guest: StreamedDevice) {
+        sessionStartedGuests = sessionStartedGuests.filter { _, device in
+            !device.matchesSessionGuest(guest)
+        }
+    }
+
+    /// Snapshot and clear guests launched this session so quit can power them off.
+    func takeSessionStartedGuests() -> [LaunchableDevice] {
+        let guests = Array(sessionStartedGuests.values)
+        sessionStartedGuests.removeAll()
+        return guests
+    }
+
+    /// Awaits `emu kill` / `simctl shutdown` without going through `launchTask`,
+    /// so quitting can stop several guests without cancelling sibling shutdowns.
+    func shutdownAwaiting(_ devices: [LaunchableDevice]) async {
+        guard !devices.isEmpty else { return }
+        launchTask?.cancel()
+        launchGeneration = UUID()
+        refreshTask?.cancel()
+        refreshGeneration = UUID()
+        for device in devices {
+            sessionStartedGuests.removeValue(forKey: device.id)
+            try? await client.shutdown(device)
+        }
     }
 
     var supportsCreatingEmulators: Bool {
