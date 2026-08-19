@@ -16,6 +16,7 @@ struct ScreenshotAnnotationSheet: View {
     @State private var didSave = false
     @State private var labeledPaneIDs: Set<UUID> = []
     @State private var composedImage: CGImage?
+    @State private var previewFittedSize: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,6 +121,13 @@ struct ScreenshotAnnotationSheet: View {
                     annotationOverlay(size: fitted, baseImage: image)
                         .frame(width: fitted.width, height: fitted.height)
                         .gesture(dragGesture(in: fitted))
+                        .onAppear { previewFittedSize = fitted }
+                        .onChange(of: fitted.width) { _, _ in
+                            previewFittedSize = fitted
+                        }
+                        .onChange(of: fitted.height) { _, _ in
+                            previewFittedSize = fitted
+                        }
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -366,7 +374,12 @@ struct ScreenshotAnnotationSheet: View {
             if annotated, !annotations.isEmpty {
                 output = try ScreenshotAnnotationRenderer.render(
                     base,
-                    annotations: annotations
+                    annotations: annotations,
+                    styleScale: ScreenshotAnnotationRenderer.styleScale(
+                        imageWidth: base.width,
+                        imageHeight: base.height,
+                        previewSize: previewFittedSize
+                    )
                 )
             } else {
                 output = base

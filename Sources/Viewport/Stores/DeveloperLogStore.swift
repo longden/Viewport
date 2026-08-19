@@ -36,6 +36,7 @@ final class DeveloperLogStore: ObservableObject {
     private var bufferBytes: [DeveloperLogSource: Int] = [:]
     private var nextEntryID: UInt64 = 0
     private var flushTask: Task<Void, Never>?
+    private var dirtySources: Set<DeveloperLogSource> = []
 
     private var androidProcess: (any StreamingProcessRunning)?
     private var iOSProcess: (any StreamingProcessRunning)?
@@ -244,7 +245,7 @@ final class DeveloperLogStore: ObservableObject {
             "spawn", device.id,
             "log", "stream",
             "--style", "compact",
-            "--level", "debug"
+            "--level", "default"
         ])
         let process = processFactory(
             command.executable,
@@ -326,7 +327,7 @@ final class DeveloperLogStore: ObservableObject {
             }
         }
         if lines.isEmpty {
-            return "(no log lines captured — enable Device logs before reproducing)"
+            return "(no log lines captured — enable Devlogs before reproducing)"
         }
         return lines.joined(separator: "\n")
     }
@@ -362,7 +363,7 @@ final class DeveloperLogStore: ObservableObject {
         buffers[source] = entries
         bufferBytes[source] = max(bytes, 0)
         trimBuffer(for: source)
-        schedulePublish()
+        schedulePublish(for: source)
     }
 
     private func trimBuffer(for source: DeveloperLogSource) {
@@ -385,7 +386,8 @@ final class DeveloperLogStore: ObservableObject {
         bufferBytes[source] = max(bytes, 0)
     }
 
-    private func schedulePublish() {
+    private func schedulePublish(for source: DeveloperLogSource) {
+        dirtySources.insert(source)
         guard !isPaused, flushTask == nil else { return }
         flushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
@@ -397,7 +399,15 @@ final class DeveloperLogStore: ObservableObject {
 
     private func publishBuffers() {
         guard !isPaused else { return }
-        displayedEntries = buffers
+        let sources = dirtySources
+        dirtySources.removeAll()
+        if sources.isEmpty {
+            displayedEntries = buffers
+            return
+        }
+        for source in sources {
+            displayedEntries[source] = buffers[source] ?? []
+        }
     }
 
     private func setStatus(
@@ -411,24 +421,29 @@ final class DeveloperLogStore: ObservableObject {
         from message: String,
         fallback: DeveloperLogLevel
     ) -> DeveloperLogLevel {
-        let lowercase = message.lowercased()
-        if lowercase.contains(" error ")
-            || lowercase.contains(" fault ")
-            || lowercase.contains(" e/") {
+        if message.contains(" E/")
+            || message.contains(" F/")
+            || message.contains(" error ")
+            || message.contains(" Error ")
+            || message.contains(" fault ") {
             return .error
         }
-        if lowercase.contains(" warning ")
-            || lowercase.contains(" warn ")
-            || lowercase.contains(" w/") {
+        if message.contains(" W/")
+            || message.contains(" warning ")
+            || message.contains(" Warning ")
+            || message.contains(" warn ") {
             return .warning
         }
-        if lowercase.contains(" debug ") || lowercase.contains(" d/") {
+        if message.contains(" D/") || message.contains(" debug ") {
             return .debug
         }
         return fallback
     }
 
     private nonisolated static func sanitize(_ message: String) -> String {
+        if message.utf8.allSatisfy({ $0 == 9 || $0 >= 32 }) {
+            return message.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let scalars = message.unicodeScalars.map { scalar -> Character in
             if scalar == "\t" || scalar.value >= 0x20 {
                 return Character(scalar)

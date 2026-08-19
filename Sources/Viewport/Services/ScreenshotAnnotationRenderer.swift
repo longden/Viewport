@@ -53,12 +53,28 @@ enum ScreenshotAnnotationRenderer {
     /// Large mosaic blocks so redaction is obviously unreadable.
     static let redactBlockSize: CGFloat = 18
 
+    /// Maps preview-canvas point sizes onto image pixels so export strokes match
+    /// what was drawn on the fitted preview (aspect-fit).
+    static func styleScale(
+        imageWidth: Int,
+        imageHeight: Int,
+        previewSize: CGSize
+    ) -> CGFloat {
+        guard previewSize.width > 1, previewSize.height > 1 else { return 1 }
+        return max(
+            CGFloat(imageWidth) / previewSize.width,
+            CGFloat(imageHeight) / previewSize.height
+        )
+    }
+
     static func render(
         _ image: CGImage,
-        annotations: [ScreenshotAnnotation]
+        annotations: [ScreenshotAnnotation],
+        styleScale: CGFloat = 1
     ) throws -> CGImage {
         let width = image.width
         let height = image.height
+        let scale = max(styleScale, 0.01)
         guard let context = CGContext(
             data: nil,
             width: width,
@@ -79,9 +95,9 @@ enum ScreenshotAnnotationRenderer {
             let end = denormalize(annotation.end, width: width, height: height)
             switch annotation.kind {
             case .arrow:
-                drawArrow(from: start, to: end, in: context)
+                drawArrow(from: start, to: end, scale: scale, in: context)
             case .box:
-                drawBox(from: start, to: end, in: context)
+                drawBox(from: start, to: end, scale: scale, in: context)
             case .redact:
                 pixelateRegion(
                     from: start,
@@ -99,14 +115,18 @@ enum ScreenshotAnnotationRenderer {
     }
 
     /// Tip, left wing, right wing, and where the shaft should stop (base of tip).
-    static func arrowGeometry(from start: CGPoint, to end: CGPoint) -> (
+    static func arrowGeometry(
+        from start: CGPoint,
+        to end: CGPoint,
+        scale: CGFloat = 1
+    ) -> (
         tip: CGPoint,
         left: CGPoint,
         right: CGPoint,
         shaftEnd: CGPoint
     ) {
         let angle = atan2(end.y - start.y, end.x - start.x)
-        let head = arrowHeadLength
+        let head = arrowHeadLength * max(scale, 0.01)
         let left = CGPoint(
             x: end.x - head * cos(angle - .pi / 6),
             y: end.y - head * sin(angle - .pi / 6)
@@ -215,13 +235,14 @@ enum ScreenshotAnnotationRenderer {
     private static func drawArrow(
         from start: CGPoint,
         to end: CGPoint,
+        scale: CGFloat,
         in context: CGContext
     ) {
-        let geometry = arrowGeometry(from: start, to: end)
+        let geometry = arrowGeometry(from: start, to: end, scale: scale)
         context.saveGState()
         context.setStrokeColor(NSColor.systemRed.cgColor)
         context.setFillColor(NSColor.systemRed.cgColor)
-        context.setLineWidth(arrowLineWidth)
+        context.setLineWidth(arrowLineWidth * scale)
         context.setLineCap(.round)
         context.move(to: start)
         context.addLine(to: geometry.shaftEnd)
@@ -238,6 +259,7 @@ enum ScreenshotAnnotationRenderer {
     private static func drawBox(
         from start: CGPoint,
         to end: CGPoint,
+        scale: CGFloat,
         in context: CGContext
     ) {
         let rect = CGRect(
@@ -248,7 +270,7 @@ enum ScreenshotAnnotationRenderer {
         )
         context.saveGState()
         context.setStrokeColor(NSColor.systemYellow.cgColor)
-        context.setLineWidth(boxLineWidth)
+        context.setLineWidth(boxLineWidth * scale)
         context.stroke(rect)
         context.restoreGState()
     }

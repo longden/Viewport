@@ -143,7 +143,7 @@ final class DeveloperLogStoreTests: XCTestCase {
                 "spawn", "SIMULATOR-UDID",
                 "log", "stream",
                 "--style", "compact",
-                "--level", "debug"
+                "--level", "default"
             ]
         )
         XCTAssertEqual(

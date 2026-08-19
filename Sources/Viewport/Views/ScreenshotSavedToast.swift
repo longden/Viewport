@@ -14,8 +14,8 @@ struct ScreenshotSavedToast: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 8) {
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                Button("Open") {
+                    NSWorkspace.shared.open(url)
                 }
 
                 Button("Copy") {
