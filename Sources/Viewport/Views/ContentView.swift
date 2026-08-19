@@ -2,8 +2,10 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var workspace = WorkspaceStore()
-    @StateObject private var web: WebViewModel
+    @ObservedObject private var workspace: WorkspaceStore
+    /// Held without `@StateObject` so address/title/loading do not rebuild the
+    /// device panes and window chrome.
+    @State private var web: WebViewModel
     /// Held without `@StateObject` so streaming log updates don't rebuild the
     /// toolbar menu (which dismissed the Logs item on hover).
     @State private var developerLogs: DeveloperLogStore
@@ -28,10 +30,11 @@ struct ContentView: View {
         (AppAppearance(rawValue: appearanceRaw) ?? .system).colorScheme
     }
 
-    init() {
+    init(workspace: WorkspaceStore) {
+        _workspace = ObservedObject(wrappedValue: workspace)
         let developerLogs = DeveloperLogStore()
         _developerLogs = State(wrappedValue: developerLogs)
-        _web = StateObject(
+        _web = State(
             wrappedValue: WebViewModel {
                 [weak developerLogs] level, message, timestamp in
                 developerLogs?.appendWeb(
@@ -52,25 +55,29 @@ struct ContentView: View {
             ) { _ in
                 workspace.refreshHighFrameRateCaptureAvailability()
             }
-            .onChange(of: workspace.androidDevices.lastLaunchToken) {
-                workspace.reconnectAfterDeviceLaunch()
-            }
-            .onChange(of: workspace.iOSDevices.lastLaunchToken) {
-                workspace.reconnectAfterDeviceLaunch()
-            }
-            .onChange(of: workspace.androidDevices.lastLaunchFailureToken) {
-                workspace.clearPendingLaunch(
-                    for: .android,
-                    deviceID: workspace.androidDevices.lastLaunchFailureDeviceID
-                )
-            }
-            .onChange(of: workspace.iOSDevices.lastLaunchFailureToken) {
-                workspace.clearPendingLaunch(
-                    for: .iOS,
-                    deviceID: workspace.iOSDevices.lastLaunchFailureDeviceID
-                )
-            }
+            .modifier(LaunchReconnectTriggers(
+                androidDevices: workspace.androidDevices,
+                iOSDevices: workspace.iOSDevices,
+                onAndroidLaunch: { workspace.reconnectAfterDeviceLaunch() },
+                onIOSLaunch: { workspace.reconnectAfterDeviceLaunch() },
+                onAndroidFailure: {
+                    workspace.clearPendingLaunch(
+                        for: .android,
+                        deviceID: workspace.androidDevices.lastLaunchFailureDeviceID
+                    )
+                },
+                onIOSFailure: {
+                    workspace.clearPendingLaunch(
+                        for: .iOS,
+                        deviceID: workspace.iOSDevices.lastLaunchFailureDeviceID
+                    )
+                }
+            ))
             .modifier(LogStreamSyncTriggers(
+                androidCapture: workspace.androidCapture,
+                androidCaptureSecondary: workspace.androidCaptureSecondary,
+                iOSCapture: workspace.iOSCapture,
+                iOSCaptureSecondary: workspace.iOSCaptureSecondary,
                 workspace: workspace,
                 showDeveloperLogs: showDeveloperLogs,
                 sync: syncLogStreams
@@ -176,30 +183,16 @@ struct ContentView: View {
             dismissExportTask?.cancel()
             developerLogs.stopAll()
             let shouldFinalize = recording.isRecording
+            let workspace = workspace
             Task { @MainActor in
                 if shouldFinalize {
                     _ = try? await recording.stop()
                 }
-                workspace.stopCaptures()
+                await workspace.terminateSessionStartedGuests()
             }
         }
     }
 
-    private var recordingHelp: String {
-        if recording.isRecording {
-            let seconds = Int(recording.elapsed.rounded())
-            let minutes = seconds / 60
-            let remainder = seconds % 60
-            return String(
-                format: "Recording… %d:%02d — click to stop",
-                minutes,
-                remainder
-            )
-        }
-        return "Record all visible clients"
-    }
-
-    @ViewBuilder
     private var workspaceUtilityToolbar: some View {
         WorkspaceUtilityToolbar(
             workspace: workspace,
@@ -218,8 +211,8 @@ struct ContentView: View {
     private var workspaceActionToolbar: some View {
         WorkspaceActionToolbar(
             recording: recording,
+            elapsedClock: recording.elapsedClock,
             isTakingScreenshot: isTakingScreenshot,
-            recordingHelp: recordingHelp,
             onRefresh: refreshAll,
             onCombinedScreenshot: takeCombinedScreenshot,
             onToggleRecording: toggleRecording
@@ -493,14 +486,23 @@ private struct ResizableDeveloperConsoleLayout<
                         )
                     )
 
-                DeveloperConsoleResizeHandle()
-                    .frame(height: handleHeight)
-                    .gesture(
-                        resizeGesture(
+                SplitResizeHandle(
+                    axis: .vertical,
+                    help: "Drag to resize Devlogs",
+                    onDeltaChanged: { delta in
+                        applyConsoleResizeDelta(
                             currentHeight: consoleHeight,
-                            maximumHeight: maximumConsoleHeight
+                            maximumHeight: maximumConsoleHeight,
+                            delta: delta
                         )
-                    )
+                    },
+                    onEnded: {
+                        storedHeight = Double(transientHeight ?? consoleHeight)
+                        dragStartHeight = nil
+                        transientHeight = nil
+                    }
+                )
+                .frame(height: handleHeight)
 
                 console
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -509,54 +511,76 @@ private struct ResizableDeveloperConsoleLayout<
         }
     }
 
-    private func resizeGesture(
+    private func applyConsoleResizeDelta(
         currentHeight: CGFloat,
-        maximumHeight: CGFloat
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 1)
-            .onChanged { value in
-                let start = dragStartHeight ?? currentHeight
-                if dragStartHeight == nil {
-                    dragStartHeight = start
-                }
-                let updated = min(
-                    max(
-                        start - value.translation.height,
-                        minimumConsoleHeight
-                    ),
-                    maximumHeight
-                )
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    transientHeight = updated
-                }
+        maximumHeight: CGFloat,
+        delta: CGFloat
+    ) {
+        let start = dragStartHeight ?? currentHeight
+        if dragStartHeight == nil {
+            dragStartHeight = start
+        }
+        let updated = min(
+            max(
+                start + delta,
+                minimumConsoleHeight
+            ),
+            maximumHeight
+        )
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            transientHeight = updated
+        }
+    }
+}
+
+private struct LaunchReconnectTriggers: ViewModifier {
+    @ObservedObject var androidDevices: DeviceManager
+    @ObservedObject var iOSDevices: DeviceManager
+    var onAndroidLaunch: () -> Void
+    var onIOSLaunch: () -> Void
+    var onAndroidFailure: () -> Void
+    var onIOSFailure: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: androidDevices.lastLaunchToken) { _, _ in
+                onAndroidLaunch()
             }
-            .onEnded { _ in
-                storedHeight = Double(transientHeight ?? currentHeight)
-                dragStartHeight = nil
-                transientHeight = nil
+            .onChange(of: iOSDevices.lastLaunchToken) { _, _ in
+                onIOSLaunch()
+            }
+            .onChange(of: androidDevices.lastLaunchFailureToken) { _, _ in
+                onAndroidFailure()
+            }
+            .onChange(of: iOSDevices.lastLaunchFailureToken) { _, _ in
+                onIOSFailure()
             }
     }
 }
 
 private struct LogStreamSyncTriggers: ViewModifier {
+    @ObservedObject var androidCapture: WindowCaptureSession
+    @ObservedObject var androidCaptureSecondary: WindowCaptureSession
+    @ObservedObject var iOSCapture: WindowCaptureSession
+    @ObservedObject var iOSCaptureSecondary: WindowCaptureSession
     @ObservedObject var workspace: WorkspaceStore
     var showDeveloperLogs: Bool
     var sync: () -> Void
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: workspace.androidCapture.selectedDeviceID) { _, _ in
+            .onChange(of: androidCapture.selectedDeviceID) { _, _ in
                 sync()
             }
-            .onChange(of: workspace.androidCaptureSecondary.selectedDeviceID) { _, _ in
+            .onChange(of: androidCaptureSecondary.selectedDeviceID) { _, _ in
                 sync()
             }
-            .onChange(of: workspace.iOSCapture.selectedDeviceID) { _, _ in
+            .onChange(of: iOSCapture.selectedDeviceID) { _, _ in
                 sync()
             }
-            .onChange(of: workspace.iOSCaptureSecondary.selectedDeviceID) { _, _ in
+            .onChange(of: iOSCaptureSecondary.selectedDeviceID) { _, _ in
                 sync()
             }
             .onChange(of: workspace.focusedCapturePaneID) { _, _ in
@@ -571,18 +595,3 @@ private struct LogStreamSyncTriggers: ViewModifier {
     }
 }
 
-private struct DeveloperConsoleResizeHandle: View {
-    @State private var isHovered = false
-
-    var body: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .overlay {
-                Capsule()
-                    .fill(.primary.opacity(isHovered ? 0.20 : 0.08))
-                    .frame(width: 42, height: isHovered ? 2 : 1)
-            }
-            .onHover { isHovered = $0 }
-            .help("Drag to resize device logs")
-    }
-}
