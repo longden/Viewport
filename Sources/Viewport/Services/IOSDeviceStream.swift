@@ -162,12 +162,10 @@ extension IOSDeviceStream: AVCaptureVideoDataOutputSampleBufferDelegate {
         frameDelivery.submit(
             IOSDeviceFrameInput(output: videoOutput, pixelBuffer: pixelBuffer)
         ) { [weak self] input in
-            Task { @MainActor [weak self] in
-                guard let self, self.activeOutput === input.output else {
-                    return
-                }
-                self.onFrame?(input.pixelBuffer)
+            guard let self, self.activeOutput === input.output else {
+                return
             }
+            self.onFrame?(input.pixelBuffer)
         }
     }
 }

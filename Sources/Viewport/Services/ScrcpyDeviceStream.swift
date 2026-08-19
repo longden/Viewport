@@ -80,8 +80,8 @@ final class ScrcpyDeviceStream {
     func start(
         serial: String,
         profile: CapturePerformanceProfile,
-        onFrame: @escaping @MainActor @Sendable (CVPixelBuffer) -> Void,
-        onFailure: @escaping @MainActor @Sendable (Error) -> Void
+        onFrame: @escaping @Sendable (CVPixelBuffer) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void
     ) async throws -> Bool {
         await stopAndWait()
         guard let installation = ScrcpyInstallation.locate() else {
@@ -526,8 +526,8 @@ extension AndroidMotionAction {
 private final class ScrcpyStreamWorker: @unchecked Sendable {
     private let process: Process
     private let port: Int
-    private let onFrame: @MainActor @Sendable (CVPixelBuffer) -> Void
-    private let onFailure: @MainActor @Sendable (Error) -> Void
+    private let onFrame: @Sendable (CVPixelBuffer) -> Void
+    private let onFailure: @Sendable (Error) -> Void
     private let frameDelivery = LatestValueDelivery<CVPixelBuffer>()
     private let lock = NSLock()
     private let finishedGroup = DispatchGroup()
@@ -535,6 +535,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     private var controlSocketDescriptor: Int32 = -1
     private var stopped = false
     private var hasStarted = false
+    private var generation = UUID()
     /// Video size announced by the server; updated on rotation. Touch events
     /// must embed exactly this size or the server silently drops them.
     private var sessionWidth: UInt16 = 0
@@ -543,8 +544,8 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
     init(
         process: Process,
         port: Int,
-        onFrame: @escaping @MainActor @Sendable (CVPixelBuffer) -> Void,
-        onFailure: @escaping @MainActor @Sendable (Error) -> Void
+        onFrame: @escaping @Sendable (CVPixelBuffer) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void
     ) {
         self.process = process
         self.port = port
@@ -630,7 +631,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
                 try run()
             } catch {
                 guard !isStopped else { return }
-                Task { @MainActor [onFailure] in
+                DispatchQueue.main.async { [onFailure] in
                     onFailure(error)
                 }
             }
@@ -639,6 +640,7 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
 
     func requestStop() {
         lock.lock()
+        generation = UUID()
         stopped = true
         lock.unlock()
 
@@ -725,10 +727,19 @@ private final class ScrcpyStreamWorker: @unchecked Sendable {
         }
 
         let decoder = H264StreamDecoder { [frameDelivery, onFrame] pixelBuffer in
+            let generation: UUID = {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.generation
+            }()
             frameDelivery.submit(pixelBuffer) { buffer in
-                Task { @MainActor in
-                    onFrame(buffer)
-                }
+                let current: UUID = {
+                    self.lock.lock()
+                    defer { self.lock.unlock() }
+                    return self.generation
+                }()
+                guard current == generation else { return }
+                onFrame(buffer)
             }
         }
         while !isStopped {

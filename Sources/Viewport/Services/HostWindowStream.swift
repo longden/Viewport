@@ -202,10 +202,8 @@ extension HostWindowStream: SCStreamOutput, SCStreamDelegate {
         frameDelivery.submit(
             HostWindowFrameInput(stream: stream, pixelBuffer: pixelBuffer)
         ) { [weak self] input in
-            Task { @MainActor [weak self] in
-                guard let self, self.activeStream === input.stream else { return }
-                self.onFrame?(input.pixelBuffer)
-            }
+            guard let self, self.activeStream === input.stream else { return }
+            self.onFrame?(input.pixelBuffer)
         }
     }
 

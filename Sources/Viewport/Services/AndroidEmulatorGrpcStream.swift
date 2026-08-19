@@ -97,10 +97,8 @@ final class AndroidEmulatorGrpcStream {
         )
         let worker = workerFactory(configuration, { [weak self] image in
             firstFrame.fulfill()
-            DispatchQueue.main.async {
-                guard let self, self.generation == generation else { return }
-                self.onFrame?(image)
-            }
+            guard let self, self.generation == generation else { return }
+            self.onFrame?(image)
         }, { [weak self] error in
             // Only invoke onFailure if the stream was already delivering
             // frames (post-startup failure). During startup, fail the gate

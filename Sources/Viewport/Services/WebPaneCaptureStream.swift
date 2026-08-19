@@ -8,14 +8,22 @@ import WebKit
 /// High-fps ScreenCaptureKit crop of the on-screen web pane.
 /// Avoids `WKWebView.takeSnapshot`, which stalls both UI and encode.
 final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
-    private let sampleQueue = DispatchQueue(
-        label: "com.viewport.recording.web-pane-capture",
-        qos: .userInteractive
-    )
+    private let sampleQueue: DispatchQueue
+    private let frameDelivery: LatestValueDelivery<CVPixelBuffer>
 
     private var stream: SCStream?
     private var output: WebPaneStreamOutput?
     private var onFrame: ((CVPixelBuffer) -> Void)?
+
+    override init() {
+        let sampleQueue = DispatchQueue(
+            label: "com.viewport.recording.web-pane-capture",
+            qos: .userInteractive
+        )
+        self.sampleQueue = sampleQueue
+        frameDelivery = LatestValueDelivery(queue: sampleQueue)
+        super.init()
+    }
 
     @MainActor
     func start(
@@ -23,7 +31,7 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
         frameRate: Int32,
         pixelFormat: OSType,
         maximumHeight: CGFloat,
-        onFrame: @escaping (CVPixelBuffer) -> Void
+        onFrame: @escaping @Sendable (CVPixelBuffer) -> Void
     ) async throws {
         await stop()
 
@@ -48,8 +56,8 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
             maximumHeight: maximumHeight
         )
 
-        let output = WebPaneStreamOutput { buffer in
-            onFrame(buffer)
+        let output = WebPaneStreamOutput { [frameDelivery] buffer in
+            frameDelivery.submit(buffer, deliver: onFrame)
         }
         let configuration = SCStreamConfiguration()
         configuration.sourceRect = sourceRect
@@ -89,6 +97,7 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
         self.stream = nil
         output = nil
         onFrame = nil
+        frameDelivery.clear()
         guard let stream else { return }
         Task {
             try? await stream.stopCapture()
@@ -100,6 +109,7 @@ final class WebPaneCaptureStream: NSObject, @unchecked Sendable {
         self.stream = nil
         output = nil
         onFrame = nil
+        frameDelivery.clear()
         if let stream {
             try? await stream.stopCapture()
         }
