@@ -2,6 +2,10 @@ import Foundation
 
 /// Coalesces producer bursts so at most one delivery is in flight and only the
 /// newest pending value is retained.
+///
+/// `deliver` must run synchronously on `queue`. Spawning `Task { @MainActor }`
+/// (or `DispatchQueue.main.async`) inside `deliver` returns immediately, which
+/// defeats coalescing and can display frames out of order.
 final class LatestValueDelivery<Value>: @unchecked Sendable {
     private struct Entry {
         let value: Value
@@ -15,7 +19,7 @@ final class LatestValueDelivery<Value>: @unchecked Sendable {
     private var deliveryIsScheduled = false
 
     init(
-        queue: DispatchQueue = .global(qos: .userInteractive),
+        queue: DispatchQueue = .main,
         discard: @escaping @Sendable (Value) -> Void = { _ in }
     ) {
         self.queue = queue

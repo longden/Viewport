@@ -21,6 +21,7 @@ final class IOSSimulatorSurfaceStream {
     private nonisolated(unsafe) var onFrame: ((IOSurfaceRef) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
     private nonisolated(unsafe) var stallWatchdog: DispatchWorkItem?
+    private nonisolated(unsafe) var lastFrameAt: CFAbsoluteTime = 0
 
     /// Stall timeout in seconds. If no frame arrives within this interval
     /// after subscription or after the last frame, `onFailure` fires.
@@ -56,18 +57,16 @@ final class IOSSimulatorSurfaceStream {
                 UInt32(max(1, frameRate)),
                 { [weak self] surface in
                     guard let self, let surface else { return }
-                    self.resetStallWatchdog()
+                    self.noteFrame()
                     let retained = Unmanaged.passUnretained(surface)
                         .retain()
                         .takeUnretainedValue()
-                    self.frameDelivery.submit(retained) { delivered in
-                        Task { @MainActor [weak self] in
-                            defer {
-                                Unmanaged.passUnretained(delivered).release()
-                            }
-                            guard let self, self.subscription != nil else { return }
-                            self.onFrame?(delivered)
+                    self.frameDelivery.submit(retained) { [weak self] delivered in
+                        defer {
+                            Unmanaged.passUnretained(delivered).release()
                         }
+                        guard let self, self.subscription != nil else { return }
+                        self.onFrame?(delivered)
                     }
                 },
                 &error,
@@ -84,6 +83,7 @@ final class IOSSimulatorSurfaceStream {
             throw IOSSimulatorSurfaceError.subscribeFailed(message)
         }
         subscription = handle
+        lastFrameAt = CFAbsoluteTimeGetCurrent()
         scheduleStallWatchdog()
     }
 
@@ -100,19 +100,28 @@ final class IOSSimulatorSurfaceStream {
         }
     }
 
-    /// Reschedules the stall watchdog from the sample queue.
-    nonisolated private func resetStallWatchdog() {
-        stallWatchdog?.cancel()
+    /// Records a frame without reallocating the stall timer on every callback.
+    nonisolated private func noteFrame() {
+        lastFrameAt = CFAbsoluteTimeGetCurrent()
+        guard stallWatchdog == nil else { return }
         scheduleStallWatchdog()
     }
 
     /// Fires onFailure if no frame arrives within `stallTimeout`.
-    nonisolated private func scheduleStallWatchdog() {
+    nonisolated private func scheduleStallWatchdog(delay: TimeInterval? = nil) {
+        let wait = delay ?? stallTimeout
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.subscription != nil else { return }
+            let idle = CFAbsoluteTimeGetCurrent() - self.lastFrameAt
+            let remaining = self.stallTimeout - idle
+            if remaining > 0.001 {
+                self.stallWatchdog = nil
+                self.scheduleStallWatchdog(delay: remaining)
+                return
+            }
             let onFailure = self.onFailure
             self.stop()
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 onFailure?(IOSSimulatorSurfaceError.subscribeFailed(
                     "Surface stream stalled — no frames received."
                 ))
@@ -120,7 +129,7 @@ final class IOSSimulatorSurfaceStream {
         }
         stallWatchdog = item
         sampleQueue.asyncAfter(
-            deadline: .now() + stallTimeout,
+            deadline: .now() + wait,
             execute: item
         )
     }
