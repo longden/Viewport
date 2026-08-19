@@ -159,6 +159,44 @@ final class CaptureTransportPolicyTests: XCTestCase {
         )
     }
 
+    func testKeepsPreferredLiveStreamAndRestartsFallbacks() {
+        XCTAssertTrue(
+            CaptureTransportPolicy.shouldKeepLiveStream(
+                transport: .simulatorSurface,
+                mode: .direct,
+                deviceKind: .iOSSimulator
+            )
+        )
+        XCTAssertFalse(
+            CaptureTransportPolicy.shouldKeepLiveStream(
+                transport: .windowStream(frameRate: 30),
+                mode: .direct,
+                deviceKind: .iOSSimulator
+            )
+        )
+        XCTAssertTrue(
+            CaptureTransportPolicy.shouldKeepLiveStream(
+                transport: .windowStream(frameRate: 30),
+                mode: .classic,
+                deviceKind: .iOSSimulator
+            )
+        )
+        XCTAssertFalse(
+            CaptureTransportPolicy.shouldKeepLiveStream(
+                transport: .screencap,
+                mode: .direct,
+                deviceKind: .androidEmulator
+            )
+        )
+        XCTAssertTrue(
+            CaptureTransportPolicy.shouldKeepLiveStream(
+                transport: .emulatorGrpc(frameRate: 60),
+                mode: .direct,
+                deviceKind: .androidEmulator
+            )
+        )
+    }
+
     func testTransportStatusLabels() {
         XCTAssertEqual(CaptureTransport.screencap.shortLabel, "Screencap")
         XCTAssertEqual(CaptureTransport.simulatorSurface.shortLabel, "Surface")
@@ -335,6 +373,28 @@ final class DeviceManagerRaceTests: XCTestCase {
         XCTAssertNotEqual(manager.lastLaunchFailureToken, priorFailureToken)
         XCTAssertEqual(manager.lastLaunchFailureDeviceID, "first")
         XCTAssertEqual(manager.phase, .launching("Second"))
+    }
+
+    func testLaunchRemembersSessionGuestsUntilTaken() async {
+        let device = LaunchableDevice(
+            id: "pixel",
+            source: .android,
+            name: "Pixel",
+            runtime: nil,
+            state: .shutdown
+        )
+        let client = SlowLaunchDeviceClient(device: device)
+        let manager = DeviceManager(client: client)
+
+        manager.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(20))
+        manager.launch(device)
+
+        XCTAssertEqual(manager.sessionStartedGuestIDs, ["pixel"])
+        let taken = manager.takeSessionStartedGuests()
+        XCTAssertEqual(taken.map(\.id), ["pixel"])
+        XCTAssertEqual(manager.sessionStartedGuestIDs, [])
+        await manager.shutdownAwaiting(taken)
     }
 }
 

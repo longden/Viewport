@@ -15,8 +15,8 @@ extension EnvironmentValues {
 
 struct WorkspaceSplitView: View {
     @ObservedObject var workspace: WorkspaceStore
-    @ObservedObject var web: WebViewModel
-    @ObservedObject var favorites: FavoritesStore
+    var web: WebViewModel
+    var favorites: FavoritesStore
     var onPaneScreenshot: ((ViewerSource, WindowCaptureSession?) -> Void)?
     var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     var squareWebContentCorners: Bool = false
@@ -51,15 +51,24 @@ struct WorkspaceSplitView: View {
                         .id(node.id)
 
                     if index < panes.count - 1 {
-                        PaneResizeHandle()
-                            .frame(width: dividerWidth)
-                            .gesture(
-                                resizeGesture(
+                        SplitResizeHandle(
+                            axis: .horizontal,
+                            help: "Drag to resize panes",
+                            onDeltaChanged: { delta in
+                                applyResizeDelta(
                                     leading: node,
                                     trailing: panes[index + 1],
+                                    widths: widths,
+                                    delta: delta
+                                )
+                            },
+                            onEnded: {
+                                commitResize(
                                     widths: widths
                                 )
-                            )
+                            }
+                        )
+                        .frame(width: dividerWidth)
                     }
                 }
             }
@@ -137,82 +146,81 @@ struct WorkspaceSplitView: View {
         return widths
     }
 
-    private func resizeGesture(
+    private func applyResizeDelta(
         leading: PaneGridNode,
         trailing: PaneGridNode,
-        widths: [UUID: CGFloat]
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 1)
-            .onChanged { value in
-                let state: DividerDragState
-                if let dragState,
-                   dragState.leadingID == leading.id,
-                   dragState.trailingID == trailing.id {
-                    state = dragState
-                } else {
-                    state = DividerDragState(
-                        leadingID: leading.id,
-                        trailingID: trailing.id,
-                        leadingWidth: widths[leading.id] ?? minimumPaneWidth,
-                        trailingWidth: widths[trailing.id] ?? minimumPaneWidth
-                    )
-                    dragState = state
-                    transientPaneWidths = widths
-                }
+        widths: [UUID: CGFloat],
+        delta: CGFloat
+    ) {
+        let state: DividerDragState
+        if let dragState,
+           dragState.leadingID == leading.id,
+           dragState.trailingID == trailing.id {
+            state = dragState
+        } else {
+            state = DividerDragState(
+                leadingID: leading.id,
+                trailingID: trailing.id,
+                leadingWidth: widths[leading.id] ?? minimumPaneWidth,
+                trailingWidth: widths[trailing.id] ?? minimumPaneWidth
+            )
+            dragState = state
+            transientPaneWidths = widths
+        }
 
-                let combinedWidth = state.leadingWidth + state.trailingWidth
-                let leadingWidth = min(
-                    max(
-                        (state.leadingWidth + value.translation.width).rounded(),
-                        minimumPaneWidth
-                    ),
-                    combinedWidth - minimumPaneWidth
-                ).rounded()
-                let trailingWidth = (combinedWidth - leadingWidth).rounded()
+        let combinedWidth = state.leadingWidth + state.trailingWidth
+        let leadingWidth = min(
+            max(
+                (state.leadingWidth + delta).rounded(),
+                minimumPaneWidth
+            ),
+            combinedWidth - minimumPaneWidth
+        ).rounded()
+        let trailingWidth = (combinedWidth - leadingWidth).rounded()
 
-                var updatedWidths = transientPaneWidths ?? widths
-                if updatedWidths[leading.id] == leadingWidth,
-                   updatedWidths[trailing.id] == trailingWidth {
-                    return
-                }
-                updatedWidths[leading.id] = leadingWidth
-                updatedWidths[trailing.id] = trailingWidth
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                transaction.animation = nil
-                withTransaction(transaction) {
-                    transientPaneWidths = updatedWidths
-                }
-            }
-            .onEnded { _ in
-                guard let state = dragState else {
-                    transientPaneWidths = nil
-                    return
-                }
-                let widths = transientPaneWidths ?? widths
-                let leadingWidth = widths[state.leadingID] ?? state.leadingWidth
-                let trailingWidth = widths[state.trailingID] ?? state.trailingWidth
-                let combinedWidth = max(leadingWidth + trailingWidth, 1)
-                let combinedWeight = workspace.paneWeight(forPaneID: state.leadingID)
-                    + workspace.paneWeight(forPaneID: state.trailingID)
-                let leadingWeight = combinedWeight
-                    * Double(leadingWidth / combinedWidth)
+        var updatedWidths = transientPaneWidths ?? widths
+        if updatedWidths[leading.id] == leadingWidth,
+           updatedWidths[trailing.id] == trailingWidth {
+            return
+        }
+        updatedWidths[leading.id] = leadingWidth
+        updatedWidths[trailing.id] = trailingWidth
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        transaction.animation = nil
+        withTransaction(transaction) {
+            transientPaneWidths = updatedWidths
+        }
+    }
 
-                workspace.resizePanes(
-                    leadingID: state.leadingID,
-                    leadingWeight: leadingWeight,
-                    trailingID: state.trailingID,
-                    trailingWeight: combinedWeight - leadingWeight,
-                    persist: true
-                )
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                transaction.animation = nil
-                withTransaction(transaction) {
-                    dragState = nil
-                    transientPaneWidths = nil
-                }
-            }
+    private func commitResize(widths: [UUID: CGFloat]) {
+        guard let state = dragState else {
+            transientPaneWidths = nil
+            return
+        }
+        let widths = transientPaneWidths ?? widths
+        let leadingWidth = widths[state.leadingID] ?? state.leadingWidth
+        let trailingWidth = widths[state.trailingID] ?? state.trailingWidth
+        let combinedWidth = max(leadingWidth + trailingWidth, 1)
+        let combinedWeight = workspace.paneWeight(forPaneID: state.leadingID)
+            + workspace.paneWeight(forPaneID: state.trailingID)
+        let leadingWeight = combinedWeight
+            * Double(leadingWidth / combinedWidth)
+
+        workspace.resizePanes(
+            leadingID: state.leadingID,
+            leadingWeight: leadingWeight,
+            trailingID: state.trailingID,
+            trailingWeight: combinedWeight - leadingWeight,
+            persist: true
+        )
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        transaction.animation = nil
+        withTransaction(transaction) {
+            dragState = nil
+            transientPaneWidths = nil
+        }
     }
 
     @ViewBuilder
@@ -238,7 +246,44 @@ struct WorkspaceSplitView: View {
                     deviceManager: node.viewerSource == .android
                         ? workspace.androidDevices
                         : workspace.iOSDevices,
-                    workspace: workspace,
+                    host: CapturePaneHost(
+                        onFocus: {
+                            workspace.focusCapture(
+                                source: session.source,
+                                paneID: node.id
+                            )
+                        },
+                        onClose: {
+                            _ = workspace.closePane(id: node.id)
+                        },
+                        onLaunch: { device in
+                            workspace.launch(device, into: session)
+                        },
+                        onShutdown: { device in
+                            workspace.shutdownGuest(device)
+                        },
+                        rotate: {
+                            workspace.focusCapture(
+                                source: session.source,
+                                paneID: node.id
+                            )
+                            try await workspace.rotateFocusedDevice()
+                        },
+                        pressHome: {
+                            workspace.focusCapture(
+                                source: session.source,
+                                paneID: node.id
+                            )
+                            try await workspace.pressHomeOnFocusedDevice()
+                        },
+                        pressBack: {
+                            workspace.focusCapture(
+                                source: session.source,
+                                paneID: node.id
+                            )
+                            try await workspace.pressBackOnFocusedDevice()
+                        }
+                    ),
                     paneID: node.id,
                     paneTitleSuffix: node.slot >= 1 ? " \(node.slot + 1)" : nil,
                     isClosable: true,
@@ -263,18 +308,3 @@ private struct DividerDragState {
     let trailingWidth: CGFloat
 }
 
-private struct PaneResizeHandle: View {
-    @State private var isHovered = false
-
-    var body: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .overlay {
-                Capsule()
-                    .fill(.primary.opacity(isHovered ? 0.22 : 0.10))
-                    .frame(width: isHovered ? 3 : 1, height: 42)
-            }
-            .onHover { isHovered = $0 }
-            .help("Drag to resize panes")
-    }
-}

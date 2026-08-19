@@ -78,8 +78,11 @@ final class CaptureFramePresenter {
     private nonisolated(unsafe) var latestPixelBuffer: CVPixelBuffer?
     private nonisolated(unsafe) var latestSurface: IOSurfaceRef?
     private(set) var frameSize: CGSize?
-
     private let snapshotContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// When true, CPU frames are copied into a BGRA pixel buffer for composite
+    /// recording. Preview never needs that blit.
+    var preparesRecordingPixelBuffer = false
 
     deinit {
         // Release retained surfaces without hopping to MainActor.
@@ -94,13 +97,12 @@ final class CaptureFramePresenter {
 
     var latestFrame: CGImage? {
         if let cachedSnapshot { return cachedSnapshot }
-        if let buffer = latestPixelBuffer,
-           let image = snapshotContext.createCGImage(
-            CIImage(cvPixelBuffer: buffer),
-            from: CIImage(cvPixelBuffer: buffer).extent
-           ) {
-            cachedSnapshot = image
-            return image
+        if let buffer = latestPixelBuffer {
+            let ciImage = CIImage(cvPixelBuffer: buffer)
+            if let image = snapshotContext.createCGImage(ciImage, from: ciImage.extent) {
+                cachedSnapshot = image
+                return image
+            }
         }
         if let surface = latestSurface,
            let image = snapshotImage(from: surface) {
@@ -164,9 +166,8 @@ final class CaptureFramePresenter {
         let changedSize = updateSize(size)
         releaseStoredFrames()
         cachedSnapshot = image
-        // Prefer a pixel buffer for composite recording so gRPC/CPU paths
-        // don't force the encoder to keep decoding CGImage every tick.
-        if let buffer = Self.makePixelBuffer(from: image) {
+        if preparesRecordingPixelBuffer,
+           let buffer = Self.makePixelBuffer(from: image) {
             latestPixelBuffer = buffer
             publishRecordingFrame(.pixelBuffer(buffer))
         } else {

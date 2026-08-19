@@ -50,6 +50,7 @@ final class WorkspaceStore: ObservableObject {
     private let preferHeadlessIOSKey: String
     private let automation = DeviceAutomationService()
     private var captureRefreshTask: Task<Void, Never>?
+    private var sessionGuestTerminationTask: Task<Void, Never>?
 
     init(
         defaults: UserDefaults = .standard,
@@ -283,6 +284,8 @@ final class WorkspaceStore: ObservableObject {
         }
 
         if let deviceToStop {
+            androidDevices.forgetSessionStarted(matching: deviceToStop)
+            iOSDevices.forgetSessionStarted(matching: deviceToStop)
             Task { [weak self] in
                 try? await self?.automation.terminateGuest(deviceToStop)
             }
@@ -303,9 +306,20 @@ final class WorkspaceStore: ObservableObject {
 
     /// Starts an AVD / Simulator into a specific pane with a loading state,
     /// without cloning the sibling pane's live device.
+    func focusCapture(source: ViewerSource, paneID: UUID?) {
+        if focusedCaptureSource != source {
+            focusedCaptureSource = source
+        }
+        if focusedCapturePaneID != paneID {
+            focusedCapturePaneID = paneID
+        }
+    }
+
     func launch(_ device: LaunchableDevice, into session: WindowCaptureSession) {
         guard device.source == session.source else { return }
-        focusedCaptureSource = session.source
+        if focusedCaptureSource != session.source {
+            focusedCaptureSource = session.source
+        }
         session.prepareForPendingLaunch(named: device.name, deviceID: device.id)
         // Poll for the guest while bootstatus runs so the pane connects as soon
         // as the runtime is Booted — even if bootstatus is slow or stalls.
@@ -521,7 +535,6 @@ final class WorkspaceStore: ObservableObject {
         for session in allCaptureSessions {
             session.setCaptureMode(mode)
         }
-        refreshCaptures()
     }
 
     func setScreenshotPlatformLabelsEnabled(_ isEnabled: Bool) {
@@ -862,9 +875,11 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshHighFrameRateCaptureAvailability() {
+        let isGranted = ScreenRecordingPermission.isGranted
         let wasAvailable = highFrameRateCaptureAvailable
-        highFrameRateCaptureAvailable = ScreenRecordingPermission.isGranted
-        if highFrameRateCaptureAvailable && !wasAvailable {
+        guard isGranted != wasAvailable else { return }
+        highFrameRateCaptureAvailable = isGranted
+        if isGranted {
             refreshCaptures()
         }
     }
@@ -897,6 +912,8 @@ final class WorkspaceStore: ObservableObject {
             visibleSources.remove(source)
 
             for device in devicesToStop {
+                androidDevices.forgetSessionStarted(matching: device)
+                iOSDevices.forgetSessionStarted(matching: device)
                 Task { [weak self] in
                     try? await self?.automation.terminateGuest(device)
                 }
@@ -922,7 +939,10 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshCaptures() {
-        highFrameRateCaptureAvailable = ScreenRecordingPermission.isGranted
+        let isGranted = ScreenRecordingPermission.isGranted
+        if highFrameRateCaptureAvailable != isGranted {
+            highFrameRateCaptureAvailable = isGranted
+        }
         for session in allCaptureSessions {
             session.refreshInputAccess()
         }
@@ -965,6 +985,136 @@ final class WorkspaceStore: ObservableObject {
         for session in allCaptureSessions {
             session.stopCapture()
         }
+    }
+
+    /// Alert copy when closing the app would power off running guests.
+    var sessionGuestClosePrompt: SessionGuestClosePrompt? {
+        let guests = runningGuestsToPowerOff()
+        var androidNames = guests.android.map(\.name)
+        var iOSNames = guests.iOS.map(\.name)
+        for guest in runningPaneGuests() {
+            switch guest.kind {
+            case .androidEmulator:
+                androidNames.append(guest.name)
+            case .iOSSimulator:
+                iOSNames.append(guest.name)
+            case .androidDevice, .iOSDevice:
+                continue
+            }
+        }
+        return SessionGuestClosePrompt.make(
+            androidNames: uniquedSortedNames(androidNames),
+            iOSNames: uniquedSortedNames(iOSNames)
+        )
+    }
+
+    /// Powers off running Simulators and emulators (panes, Play/create, and
+    /// already-booted guests). Physical USB devices are left on. Safe to call
+    /// more than once — later callers wait for the in-flight shutdown.
+    func terminateSessionStartedGuests() async {
+        if let sessionGuestTerminationTask {
+            await sessionGuestTerminationTask.value
+            return
+        }
+
+        stopCaptures()
+        let androidManager = androidDevices
+        let iosManager = iOSDevices
+        let guests = runningGuestsToPowerOff()
+        _ = androidManager.takeSessionStartedGuests()
+        _ = iosManager.takeSessionStartedGuests()
+        let paneGuests = runningPaneGuests()
+        let task = Task { @MainActor in
+            await androidManager.shutdownAwaiting(guests.android)
+            await iosManager.shutdownAwaiting(guests.iOS)
+            for guest in paneGuests {
+                let covered = guests.android.contains { $0.matchesSessionGuest(guest) }
+                    || guests.iOS.contains { $0.matchesSessionGuest(guest) }
+                if !covered {
+                    try? await self.automation.terminateGuest(guest)
+                }
+            }
+        }
+        sessionGuestTerminationTask = task
+        await task.value
+    }
+
+    /// Running emulator / Simulator guests that closing Viewport should power off.
+    func runningGuestsToPowerOff() -> (
+        android: [LaunchableDevice],
+        iOS: [LaunchableDevice]
+    ) {
+        (
+            android: mergeLaunchableGuests(
+                sessionStarted: androidDevices.sessionStartedGuestDevices,
+                booted: androidDevices.bootedDevices,
+                paneGuests: runningPaneGuests().filter { $0.kind == .androidEmulator }
+            ),
+            iOS: mergeLaunchableGuests(
+                sessionStarted: iOSDevices.sessionStartedGuestDevices,
+                booted: iOSDevices.bootedDevices,
+                paneGuests: runningPaneGuests().filter { $0.kind == .iOSSimulator }
+            )
+        )
+    }
+
+    private func runningPaneGuests() -> [StreamedDevice] {
+        var seen = Set<String>()
+        var guests: [StreamedDevice] = []
+        for session in allCaptureSessions {
+            guard let guest = session.guestToTerminate else { continue }
+            switch guest.kind {
+            case .androidEmulator, .iOSSimulator:
+                let key = "\(guest.source.rawValue)-\(guest.id)"
+                if seen.insert(key).inserted {
+                    guests.append(guest)
+                }
+            case .androidDevice, .iOSDevice:
+                continue
+            }
+        }
+        return guests
+    }
+
+    private func mergeLaunchableGuests(
+        sessionStarted: [LaunchableDevice],
+        booted: [LaunchableDevice],
+        paneGuests: [StreamedDevice]
+    ) -> [LaunchableDevice] {
+        var byID: [String: LaunchableDevice] = [:]
+        for device in sessionStarted + booted {
+            byID[device.id] = device
+        }
+        for guest in paneGuests {
+            if byID.values.contains(where: { $0.matchesSessionGuest(guest) }) {
+                continue
+            }
+            // Android pane IDs are ADB serials; `emu kill` needs that path, not AVD lookup.
+            guard guest.kind == .iOSSimulator else { continue }
+            byID[guest.id] = LaunchableDevice(
+                id: guest.id,
+                source: .iOS,
+                name: guest.name,
+                runtime: nil,
+                state: .booted
+            )
+        }
+        return byID.values.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func uniquedSortedNames(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for name in names.sorted(by: {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }) {
+            if seen.insert(name).inserted {
+                result.append(name)
+            }
+        }
+        return result
     }
 
     func captureSession(for node: PaneGridNode) -> WindowCaptureSession? {
