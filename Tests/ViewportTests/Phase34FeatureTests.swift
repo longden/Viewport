@@ -86,6 +86,41 @@ final class ScreenshotAnnotationRendererTests: XCTestCase {
         XCTAssertEqual(ScreenshotAnnotationKind.redact.title, "Redact")
     }
 
+    func testStyleScaleMapsPreviewPointsOntoImagePixels() {
+        let scale = ScreenshotAnnotationRenderer.styleScale(
+            imageWidth: 2000,
+            imageHeight: 1000,
+            previewSize: CGSize(width: 800, height: 400)
+        )
+        XCTAssertEqual(scale, 2.5, accuracy: 0.001)
+        XCTAssertEqual(
+            ScreenshotAnnotationRenderer.styleScale(
+                imageWidth: 100,
+                imageHeight: 100,
+                previewSize: .zero
+            ),
+            1
+        )
+    }
+
+    func testArrowHeadScalesWithStyleScale() {
+        let start = CGPoint(x: 0, y: 0)
+        let end = CGPoint(x: 100, y: 0)
+        let unscaled = ScreenshotAnnotationRenderer.arrowGeometry(
+            from: start,
+            to: end,
+            scale: 1
+        )
+        let scaled = ScreenshotAnnotationRenderer.arrowGeometry(
+            from: start,
+            to: end,
+            scale: 2
+        )
+        let unscaledHead = hypot(end.x - unscaled.left.x, end.y - unscaled.left.y)
+        let scaledHead = hypot(end.x - scaled.left.x, end.y - scaled.left.y)
+        XCTAssertEqual(scaledHead, unscaledHead * 2, accuracy: 0.01)
+    }
+
     private func makeImage(width: Int, height: Int) -> CGImage? {
         guard let context = CGContext(
             data: nil,

@@ -1,6 +1,7 @@
 import XCTest
 @testable import Viewport
 
+@MainActor
 final class FavoritesStoreTests: XCTestCase {
     private var defaults: UserDefaults!
     private let suiteName = "FavoritesStoreTests"

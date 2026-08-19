@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 
+@MainActor
 final class FavoritesStore: ObservableObject {
     @Published private(set) var sites: [FavoriteSite]
 
