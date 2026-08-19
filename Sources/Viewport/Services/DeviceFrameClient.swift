@@ -185,6 +185,9 @@ actor DeviceFrameClient {
     }
 
     private func androidSize(serial: String) async -> CGSize? {
+        if let cached = AndroidDeviceProbeCache.size(for: serial) {
+            return cached
+        }
         guard let adb,
               let result = try? await runner.run(
                 executable: adb,
@@ -192,11 +195,20 @@ actor DeviceFrameClient {
               ) else {
             return nil
         }
-        return AndroidDeviceClient.parseWMSize(result.standardOutput)
+        let size = AndroidDeviceClient.parseWMSize(result.standardOutput)
+        if let size {
+            AndroidDeviceProbeCache.storeSize(size, for: serial)
+        }
+        return size
     }
 
     private func androidName(for device: ADBDeviceRecord) async -> String {
         guard let adb else { return device.displayModel ?? device.serial }
+
+        if device.isEmulator,
+           let cached = AndroidDeviceProbeCache.name(for: device.serial) {
+            return cached.replacingOccurrences(of: "_", with: " ")
+        }
 
         if device.isEmulator,
            let result = try? await runner.run(
@@ -206,6 +218,7 @@ actor DeviceFrameClient {
            let name = AndroidDeviceClient.parseAVDNameResponse(
             result.standardOutput
            ) {
+            AndroidDeviceProbeCache.storeName(name, for: device.serial)
             return name.replacingOccurrences(of: "_", with: " ")
         }
 
@@ -364,8 +377,7 @@ actor DeviceFrameClient {
         // treats it as a literal filename. Use an isolated temporary file,
         // which is also the compatibility path used by Simmer.
         let screenshotURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("viewport-ios-\(UUID().uuidString).jpg")
-        defer { try? FileManager.default.removeItem(at: screenshotURL) }
+            .appendingPathComponent("viewport-ios-\(udid).jpg")
 
         let command = toolchains.simctlCommand([
             "io", udid, "screenshot", "--type=jpeg", "--mask=ignored",

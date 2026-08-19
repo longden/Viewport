@@ -7,6 +7,61 @@ protocol DeviceClient {
     func shutdown(_ device: LaunchableDevice) async throws
 }
 
+enum AndroidDeviceProbeCache {
+    private static let lock = NSLock()
+    private static var names: [String: (value: String, at: ContinuousClock.Instant)] = [:]
+    private static var sizes: [String: (value: CGSize, at: ContinuousClock.Instant)] = [:]
+    private static let ttl: Duration = .seconds(20)
+
+    static func name(for serial: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = names[serial],
+              entry.at.duration(to: .now) < ttl else { return nil }
+        return entry.value
+    }
+
+    static func storeName(_ name: String, for serial: String) {
+        lock.lock()
+        names[serial] = (name, .now)
+        lock.unlock()
+    }
+
+    static func size(for serial: String) -> CGSize? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = sizes[serial],
+              entry.at.duration(to: .now) < ttl else { return nil }
+        return entry.value
+    }
+
+    static func storeSize(_ size: CGSize, for serial: String) {
+        lock.lock()
+        sizes[serial] = (size, .now)
+        lock.unlock()
+    }
+
+    static func invalidateSize(for serial: String) {
+        lock.lock()
+        sizes[serial] = nil
+        lock.unlock()
+    }
+
+    /// `wm size` is orientation-sensitive. If a live frame is rotated vs the
+    /// cache, swap the cached size rather than keeping a stale portrait/landscape.
+    static func sizeReconcilingOrientation(
+        _ cached: CGSize,
+        to live: CGSize
+    ) -> CGSize {
+        guard cached.width > 0, cached.height > 0,
+              live.width > 0, live.height > 0 else { return cached }
+        let cachedLandscape = cached.width > cached.height
+        let liveLandscape = live.width > live.height
+        guard cachedLandscape != liveLandscape else { return cached }
+        return CGSize(width: cached.height, height: cached.width)
+    }
+}
+
 struct ADBDeviceRecord: Equatable {
     let serial: String
     let state: String
@@ -374,6 +429,10 @@ struct AndroidDeviceClient: DeviceClient {
         for serial in Self.parseADBDevices(devicesResult.standardOutput)
             .filter({ $0.isOnline && $0.isEmulator })
             .map(\.serial) {
+            if let cached = AndroidDeviceProbeCache.name(for: serial) {
+                mapping[cached] = serial
+                continue
+            }
             guard let result = try? await runner.run(
                 executable: adb,
                 arguments: ["-s", serial, "emu", "avd", "name"]
@@ -381,6 +440,7 @@ struct AndroidDeviceClient: DeviceClient {
             let name = Self.parseAVDNameResponse(result.standardOutput) else {
                 continue
             }
+            AndroidDeviceProbeCache.storeName(name, for: serial)
             mapping[name] = serial
         }
         return mapping
