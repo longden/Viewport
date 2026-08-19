@@ -218,3 +218,38 @@ final class DeviceClientParsingTests: XCTestCase {
         )
     }
 }
+
+final class AndroidDeviceProbeCacheTests: XCTestCase {
+    func testRotatesCachedSizeWhenLiveFrameOrientationFlips() {
+        let portrait = CGSize(width: 1080, height: 1920)
+        let landscapeLive = CGSize(width: 576, height: 324)
+        XCTAssertEqual(
+            AndroidDeviceProbeCache.sizeReconcilingOrientation(
+                portrait,
+                to: landscapeLive
+            ),
+            CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(
+            AndroidDeviceProbeCache.sizeReconcilingOrientation(
+                portrait,
+                to: CGSize(width: 576, height: 1024)
+            ),
+            portrait
+        )
+    }
+
+    func testSizeCacheExpiresAfterInvalidate() {
+        let serial = "emulator-probe-\(UUID().uuidString)"
+        AndroidDeviceProbeCache.storeSize(
+            CGSize(width: 1080, height: 1920),
+            for: serial
+        )
+        XCTAssertEqual(
+            AndroidDeviceProbeCache.size(for: serial),
+            CGSize(width: 1080, height: 1920)
+        )
+        AndroidDeviceProbeCache.invalidateSize(for: serial)
+        XCTAssertNil(AndroidDeviceProbeCache.size(for: serial))
+    }
+}
