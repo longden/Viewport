@@ -47,10 +47,11 @@ final class WorkspaceRecordingService: ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var startedAt: Date?
-    @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var lastSavedURL: URL?
     /// Squared for composite capture so the web pane matches device frames.
     @Published private(set) var squareWebContentCorners = false
+    /// Isolated so 4 Hz ticks do not rebuild ContentView / the pane grid.
+    let elapsedClock = RecordingElapsedClock()
 
     private var stream: SCStream?
     private var streamOutput: WorkspaceRecordingStreamOutput?
@@ -61,6 +62,7 @@ final class WorkspaceRecordingService: ObservableObject {
     private var isStopping = false
     private var captureTarget: WorkspaceRecordingTarget?
     private var webCaptureTarget: WorkspaceRecordingTarget?
+    private var recordingPixelBufferSessions: [WindowCaptureSession] = []
 
     func updateCaptureTarget(_ target: WorkspaceRecordingTarget?) {
         captureTarget = target
@@ -99,6 +101,12 @@ final class WorkspaceRecordingService: ObservableObject {
         }
 
         if workspace.recordingQuality == .composite {
+            enableRecordingPixelBuffers(workspace.allCaptureSessions)
+            defer {
+                if !isRecording {
+                    disableRecordingPixelBuffers()
+                }
+            }
             try await startComposite(web: web, workspace: workspace)
             return
         }
@@ -203,7 +211,7 @@ final class WorkspaceRecordingService: ObservableObject {
         compositeEngine = engine
         temporaryURL = url
         startedAt = Date()
-        elapsed = 0
+        elapsedClock.reset()
         isRecording = true
         isStopping = false
         lastSavedURL = nil
@@ -313,7 +321,7 @@ final class WorkspaceRecordingService: ObservableObject {
         streamOutput = output
         temporaryURL = url
         startedAt = Date()
-        elapsed = 0
+        elapsedClock.reset()
         isRecording = true
         isStopping = false
         lastSavedURL = nil
@@ -403,8 +411,8 @@ final class WorkspaceRecordingService: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, !Task.isCancelled, let startedAt else { return }
-                elapsed = Date().timeIntervalSince(startedAt)
-                if elapsed >= Self.maxDuration {
+                elapsedClock.update(Date().timeIntervalSince(startedAt))
+                if elapsedClock.elapsed >= Self.maxDuration {
                     _ = try? await stop()
                     return
                 }
@@ -412,7 +420,22 @@ final class WorkspaceRecordingService: ObservableObject {
         }
     }
 
+    private func enableRecordingPixelBuffers(_ sessions: [WindowCaptureSession]) {
+        recordingPixelBufferSessions = sessions
+        for session in sessions {
+            session.setPreparesRecordingPixelBuffer(true)
+        }
+    }
+
+    private func disableRecordingPixelBuffers() {
+        for session in recordingPixelBufferSessions {
+            session.setPreparesRecordingPixelBuffer(false)
+        }
+        recordingPixelBufferSessions = []
+    }
+
     private func resetSessionState() {
+        disableRecordingPixelBuffers()
         elapsedTask?.cancel()
         elapsedTask = nil
         stream = nil
@@ -421,7 +444,7 @@ final class WorkspaceRecordingService: ObservableObject {
         compositeEngine = nil
         temporaryURL = nil
         startedAt = nil
-        elapsed = 0
+        elapsedClock.reset()
         isStopping = false
         isRecording = false
         squareWebContentCorners = false
@@ -446,6 +469,19 @@ final class WorkspaceRecordingService: ObservableObject {
         }
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination
+    }
+}
+
+@MainActor
+final class RecordingElapsedClock: ObservableObject {
+    @Published private(set) var elapsed: TimeInterval = 0
+
+    func reset() {
+        elapsed = 0
+    }
+
+    func update(_ value: TimeInterval) {
+        elapsed = value
     }
 }
 

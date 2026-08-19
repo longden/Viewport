@@ -107,7 +107,7 @@ struct WorkspaceUtilityToolbar: View {
             Divider()
 
             Picker(
-                "Device logs",
+                "Devlogs",
                 selection: $showDeveloperLogs
             ) {
                 Text("On").tag(true)
@@ -169,11 +169,25 @@ struct WorkspaceUtilityToolbar: View {
 /// Principal action chrome: refresh, combined screenshot, record.
 struct WorkspaceActionToolbar: View {
     @ObservedObject var recording: WorkspaceRecordingService
+    @ObservedObject var elapsedClock: RecordingElapsedClock
     var isTakingScreenshot: Bool
-    var recordingHelp: String
     var onRefresh: () -> Void
     var onCombinedScreenshot: () -> Void
     var onToggleRecording: () -> Void
+
+    private var recordingHelp: String {
+        if recording.isRecording {
+            let seconds = Int(elapsedClock.elapsed.rounded())
+            let minutes = seconds / 60
+            let remainder = seconds % 60
+            return String(
+                format: "Recording… %d:%02d — click to stop",
+                minutes,
+                remainder
+            )
+        }
+        return "Record all visible clients"
+    }
 
     var body: some View {
         ControlGroup {
