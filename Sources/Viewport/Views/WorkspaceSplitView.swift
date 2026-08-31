@@ -286,7 +286,7 @@ struct WorkspaceSplitView: View {
                     ),
                     paneID: node.id,
                     paneTitleSuffix: node.slot >= 1 ? " \(node.slot + 1)" : nil,
-                    isClosable: true,
+                    isClosable: node.slot >= 1,
                     isExtraPane: node.slot >= 1,
                     onScreenshot: onPaneScreenshot.map { handler in
                         { handler(node.viewerSource ?? .android, session) }
