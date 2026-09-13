@@ -177,6 +177,7 @@ struct CaptureViewerPane: View {
                 }
 
                 Button {
+                    session.resumeAutoDeviceSelection()
                     session.refreshWindows()
                 } label: {
                     Label("Refresh devices", systemImage: "arrow.clockwise")

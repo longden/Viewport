@@ -117,6 +117,9 @@ final class WindowCaptureSession: ObservableObject {
     private var isMirroringInput = false
     /// Device IDs already claimed by sibling panes; preferred auto-select skips these.
     var deviceIDsOccupiedBySiblingPanes: () -> Set<String> = { [] }
+    /// After the user closes or clears a pane, skip reconnecting to the only
+    /// running guest until they pick a device or tap Refresh.
+    private var suppressAutoDeviceSelection = false
     /// Optional sink for sync-scroll prototypes.
     var pointerEventSink: ((PointerEventPhase, CGPoint, TimeInterval?) -> Void)?
     private let simulatorSurfaceStream: IOSSimulatorSurfaceStream?
@@ -265,11 +268,18 @@ final class WindowCaptureSession: ObservableObject {
                 let previousSelection = selectedDeviceID
                 availableDevices = devices
                 let occupied = deviceIDsOccupiedBySiblingPanes()
-                let selected = preferredDevice(
-                    in: devices,
-                    previousSelection: previousSelection,
-                    occupied: occupied
-                )
+                let selected: StreamedDevice?
+                if suppressAutoDeviceSelection,
+                   previousSelection == nil,
+                   pendingLaunchDeviceID == nil {
+                    selected = nil
+                } else {
+                    selected = preferredDevice(
+                        in: devices,
+                        previousSelection: previousSelection,
+                        occupied: occupied
+                    )
+                }
                 guard let selected else {
                     selectedDeviceID = nil
                     stopCapture()
@@ -313,6 +323,7 @@ final class WindowCaptureSession: ObservableObject {
     /// Clears any current stream and shows a loading empty state until the
     /// launched device appears for this pane (used when Play starts a guest).
     func prepareForPendingLaunch(named name: String, deviceID: String) {
+        suppressAutoDeviceSelection = false
         pendingLaunchName = name
         pendingLaunchDeviceID = deviceID
         selectedDeviceID = nil
@@ -334,7 +345,12 @@ final class WindowCaptureSession: ObservableObject {
         pendingLaunchDeviceID = nil
         selectedDeviceID = nil
         stopCapture()
+        suppressAutoDeviceSelection = true
         phase = .idle
+    }
+
+    func resumeAutoDeviceSelection() {
+        suppressAutoDeviceSelection = false
     }
 
     /// True when reconnect-after-launch should refresh this session.
@@ -378,6 +394,7 @@ final class WindowCaptureSession: ObservableObject {
         guard availableDevices.contains(where: { $0.id == id }) else {
             return
         }
+        suppressAutoDeviceSelection = false
         selectedDeviceID = id
         refreshInputAccess()
         startCapture(deviceID: id)

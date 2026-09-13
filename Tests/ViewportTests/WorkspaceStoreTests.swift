@@ -271,15 +271,42 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertTrue(store.isVisible(.android))
     }
 
-    func testClosePrimaryPaneKeepsEmptyPane() {
+    func testCloseOnlyPlatformPaneHidesColumnWhenOthersRemain() {
         let store = WorkspaceStore(defaults: defaults)
         let primaryID = store.orderedVisiblePanes.first {
             $0.source == ViewerSource.iOS.rawValue && $0.slot == 0
         }?.id
         XCTAssertNotNil(primaryID)
         XCTAssertTrue(store.closePane(id: primaryID!))
-        XCTAssertEqual(store.paneCount(of: .iOS), 1)
+        XCTAssertFalse(store.isVisible(.iOS))
+        XCTAssertEqual(store.paneCount(of: .iOS), 0)
+    }
+
+    func testClosePrimaryPaneKeepsEmptyPaneWhenMultipleOfSameSource() {
+        let store = WorkspaceStore(defaults: defaults)
+        store.setVisible(false, for: .web)
+        store.setVisible(false, for: .iOS)
+        XCTAssertTrue(store.addPane(.android))
+        let primaryID = store.orderedVisiblePanes.first {
+            $0.source == ViewerSource.android.rawValue && $0.slot == 0
+        }?.id
+        XCTAssertNotNil(primaryID)
+        XCTAssertTrue(store.closePane(id: primaryID!))
+        XCTAssertEqual(store.paneCount(of: .android), 2)
+        XCTAssertTrue(store.isVisible(.android))
+    }
+
+    func testCloseOnlyVisiblePaneClearsWithoutHidingWorkspace() {
+        let store = WorkspaceStore(defaults: defaults)
+        store.setVisible(false, for: .android)
+        store.setVisible(false, for: .web)
+        XCTAssertEqual(store.orderedVisiblePanes.count, 1)
+        let primaryID = store.orderedVisiblePanes.first?.id
+        XCTAssertNotNil(primaryID)
+        XCTAssertTrue(store.closePane(id: primaryID!))
+        XCTAssertEqual(store.orderedVisiblePanes.count, 1)
         XCTAssertTrue(store.isVisible(.iOS))
+        XCTAssertNil(store.iOSCapture.selectedDeviceID)
     }
 
     func testHidingPlatformRemovesAllItsPanes() {

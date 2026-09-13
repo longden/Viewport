@@ -266,6 +266,16 @@ final class WorkspaceStore: ObservableObject {
             return false
         }
 
+        captureRefreshTask?.cancel()
+
+        // Only pane for this platform: hide the column when others remain.
+        if node.slot == 0,
+           paneCount(of: source) == 1,
+           paneLayout.nodes.count > 1 {
+            setVisible(false, for: source)
+            return true
+        }
+
         let session = captureSession(for: node)
         let deviceToStop = session?.guestToTerminate
         session?.clearSelection()
