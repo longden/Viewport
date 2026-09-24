@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreVideo
 import XCTest
 @testable import Viewport
 
@@ -419,7 +420,7 @@ private final class FakeEmulatorGrpcWorker:
     private let lock = NSLock()
     private let blocksOnStart: Bool
     private var startContinuation: CheckedContinuation<Void, Error>?
-    private var onFrame: (@Sendable (CGImage) -> Void)?
+    private var onFrame: (@Sendable (CVPixelBuffer) -> Void)?
     private var onFailure: (@Sendable (Error) -> Void)?
     private(set) var isStopped = false
 
@@ -428,7 +429,7 @@ private final class FakeEmulatorGrpcWorker:
     }
 
     func configure(
-        onFrame: @escaping @Sendable (CGImage) -> Void,
+        onFrame: @escaping @Sendable (CVPixelBuffer) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void
     ) {
         lock.withLock {
@@ -467,25 +468,18 @@ private final class FakeEmulatorGrpcWorker:
     func sendTouch(x: Int32, y: Int32, isDown: Bool) {}
 
     func emitFrame() {
-        guard let image = Self.image else { return }
-        lock.withLock { onFrame }?(image)
+        guard let frame = Self.frame else { return }
+        lock.withLock { onFrame }?(frame)
     }
 
     func fail(_ error: Error) {
         lock.withLock { onFailure }?(error)
     }
 
-    private static let image: CGImage? = {
-        let context = CGContext(
-            data: nil,
-            width: 1,
-            height: 1,
-            bitsPerComponent: 8,
-            bytesPerRow: 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-        return context?.makeImage()
+    private static let frame: CVPixelBuffer? = {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 1, 1, kCVPixelFormatType_32BGRA, nil, &buffer)
+        return buffer
     }()
 }
 

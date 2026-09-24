@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreVideo
 import Foundation
 import Network
 
@@ -7,7 +8,6 @@ struct EmulatorGrpcWorkerConfiguration {
     let port: Int
     let authorization: String
     let maxDimension: Int
-    let targetFPS: Int
 }
 
 protocol EmulatorGrpcWorking: AnyObject, Sendable {
@@ -16,18 +16,19 @@ protocol EmulatorGrpcWorking: AnyObject, Sendable {
     func sendTouch(x: Int32, y: Int32, isDown: Bool)
 }
 
-/// Streams RGBA frames from the Android Emulator gRPC `streamScreenshot` API.
+/// Streams frames from the Android Emulator gRPC `streamScreenshot` API as
+/// IOSurface-backed BGRA pixel buffers.
 @MainActor
 final class AndroidEmulatorGrpcStream {
     typealias WorkerFactory = (
         EmulatorGrpcWorkerConfiguration,
-        @escaping @Sendable (CGImage) -> Void,
+        @escaping @Sendable (CVPixelBuffer) -> Void,
         @escaping @Sendable (Error) -> Void
     ) -> any EmulatorGrpcWorking
 
     // Cleared from `stop()`, which must be callable from nonisolated `deinit`.
     private nonisolated(unsafe) var worker: (any EmulatorGrpcWorking)?
-    private nonisolated(unsafe) var onFrame: ((CGImage) -> Void)?
+    private nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
     private nonisolated(unsafe) var generation = UUID()
     private let endpointProvider: @Sendable (String) -> EmulatorGrpcEndpoint?
@@ -47,7 +48,6 @@ final class AndroidEmulatorGrpcStream {
                 port: configuration.port,
                 authorization: configuration.authorization,
                 maxDimension: configuration.maxDimension,
-                targetFPS: configuration.targetFPS,
                 onFrame: onFrame,
                 onFailure: onFailure
             )
@@ -62,7 +62,7 @@ final class AndroidEmulatorGrpcStream {
     func start(
         serial: String,
         profile: CapturePerformanceProfile,
-        onFrame: @escaping (CGImage) -> Void,
+        onFrame: @escaping (CVPixelBuffer) -> Void,
         onFailure: @escaping (Error) -> Void
     ) async throws -> Bool {
         stop()
@@ -92,13 +92,12 @@ final class AndroidEmulatorGrpcStream {
             host: "127.0.0.1",
             port: endpoint.port,
             authorization: authorization,
-            maxDimension: maxDimension,
-            targetFPS: profile.targetFrameRate
+            maxDimension: maxDimension
         )
-        let worker = workerFactory(configuration, { [weak self] image in
+        let worker = workerFactory(configuration, { [weak self] pixelBuffer in
             firstFrame.fulfill()
             guard let self, self.generation == generation else { return }
-            self.onFrame?(image)
+            self.onFrame?(pixelBuffer)
         }, { [weak self] error in
             // Only invoke onFailure if the stream was already delivering
             // frames (post-startup failure). During startup, fail the gate
@@ -342,13 +341,14 @@ private final class FirstFrameGate: @unchecked Sendable {
 private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable {
     private static let maxWindow = UInt32(0x7FFF_FFFF)
     private static let defaultWindow = UInt32(65_535)
+    /// HTTP/2 maximum; the default 16 KB splits each RGBA frame into ~150 DATA frames.
+    private static let maxFrameSize = UInt32(0xFF_FFFF)
 
     private let host: String
     private let port: Int
     private let authorization: String
     private let maxDimension: Int
-    private let targetFPS: Int
-    private let onFrame: @Sendable (CGImage) -> Void
+    private let onFrame: @Sendable (CVPixelBuffer) -> Void
     private let onFailure: @Sendable (Error) -> Void
     private let queue = DispatchQueue(
         label: "com.longden.viewport.emulator-grpc",
@@ -359,28 +359,36 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
     private var stopped = false
     private var settingsAcked = false
     private var streamStarted = false
-    private let frameDelivery = LatestValueDelivery<CGImage>()
+    private let frameDelivery = LatestValueDelivery<CVPixelBuffer>()
     private var nextStreamID: UInt32 = 1
     private var screenshotStreamID: UInt32 = 1
     private var decoder = HTTP2FrameDecoder()
     private var grpcBuffer = GrpcMessageBuffer()
+    // Touched only on `queue`.
+    private let frameConverter = EmulatorFrameConverter()
+    private var pendingWindowCredit: [UInt32: UInt32] = [:]
+    private var pendingImage: EmulatorImageMessage?
+    /// Emulator-written RGBA side channel; nil falls back to inline frames.
+    private let sharedFrame: EmulatorSharedFrameBuffer?
 
     init(
         host: String,
         port: Int,
         authorization: String,
         maxDimension: Int,
-        targetFPS: Int,
-        onFrame: @escaping @Sendable (CGImage) -> Void,
+        onFrame: @escaping @Sendable (CVPixelBuffer) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void
     ) {
         self.host = host
         self.port = port
         self.authorization = authorization
         self.maxDimension = maxDimension
-        self.targetFPS = targetFPS
         self.onFrame = onFrame
         self.onFailure = onFailure
+        // Scaled frames never exceed maxDimension on either axis.
+        sharedFrame = EmulatorSharedFrameBuffer(
+            byteCount: maxDimension * maxDimension * 4
+        )
     }
 
     func start() async throws {
@@ -445,6 +453,7 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
         lock.unlock()
         frameDelivery.clear()
         connection?.cancel()
+        sharedFrame?.removeFile()
     }
 
     func sendTouch(x: Int32, y: Int32, isDown: Bool) {
@@ -490,7 +499,8 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
         preface.append(
             EmulatorProtobuf.settingsFrame(
                 flags: 0,
-                initialWindowSize: Self.maxWindow
+                initialWindowSize: Self.maxWindow,
+                maxFrameSize: Self.maxFrameSize
             )
         )
         preface.append(
@@ -518,7 +528,7 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
             rgba: true,
             width: UInt32(maxDimension),
             height: UInt32(maxDimension),
-            fps: UInt32(targetFPS)
+            mmapHandle: sharedFrame?.handle
         )
         let message = EmulatorProtobuf.grpcMessage(format)
         let headers = EmulatorProtobuf.headersFrame(
@@ -572,6 +582,24 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
         for frame in frames {
             handle(frame)
         }
+        flushWindowCredit()
+        deliverPendingImage()
+    }
+
+    /// One WINDOW_UPDATE per stream per receive, rather than per DATA frame.
+    private func flushWindowCredit() {
+        guard !pendingWindowCredit.isEmpty else { return }
+        var content = Data()
+        for (streamID, increment) in pendingWindowCredit {
+            content.append(
+                EmulatorProtobuf.windowUpdateFrame(
+                    streamID: streamID,
+                    increment: increment
+                )
+            )
+        }
+        pendingWindowCredit.removeAll(keepingCapacity: true)
+        connection?.send(content: content, completion: .contentProcessed { _ in })
     }
 
     private func handle(_ frame: HTTP2Frame) {
@@ -603,14 +631,8 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
             // including padding. Without this the peer stalls after ~64 KB.
             let credited = UInt32(frame.length)
             if credited > 0 {
-                connection?.send(
-                    content: EmulatorProtobuf.windowUpdateFrame(streamID: 0, increment: credited)
-                        + EmulatorProtobuf.windowUpdateFrame(
-                            streamID: frame.streamID,
-                            increment: credited
-                        ),
-                    completion: .contentProcessed { _ in }
-                )
+                pendingWindowCredit[0, default: 0] += credited
+                pendingWindowCredit[frame.streamID, default: 0] += credited
             }
             guard frame.streamID == screenshotStreamID else { return }
             let payload = Self.stripPadding(from: frame)
@@ -655,11 +677,51 @@ private final class EmulatorGrpcWorker: EmulatorGrpcWorking, @unchecked Sendable
             fail(error)
             return
         }
-        for message in messages {
-            if let image = EmulatorProtobuf.parseImage(message) {
-                frameDelivery.submit(image, deliver: onFrame)
+        if let image = messages.reversed().lazy
+            .compactMap(EmulatorProtobuf.parseImage)
+            .first {
+            pendingImage = image
+        }
+    }
+
+    /// Only the newest frame in a receive burst is shown, and MMAP holds only
+    /// the latest pixels anyway.
+    private func deliverPendingImage() {
+        guard let image = pendingImage else { return }
+        pendingImage = nil
+        lock.lock()
+        let isStopped = stopped
+        lock.unlock()
+        guard !isStopped,
+              let pixelBuffer = makePixelBuffer(from: image) else { return }
+        frameDelivery.submit(pixelBuffer, deliver: onFrame)
+    }
+
+    private func makePixelBuffer(from image: EmulatorImageMessage) -> CVPixelBuffer? {
+        let bytesPerRow = image.width * 4
+        let byteCount = bytesPerRow * image.height
+        if !image.pixels.isEmpty {
+            guard image.pixels.count >= byteCount else { return nil }
+            return image.pixels.withUnsafeBytes { bytes in
+                bytes.baseAddress.flatMap {
+                    frameConverter.makePixelBuffer(
+                        rgba: $0,
+                        width: image.width,
+                        height: image.height,
+                        bytesPerRow: bytesPerRow
+                    )
+                }
             }
         }
+        guard let sharedFrame, byteCount <= sharedFrame.byteCount else {
+            return nil
+        }
+        return frameConverter.makePixelBuffer(
+            rgba: sharedFrame.baseAddress,
+            width: image.width,
+            height: image.height,
+            bytesPerRow: bytesPerRow
+        )
     }
 
     private func fail(_ error: Error) {

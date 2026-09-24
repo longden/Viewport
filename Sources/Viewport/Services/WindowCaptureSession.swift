@@ -991,9 +991,9 @@ final class WindowCaptureSession: ObservableObject {
             let started = try await emulatorGrpcStream.start(
                 serial: deviceID,
                 profile: performanceProfile
-            ) { [weak self] image in
+            ) { [weak self] pixelBuffer in
                 guard let self, selectedDeviceID == deviceID else { return }
-                display(image)
+                display(pixelBuffer: pixelBuffer)
             } onFailure: { [weak self] _ in
                 guard let self, selectedDeviceID == deviceID else { return }
                 continueCaptureStrategies(

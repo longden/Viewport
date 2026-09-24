@@ -1,3 +1,5 @@
+import CoreVideo
+import IOSurface
 import XCTest
 @testable import Viewport
 
@@ -105,6 +107,116 @@ final class AndroidEmulatorGrpcStreamTests: XCTestCase {
         XCTAssertEqual(values["grpc.port"], "8554")
     }
 
+    func testImageFormatRequestsMMAPTransport() {
+        let format = EmulatorProtobuf.imageFormat(
+            rgba: true,
+            width: 1_024,
+            height: 1_024,
+            mmapHandle: "file:///tmp/x"
+        )
+        // Field 7 is output-only `foldedDisplay`; nothing is sent there.
+        let expected = Data([0x08, 0x01, 0x18, 0x80, 0x08, 0x20, 0x80, 0x08, 0x32, 0x11, 0x08, 0x01, 0x12, 0x0D])
+            + Data("file:///tmp/x".utf8)
+        XCTAssertEqual(format, expected)
+        XCTAssertEqual(
+            EmulatorProtobuf.imageFormat(rgba: true, width: 0, height: 0),
+            Data([0x08, 0x01])
+        )
+    }
+
+    func testSettingsFrameAdvertisesWindowAndMaxFrameSize() {
+        let frame = EmulatorProtobuf.settingsFrame(
+            flags: 0,
+            initialWindowSize: 0x7FFF_FFFF,
+            maxFrameSize: 0xFF_FFFF
+        )
+        XCTAssertEqual(
+            frame,
+            Data([
+                0x00, 0x00, 0x0C, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x04, 0x7F, 0xFF, 0xFF, 0xFF,
+                0x00, 0x05, 0x00, 0xFF, 0xFF, 0xFF
+            ])
+        )
+    }
+
+    func testParsesImageWithInlinePixelsAndMMAPWithout() throws {
+        // Image { format { RGBA, width 2, height 1 }, ..., seq 5 }
+        let format = Data([0x0A, 0x06, 0x08, 0x01, 0x18, 0x02, 0x20, 0x01])
+        let pixels = Data([1, 2, 3, 4, 5, 6, 7, 8])
+        let inline = try XCTUnwrap(
+            EmulatorProtobuf.parseImage(
+                format + Data([0x22, 0x08]) + pixels + Data([0x28, 0x05])
+            )
+        )
+        XCTAssertEqual(inline.width, 2)
+        XCTAssertEqual(inline.height, 1)
+        XCTAssertEqual(Data(inline.pixels), pixels)
+
+        let mmap = try XCTUnwrap(
+            EmulatorProtobuf.parseImage(format + Data([0x28, 0x05]))
+        )
+        XCTAssertEqual(mmap.width, 2)
+        XCTAssertEqual(mmap.height, 1)
+        XCTAssertTrue(mmap.pixels.isEmpty)
+
+        // Inactive display: empty 0×0 image.
+        XCTAssertNil(EmulatorProtobuf.parseImage(Data([0x0A, 0x02, 0x08, 0x01])))
+    }
+
+    func testFrameConverterSwizzlesPaddedRGBAIntoOpaqueSRGBSurface() throws {
+        // 2×2 RGBA with 4 bytes of row padding.
+        let rgba: [UInt8] = [
+            10, 20, 30, 0, 40, 50, 60, 128, 0xEE, 0xEE, 0xEE, 0xEE,
+            70, 80, 90, 255, 1, 2, 3, 4, 0xEE, 0xEE, 0xEE, 0xEE
+        ]
+        let converter = EmulatorFrameConverter()
+        let buffer = try XCTUnwrap(
+            rgba.withUnsafeBytes {
+                converter.makePixelBuffer(
+                    rgba: $0.baseAddress!,
+                    width: 2,
+                    height: 2,
+                    bytesPerRow: 12
+                )
+            }
+        )
+        XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer), kCVPixelFormatType_32BGRA)
+        let surface = try XCTUnwrap(CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue())
+        XCTAssertNotNil(IOSurfaceCopyValue(surface, kIOSurfaceColorSpace))
+
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer))
+            .assumingMemoryBound(to: UInt8.self)
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        let row0 = Array(UnsafeBufferPointer(start: base, count: 8))
+        let row1 = Array(UnsafeBufferPointer(start: base + rowBytes, count: 8))
+        XCTAssertEqual(row0, [30, 20, 10, 255, 60, 50, 40, 255])
+        XCTAssertEqual(row1, [90, 80, 70, 255, 3, 2, 1, 255])
+    }
+
+    func testSharedFrameBufferSeesExternalWritesAndRemovesFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+        let shared = try XCTUnwrap(
+            EmulatorSharedFrameBuffer(byteCount: 16, directory: directory)
+        )
+        XCTAssertTrue(shared.handle.hasPrefix("file:///"))
+        let path = String(shared.handle.dropFirst("file://".count))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+
+        // Stands in for the emulator process writing into its own mapping.
+        let writer = try XCTUnwrap(FileHandle(forWritingAtPath: path))
+        try writer.seek(toOffset: 4)
+        try writer.write(contentsOf: Data([9, 8, 7, 6]))
+        try writer.close()
+        let bytes = shared.baseAddress.assumingMemoryBound(to: UInt8.self)
+        XCTAssertEqual(Array(UnsafeBufferPointer(start: bytes + 4, count: 4)), [9, 8, 7, 6])
+
+        shared.removeFile()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    }
+
     func testHeadersFrameOmitsEmptyAuthorization() {
         let withAuth = EmulatorProtobuf.headersFrame(
             streamID: 1,
@@ -124,23 +236,14 @@ final class AndroidEmulatorGrpcStreamTests: XCTestCase {
     @MainActor
     func testGrpcStartsWithoutTokenUsingMockWorker() async throws {
         final class MockWorker: EmulatorGrpcWorking, @unchecked Sendable {
-            let onFrame: @Sendable (CGImage) -> Void
-            init(onFrame: @escaping @Sendable (CGImage) -> Void) {
+            let onFrame: @Sendable (CVPixelBuffer) -> Void
+            init(onFrame: @escaping @Sendable (CVPixelBuffer) -> Void) {
                 self.onFrame = onFrame
             }
             func start() async throws {
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let context = CGContext(
-                    data: nil,
-                    width: 8,
-                    height: 8,
-                    bitsPerComponent: 8,
-                    bytesPerRow: 32,
-                    space: colorSpace,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                )
-                let image = context!.makeImage()!
-                onFrame(image)
+                var buffer: CVPixelBuffer?
+                CVPixelBufferCreate(nil, 8, 8, kCVPixelFormatType_32BGRA, nil, &buffer)
+                onFrame(buffer!)
             }
             func stop() {}
             func sendTouch(x: Int32, y: Int32, isDown: Bool) {}

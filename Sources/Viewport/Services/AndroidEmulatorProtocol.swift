@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// gRPC length-prefixed message buffer that advances a read index instead of
@@ -154,8 +153,23 @@ struct HTTP2FrameDecoder {
     }
 }
 
+/// `Image` reply from `streamScreenshot`. `pixels` is empty when the emulator
+/// wrote the frame to the MMAP side channel instead.
+struct EmulatorImageMessage {
+    let width: Int
+    let height: Int
+    let pixels: Data
+}
+
 enum EmulatorProtobuf {
-    static func imageFormat(rgba: Bool, width: UInt32, height: UInt32, fps: UInt32 = 0) -> Data {
+    /// `mmapHandle` requests `ImageTransport.MMAP` (a `file://` URL the
+    /// emulator writes RGBA rows into) instead of inline pixel bytes.
+    static func imageFormat(
+        rgba: Bool,
+        width: UInt32,
+        height: UInt32,
+        mmapHandle: String? = nil
+    ) -> Data {
         var data = Data()
         data.append(contentsOf: encodeKey(field: 1, wire: 0))
         data.append(contentsOf: encodeVarint(UInt64(rgba ? 1 : 0)))
@@ -167,9 +181,17 @@ enum EmulatorProtobuf {
             data.append(contentsOf: encodeKey(field: 4, wire: 0))
             data.append(contentsOf: encodeVarint(UInt64(height)))
         }
-        if fps > 0 {
-            data.append(contentsOf: encodeKey(field: 7, wire: 0))
-            data.append(contentsOf: encodeVarint(UInt64(fps)))
+        if let mmapHandle {
+            var transport = Data()
+            transport.append(contentsOf: encodeKey(field: 1, wire: 0))
+            transport.append(contentsOf: encodeVarint(1))
+            let handle = Data(mmapHandle.utf8)
+            transport.append(contentsOf: encodeKey(field: 2, wire: 2))
+            transport.append(contentsOf: encodeVarint(UInt64(handle.count)))
+            transport.append(handle)
+            data.append(contentsOf: encodeKey(field: 6, wire: 2))
+            data.append(contentsOf: encodeVarint(UInt64(transport.count)))
+            data.append(transport)
         }
         return data
     }
@@ -212,16 +234,21 @@ enum EmulatorProtobuf {
 
     static func settingsFrame(
         flags: UInt8,
-        initialWindowSize: UInt32? = nil
+        initialWindowSize: UInt32? = nil,
+        maxFrameSize: UInt32? = nil
     ) -> Data {
         var payload = Data()
-        if let initialWindowSize {
+        for (identifier, value) in [
+            (UInt8(0x04), initialWindowSize),
+            (UInt8(0x05), maxFrameSize)
+        ] {
+            guard let value else { continue }
             payload.append(contentsOf: [
-                0x00, 0x04,
-                UInt8((initialWindowSize >> 24) & 0xFF),
-                UInt8((initialWindowSize >> 16) & 0xFF),
-                UInt8((initialWindowSize >> 8) & 0xFF),
-                UInt8(initialWindowSize & 0xFF)
+                0x00, identifier,
+                UInt8((value >> 24) & 0xFF),
+                UInt8((value >> 16) & 0xFF),
+                UInt8((value >> 8) & 0xFF),
+                UInt8(value & 0xFF)
             ])
         }
         return encodeFrame(
@@ -316,7 +343,7 @@ enum EmulatorProtobuf {
         return data
     }
 
-    static func parseImage(_ message: Data) -> CGImage? {
+    static func parseImage(_ message: Data) -> EmulatorImageMessage? {
         var width: UInt32 = 0
         var height: UInt32 = 0
         var pixels = Data()
@@ -351,15 +378,19 @@ enum EmulatorProtobuf {
                 index = afterLength
                 let end = index + Int(length)
                 guard end <= message.endIndex else { return nil }
-                pixels = message.subdata(in: index..<end)
+                pixels = message[index..<end]
                 index = end
             default:
                 index = skip(message, at: index, wire: wire)
             }
         }
 
-        guard width > 0, height > 0, !pixels.isEmpty else { return nil }
-        return rgbaImage(pixels: pixels, width: Int(width), height: Int(height))
+        guard width > 0, height > 0 else { return nil }
+        return EmulatorImageMessage(
+            width: Int(width),
+            height: Int(height),
+            pixels: pixels
+        )
     }
 
     private static func parseImageFormat(
@@ -386,33 +417,6 @@ enum EmulatorProtobuf {
                 index = skip(message, at: index, wire: wire)
             }
         }
-    }
-
-    private static func rgbaImage(
-        pixels: Data,
-        width: Int,
-        height: Int
-    ) -> CGImage? {
-        let bytesPerRow = width * 4
-        guard pixels.count >= bytesPerRow * height else { return nil }
-        guard let provider = CGDataProvider(data: pixels as CFData) else {
-            return nil
-        }
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(
-                rawValue: CGImageAlphaInfo.noneSkipLast.rawValue
-            ),
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
     }
 
     private static func literalHeader(_ name: String, _ value: String) -> Data {

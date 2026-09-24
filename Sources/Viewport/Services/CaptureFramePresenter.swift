@@ -253,7 +253,7 @@ final class CaptureFramePresenter {
     }
 
     /// BGRA pixel buffer for composite recording when only a CGImage is available
-    /// (e.g. emulator gRPC path).
+    /// (e.g. screencap polling).
     private static func makePixelBuffer(from image: CGImage) -> CVPixelBuffer? {
         let width = image.width
         let height = image.height
