@@ -4,21 +4,33 @@
 
 # Viewport
 
-A native macOS workspace for comparing web, Android, and iOS side by side.
+Web, Android and iOS in one window on your Mac.
 
-Viewport streams a live webpage, an Android emulator (or connected phone), and an iOS Simulator (or connected iPhone) into one window. Tap, type, and drive the visible devices together. Screenshots, recordings, and logs stay in the app.
+Open a website alongside an Android emulator and an iOS Simulator to see how they compare. It's a handy setup for demo videos and feature walkthroughs: show your app across platforms in a single recording, without switching between windows. Connected phones and tablets work too.
 
 ![Viewport workspace](screenshot.png)
 
-## Features
+## What you can do
 
-- **Web, Android, and iOS panes** in one window — show or hide each from the toolbar
-- **Live capture** — Simulator framebuffer, Android gRPC, or scrcpy by default, with a Legacy window-capture fallback if a stream drops
-- **Light Sim** — optional slimmer iOS Simulator via [simslim](https://github.com/MobAI-App/simslim); install from Help or the iOS Play menu
-- **Device input** — touch, keyboard, clipboard, deep links, location, and optional mirroring across panes
-- **Build & Play** — install an Xcode or Android project onto the visible simulators and emulators
-- **Workspace capture** — annotated screenshots, MP4 recording, and a developer console for web, logcat, and simulator logs
-- **Connected iPhone and iPad are view-only** — no touch, keyboard, deep links, or device logs
+- Record demo videos and walkthroughs with all visible panes together in one MP4.
+- Capture and annotate screenshots for release notes, documentation or bug reports.
+- Show or hide web, Android and iOS panes to suit what you're working on.
+- Tap, type, paste, open deep links and set device locations. You can also mirror input across supported panes.
+- Build and install Xcode or Android projects on simulators and emulators with **Build & Play**.
+- Read web console messages, Android logcat and simulator logs alongside the devices.
+- Use **Light Sim**, powered by [simslim](https://github.com/MobAI-App/simslim), as an alternative to the standard iOS Simulator. Install it from Help or the iOS Play menu.
+
+Connected iPhones and iPads are view-only. Touch, keyboard input, deep links and device logs aren't available for them.
+
+## Getting started
+
+Viewport requires **macOS 26 or later**. You'll also need:
+
+- **Xcode** for iOS simulators and building Viewport from source.
+- **The Android SDK** for Android emulators.
+- **scrcpy** for connected Android phones: `brew install scrcpy`.
+
+Light Sim is optional. You can also install it with `brew install mobai-app/tap/simslim`.
 
 ## Build from source
 
@@ -26,8 +38,6 @@ Viewport streams a live webpage, an Android emulator (or connected phone), and a
 xcrun swift build --disable-sandbox
 ```
 
-Requires macOS 26+ and Xcode. Android also needs the SDK (`brew install scrcpy` for a connected phone). Light Sim needs `brew install mobai-app/tap/simslim`.
-
 ## License
 
-Copyright 2026 Longden. Viewport is licensed under the [Apache License 2.0](LICENSE). Third-party notices are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Copyright 2026 Longden. Licensed under [Apache 2.0](LICENSE), with [third-party notices](THIRD_PARTY_NOTICES.md).
