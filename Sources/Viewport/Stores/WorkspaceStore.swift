@@ -921,13 +921,24 @@ final class WorkspaceStore: ObservableObject {
         return devices
     }
 
+    /// Sessions backing a pane in the layout. Spare slot sessions stay idle.
+    var paneCaptureSessions: [WindowCaptureSession] {
+        paneLayout.nodes.compactMap { captureSession(for: $0) }
+    }
+
+    /// Panes still waiting for a launched guest. Spare sessions must not join:
+    /// they would claim the new guest invisibly and block the waiting pane.
+    var launchReconnectSessions: [WindowCaptureSession] {
+        paneCaptureSessions.filter(\.needsLaunchReconnect)
+    }
+
     private func configureSiblingDeviceAvoidance() {
         for session in allCaptureSessions {
             let source = session.source
             session.deviceIDsOccupiedBySiblingPanes = { [weak self, weak session] in
                 guard let self, let session else { return [] }
                 return Set(
-                    self.allCaptureSessions
+                    self.paneCaptureSessions
                         .filter { $0 !== session && $0.source == source }
                         .compactMap(\.selectedDeviceID)
                 )
@@ -1054,7 +1065,7 @@ final class WorkspaceStore: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 // Only reconnect panes that are waiting — leave live siblings alone
                 // so launching into a new pane does not flicker/duplicate the old one.
-                for session in self.allCaptureSessions where session.needsLaunchReconnect {
+                for session in self.launchReconnectSessions {
                     session.refreshWindows()
                 }
             }

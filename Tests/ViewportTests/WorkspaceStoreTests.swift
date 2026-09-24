@@ -27,6 +27,21 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.orderedVisibleSources, [.web, .iOS])
     }
 
+    func testLaunchReconnectOnlyRefreshesSessionsWithPanes() {
+        let store = WorkspaceStore(defaults: defaults)
+        func reconnects(_ session: WindowCaptureSession) -> Bool {
+            store.launchReconnectSessions.contains { $0 === session }
+        }
+
+        XCTAssertTrue(reconnects(store.androidCapture))
+        XCTAssertTrue(reconnects(store.iOSCapture))
+        XCTAssertFalse(reconnects(store.androidCaptureSecondary))
+        XCTAssertFalse(reconnects(store.iOSCaptureSecondary))
+
+        XCTAssertTrue(store.addPane(.android))
+        XCTAssertTrue(reconnects(store.androidCaptureSecondary))
+    }
+
     func testCannotHideLastVisiblePane() {
         let store = WorkspaceStore(defaults: defaults)
 
