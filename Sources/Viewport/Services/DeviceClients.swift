@@ -130,14 +130,17 @@ struct AndroidDeviceClient: DeviceClient {
         let preferHeadless = defaults.object(
             forKey: AndroidEmulatorLaunchArguments.preferHeadlessUserDefaultsKey
         ) as? Bool ?? true
+        let resources = AndroidEmulatorResources(defaults: defaults)
         let runningEmulatorCount = await countRunningEmulators()
         let emulatorArguments = AndroidEmulatorLaunchArguments.make(
             avdName: device.id,
             preferHeadless: preferHeadless,
-            runningEmulatorCount: runningEmulatorCount
+            runningEmulatorCount: runningEmulatorCount,
+            resources: resources
         )
 
-        if preferHeadless, let emulator {
+        // `android emulator start` cannot pass -cores / -memory through.
+        if preferHeadless || resources.hasOverrides, let emulator {
             try await runner.launchDetached(
                 executable: emulator,
                 arguments: emulatorArguments

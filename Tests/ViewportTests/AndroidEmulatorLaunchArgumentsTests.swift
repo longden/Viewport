@@ -24,6 +24,78 @@ final class AndroidEmulatorLaunchArgumentsTests: XCTestCase {
         )
     }
 
+    func testResourceOverridesAppendCoresAndMemory() {
+        let resources = AndroidEmulatorResources(cores: 4, memoryMB: 4_096)
+        XCTAssertEqual(
+            AndroidEmulatorLaunchArguments.make(
+                avdName: "Pixel_8",
+                preferHeadless: true,
+                runningEmulatorCount: 0,
+                resources: resources
+            ),
+            ["-avd", "Pixel_8", "-no-window", "-grpc", "8554", "-cores", "4", "-memory", "4096"]
+        )
+        XCTAssertEqual(
+            AndroidEmulatorLaunchArguments.make(
+                avdName: "Pixel_8",
+                preferHeadless: false,
+                runningEmulatorCount: 0,
+                resources: AndroidEmulatorResources(memoryMB: 2_048)
+            ),
+            ["-avd", "Pixel_8", "-memory", "2048"]
+        )
+    }
+
+    func testResourcesRoundTripDefaultsAndTreatZeroAsAVDDefault() throws {
+        let suiteName = "AndroidEmulatorResourcesTests"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(AndroidEmulatorResources(defaults: defaults), AndroidEmulatorResources())
+        XCTAssertFalse(AndroidEmulatorResources(defaults: defaults).hasOverrides)
+
+        AndroidEmulatorResources(cores: 6, memoryMB: nil).save(to: defaults)
+        let restored = AndroidEmulatorResources(defaults: defaults)
+        XCTAssertEqual(restored.cores, 6)
+        XCTAssertNil(restored.memoryMB)
+        XCTAssertEqual(restored.launchArguments, ["-cores", "6"])
+
+        XCTAssertNil(AndroidEmulatorResources(cores: 0, memoryMB: -1).cores)
+    }
+
+    func testResourceChoicesRespectHostLimitsAndKeepSavedValue() {
+        XCTAssertEqual(AndroidEmulatorResources.coreChoices(hostCores: 18), [2, 4, 6, 8])
+        XCTAssertEqual(AndroidEmulatorResources.coreChoices(hostCores: 6), [2, 4])
+        XCTAssertEqual(
+            AndroidEmulatorResources.coreChoices(hostCores: 6, including: 8),
+            [2, 4, 8]
+        )
+        let eightGB: UInt64 = 8 * 1_024 * 1_024 * 1_024
+        XCTAssertEqual(
+            AndroidEmulatorResources.memoryChoicesMB(hostMemoryBytes: eightGB),
+            [2_048, 4_096]
+        )
+    }
+
+    @MainActor
+    func testWorkspaceStorePersistsEmulatorResources() throws {
+        let suiteName = "AndroidEmulatorResourcesStoreTests"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(store.androidEmulatorResources, AndroidEmulatorResources())
+        store.setAndroidEmulatorResources(AndroidEmulatorResources(cores: 4, memoryMB: 6_144))
+
+        let restored = WorkspaceStore(defaults: defaults)
+        XCTAssertEqual(
+            restored.androidEmulatorResources,
+            AndroidEmulatorResources(cores: 4, memoryMB: 6_144)
+        )
+    }
+
     func testGRPCPortUsesRunningEmulatorCount() {
         XCTAssertEqual(
             AndroidEmulatorLaunchArguments.grpcPort(forRunningEmulatorCount: 0),

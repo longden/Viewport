@@ -28,6 +28,7 @@ final class WorkspaceStore: ObservableObject {
     /// When off (default), unfinished tools stay hidden from the Settings menu.
     @Published private(set) var experimentalFeaturesEnabled: Bool
     @Published private(set) var preferHeadlessAndroidEmulators: Bool
+    @Published private(set) var androidEmulatorResources: AndroidEmulatorResources
     @Published private(set) var preferHeadlessIOSSimulators: Bool
     @Published var focusedCaptureSource: ViewerSource?
     @Published var focusedCapturePaneID: UUID?
@@ -160,6 +161,7 @@ final class WorkspaceStore: ObservableObject {
         preferHeadlessAndroidEmulators = defaults.object(
             forKey: preferHeadlessAndroidKey
         ) as? Bool ?? true
+        androidEmulatorResources = AndroidEmulatorResources(defaults: defaults)
         preferHeadlessIOSSimulators = defaults.object(
             forKey: preferHeadlessIOSKey
         ) as? Bool ?? true
@@ -771,6 +773,13 @@ final class WorkspaceStore: ObservableObject {
         guard preferHeadlessAndroidEmulators != isEnabled else { return }
         preferHeadlessAndroidEmulators = isEnabled
         defaults.set(isEnabled, forKey: preferHeadlessAndroidKey)
+    }
+
+    /// Applies from the next emulator Viewport starts; running guests keep theirs.
+    func setAndroidEmulatorResources(_ resources: AndroidEmulatorResources) {
+        guard androidEmulatorResources != resources else { return }
+        androidEmulatorResources = resources
+        resources.save(to: defaults)
     }
 
     func setPreferHeadlessIOSSimulators(_ isEnabled: Bool) {

@@ -10,14 +10,15 @@ enum AndroidEmulatorLaunchArguments {
     nonisolated static func make(
         avdName: String,
         preferHeadless: Bool,
-        runningEmulatorCount: Int
+        runningEmulatorCount: Int,
+        resources: AndroidEmulatorResources = AndroidEmulatorResources()
     ) -> [String] {
         var arguments = ["-avd", avdName]
-        guard preferHeadless else { return arguments }
-
-        let grpcPort = grpcPort(forRunningEmulatorCount: runningEmulatorCount)
-        arguments += ["-no-window", "-grpc", String(grpcPort)]
-        return arguments
+        if preferHeadless {
+            let grpcPort = grpcPort(forRunningEmulatorCount: runningEmulatorCount)
+            arguments += ["-no-window", "-grpc", String(grpcPort)]
+        }
+        return arguments + resources.launchArguments
     }
 
     nonisolated static func grpcPort(forRunningEmulatorCount count: Int) -> Int {

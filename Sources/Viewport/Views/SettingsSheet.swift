@@ -207,6 +207,8 @@ struct SettingsSheet: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                emulatorResourcePickers
             }
 
             Section("iOS") {
@@ -292,6 +294,64 @@ struct SettingsSheet: View {
             }
         }
         .listStyle(.inset)
+    }
+
+    private var emulatorCores: Binding<Int?> {
+        Binding(
+            get: { workspace.androidEmulatorResources.cores },
+            set: { cores in
+                var resources = workspace.androidEmulatorResources
+                resources.cores = cores
+                workspace.setAndroidEmulatorResources(resources)
+            }
+        )
+    }
+
+    private var emulatorMemoryMB: Binding<Int?> {
+        Binding(
+            get: { workspace.androidEmulatorResources.memoryMB },
+            set: { memoryMB in
+                var resources = workspace.androidEmulatorResources
+                resources.memoryMB = memoryMB
+                workspace.setAndroidEmulatorResources(resources)
+            }
+        )
+    }
+
+    private var emulatorResourcePickers: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("CPU cores", selection: emulatorCores) {
+                Text("AVD default").tag(Int?.none)
+                ForEach(
+                    AndroidEmulatorResources.coreChoices(
+                        including: workspace.androidEmulatorResources.cores
+                    ),
+                    id: \.self
+                ) { cores in
+                    Text("\(cores) cores").tag(Int?.some(cores))
+                }
+            }
+
+            Picker("Memory", selection: emulatorMemoryMB) {
+                Text("AVD default").tag(Int?.none)
+                ForEach(
+                    AndroidEmulatorResources.memoryChoicesMB(
+                        including: workspace.androidEmulatorResources.memoryMB
+                    ),
+                    id: \.self
+                ) { memoryMB in
+                    Text("\(memoryMB / 1_024) GB").tag(Int?.some(memoryMB))
+                }
+            }
+
+            Text(
+                "Applies the next time Viewport starts an emulator. Changing either makes that boot a cold boot."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 6)
     }
 
     private var footer: some View {
