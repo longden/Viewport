@@ -6,8 +6,10 @@ import Foundation
 final class WorkspaceStore: ObservableObject {
     let androidCapture = WindowCaptureSession(source: .android)
     let androidCaptureSecondary = WindowCaptureSession(source: .android)
+    private let additionalAndroidCaptures = (0..<3).map { _ in WindowCaptureSession(source: .android) }
     let iOSCapture = WindowCaptureSession(source: .iOS)
     let iOSCaptureSecondary = WindowCaptureSession(source: .iOS)
+    private let additionalIOSCaptures = (0..<3).map { _ in WindowCaptureSession(source: .iOS) }
     let androidDevices: DeviceManager
     let iOSDevices: DeviceManager
 
@@ -162,11 +164,6 @@ final class WorkspaceStore: ObservableObject {
             forKey: preferHeadlessIOSKey
         ) as? Bool ?? true
 
-        androidCapture.isPerfHUDEnabled = perfHUDEnabled
-        androidCaptureSecondary.isPerfHUDEnabled = perfHUDEnabled
-        iOSCapture.isPerfHUDEnabled = perfHUDEnabled
-        iOSCaptureSecondary.isPerfHUDEnabled = perfHUDEnabled
-
         // Sync-scroll stays experimental; mirroring is a first-class compare tool.
         if !experimentalFeaturesEnabled, synchronizedScrollingEnabled {
             synchronizedScrollingEnabled = false
@@ -174,6 +171,7 @@ final class WorkspaceStore: ObservableObject {
         }
 
         for session in allCaptureSessions {
+            session.isPerfHUDEnabled = perfHUDEnabled
             session.setPerformanceProfile(performanceProfile)
             session.setCaptureMode(captureMode)
         }
@@ -194,7 +192,23 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var allCaptureSessions: [WindowCaptureSession] {
-        [androidCapture, androidCaptureSecondary, iOSCapture, iOSCaptureSecondary]
+        androidCaptureSessions + iOSCaptureSessions
+    }
+
+    var androidCaptureSessions: [WindowCaptureSession] {
+        [androidCapture, androidCaptureSecondary] + additionalAndroidCaptures
+    }
+
+    var iOSCaptureSessions: [WindowCaptureSession] {
+        [iOSCapture, iOSCaptureSecondary] + additionalIOSCaptures
+    }
+
+    private func captureSessions(for source: ViewerSource) -> [WindowCaptureSession] {
+        switch source {
+        case .android: androidCaptureSessions
+        case .iOS: iOSCaptureSessions
+        case .web: []
+        }
     }
 
     func isVisible(_ source: ViewerSource) -> Bool {
@@ -207,6 +221,13 @@ final class WorkspaceStore: ObservableObject {
 
     func canAddPane(_ source: ViewerSource) -> Bool {
         paneLayout.canAddPane(source: source)
+    }
+
+    func canLaunchAnotherGuest(for source: ViewerSource) -> Bool {
+        paneLayout.nodes.contains { node in
+            node.viewerSource == source
+                && captureSession(for: node)?.guestToTerminate == nil
+        } || canAddPane(source)
     }
 
     /// Selected devices in visible Android / iOS capture panes.
@@ -256,8 +277,7 @@ final class WorkspaceStore: ObservableObject {
         return removePane(id: node.id)
     }
 
-    /// Closes a device pane: shuts down its Simulator/emulator (if any), then
-    /// removes an extra pane or clears the primary pane back to empty.
+    /// Closes a device pane and shuts down the guest attached to it.
     @discardableResult
     func closePane(id: UUID) -> Bool {
         guard let node = paneLayout.nodes.first(where: { $0.id == id }),
@@ -266,11 +286,8 @@ final class WorkspaceStore: ObservableObject {
             return false
         }
 
-        captureRefreshTask?.cancel()
-
         // Only pane for this platform: hide the column when others remain.
-        if node.slot == 0,
-           paneCount(of: source) == 1,
+        if paneCount(of: source) == 1,
            paneLayout.nodes.count > 1 {
             setVisible(false, for: source)
             return true
@@ -279,8 +296,12 @@ final class WorkspaceStore: ObservableObject {
         let session = captureSession(for: node)
         let deviceToStop = session?.guestToTerminate
         session?.clearSelection()
+        if !allCaptureSessions.contains(where: { $0.pendingLaunchName != nil }) {
+            captureRefreshTask?.cancel()
+            captureRefreshTask = nil
+        }
 
-        if node.slot >= 1 {
+        if paneLayout.nodes.count > 1 {
             var layout = paneLayout
             layout.removePane(id: id)
             paneLayout = layout
@@ -294,13 +315,28 @@ final class WorkspaceStore: ObservableObject {
         }
 
         if let deviceToStop {
-            androidDevices.forgetSessionStarted(matching: deviceToStop)
-            iOSDevices.forgetSessionStarted(matching: deviceToStop)
-            Task { [weak self] in
-                try? await self?.automation.terminateGuest(deviceToStop)
-            }
+            terminatePaneGuest(deviceToStop)
         }
         return true
+    }
+
+    private func terminatePaneGuest(_ guest: StreamedDevice) {
+        if guest.kind == .androidEmulator || guest.kind == .iOSSimulator {
+            let manager = guest.source == .android ? androidDevices : iOSDevices
+            if let launchable = (
+                manager.sessionStartedGuestDevices + manager.bootedDevices
+            ).first(where: { $0.matchesSessionGuest(guest) }) {
+                manager.shutdown(launchable)
+                return
+            }
+        }
+        androidDevices.forgetSessionStarted(matching: guest)
+        iOSDevices.forgetSessionStarted(matching: guest)
+        Task { [weak self] in
+            try? await self?.automation.terminateGuest(guest)
+            self?.androidDevices.refreshDevices()
+            self?.iOSDevices.refreshDevices()
+        }
     }
 
     /// Removes an extra device pane (slot ≥ 1), stops its stream, and shuts down
@@ -330,7 +366,7 @@ final class WorkspaceStore: ObservableObject {
         if focusedCaptureSource != session.source {
             focusedCaptureSource = session.source
         }
-        session.prepareForPendingLaunch(named: device.name, deviceID: device.id)
+        session.prepareForPendingLaunch(named: device.name, deviceID: device.guestID)
         // Poll for the guest while bootstatus runs so the pane connects as soon
         // as the runtime is Booted — even if bootstatus is slow or stalls.
         reconnectAfterDeviceLaunch()
@@ -342,6 +378,37 @@ final class WorkspaceStore: ObservableObject {
         case .web:
             break
         }
+    }
+
+    /// Launch into an empty pane, or open a new pane beside the existing guests.
+    @discardableResult
+    func launchInNewPane(
+        _ device: LaunchableDevice,
+        preferredSession: WindowCaptureSession? = nil
+    ) -> Bool {
+        guard !allCaptureSessions.contains(where: { session in
+            session.source == device.source
+                && (session.pendingLaunchDeviceID == device.guestID
+                    || session.selectedDevice.map(device.matchesSessionGuest) == true)
+        }) else { return false }
+        let emptyNodes = paneLayout.canonicallyOrderedNodes.filter {
+            $0.viewerSource == device.source
+                && captureSession(for: $0)?.guestToTerminate == nil
+        }
+        var target = emptyNodes.first {
+            captureSession(for: $0) === preferredSession
+        } ?? emptyNodes.first
+        if target == nil, addPane(device.source) {
+            target = paneLayout.canonicallyOrderedNodes.last {
+                $0.viewerSource == device.source
+            }
+        }
+        guard let node = target, let session = captureSession(for: node) else {
+            return false
+        }
+        focusCapture(source: device.source, paneID: node.id)
+        launch(device, into: session)
+        return true
     }
 
     /// Clears pending “Starting…” state after a launch failure/cancel.
@@ -386,14 +453,36 @@ final class WorkspaceStore: ObservableObject {
             androidDevices.shutdown(device)
         case .iOS:
             for session in allCaptureSessions where session.source == .iOS {
-                if session.selectedDeviceID == device.id
-                    || session.pendingLaunchDeviceID == device.id {
+                if session.selectedDeviceID == device.guestID
+                    || session.pendingLaunchDeviceID == device.guestID {
                     session.clearSelection()
                 }
             }
             iOSDevices.shutdown(device)
         case .web:
             break
+        }
+    }
+
+    func shutdownAllGuests(for source: ViewerSource) {
+        let paneGuests = paneLayout.nodes
+            .filter { $0.viewerSource == source }
+            .compactMap { captureSession(for: $0)?.guestToTerminate }
+        let manager = source == .android ? androidDevices : iOSDevices
+        let launchable = source == .android
+            ? runningGuestsToPowerOff().android
+            : runningGuestsToPowerOff().iOS
+        for session in captureSessions(for: source) {
+            session.clearSelection()
+        }
+        Task { [weak self] in
+            await manager.shutdownAwaiting(launchable)
+            for guest in paneGuests where !launchable.contains(where: {
+                $0.matchesSessionGuest(guest)
+            }) {
+                try? await self?.automation.terminateGuest(guest)
+            }
+            manager.refreshDevices()
         }
     }
 
@@ -435,7 +524,11 @@ final class WorkspaceStore: ObservableObject {
         var nextWeights = paneWeights
         for index in layout.nodes.indices {
             let node = layout.nodes[index]
-            let width = max(widths[node.id] ?? PaneGridLayout.minimumPaneWidth, 0.01)
+            let width = max(
+                widths[node.id]
+                    ?? PaneGridLayout.minimumPaneWidth(forPaneCount: layout.nodes.count),
+                0.01
+            )
             layout.nodes[index].weight = width
             if node.slot == 0, let source = node.viewerSource {
                 nextWeights[source] = width
@@ -580,10 +673,9 @@ final class WorkspaceStore: ObservableObject {
         guard perfHUDEnabled != isEnabled else { return }
         perfHUDEnabled = isEnabled
         defaults.set(isEnabled, forKey: perfHUDKey)
-        androidCapture.isPerfHUDEnabled = isEnabled
-        androidCaptureSecondary.isPerfHUDEnabled = isEnabled
-        iOSCapture.isPerfHUDEnabled = isEnabled
-        iOSCaptureSecondary.isPerfHUDEnabled = isEnabled
+        for session in allCaptureSessions {
+            session.isPerfHUDEnabled = isEnabled
+        }
     }
 
     func setExperimentalFeaturesEnabled(_ isEnabled: Bool) {
@@ -739,27 +831,12 @@ final class WorkspaceStore: ObservableObject {
            node.viewerSource == source {
             return captureSession(for: node)
         }
-        switch source {
-        case .android:
-            return androidCapture.selectedDevice != nil
-                ? androidCapture
-                : androidCaptureSecondary.selectedDevice != nil
-                    ? androidCaptureSecondary
-                    : nil
-        case .iOS:
-            return iOSCapture.selectedDevice != nil
-                ? iOSCapture
-                : iOSCaptureSecondary.selectedDevice != nil
-                    ? iOSCaptureSecondary
-                    : nil
-        case .web:
-            return nil
-        }
+        return captureSessions(for: source).first { $0.selectedDevice != nil }
     }
 
     private func focusedDeviceSource() -> ViewerSource? {
-        if androidCapture.selectedDevice != nil { return .android }
-        if iOSCapture.selectedDevice != nil { return .iOS }
+        if androidCaptureSessions.contains(where: { $0.selectedDevice != nil }) { return .android }
+        if iOSCaptureSessions.contains(where: { $0.selectedDevice != nil }) { return .iOS }
         return nil
     }
 
@@ -773,8 +850,7 @@ final class WorkspaceStore: ObservableObject {
                 // Honor the focused pane exclusively — don't fall through to primary.
                 return captureSession(for: node)?.selectedDevice
             }
-            return androidCapture.selectedDevice
-                ?? androidCaptureSecondary.selectedDevice
+            return androidCaptureSessions.compactMap(\.selectedDevice).first
         case .iOS:
             guard isVisible(.iOS) else { return nil }
             if let focusedCapturePaneID,
@@ -782,8 +858,7 @@ final class WorkspaceStore: ObservableObject {
                node.viewerSource == .iOS {
                 return captureSession(for: node)?.selectedDevice
             }
-            return iOSCapture.selectedDevice
-                ?? iOSCaptureSecondary.selectedDevice
+            return iOSCaptureSessions.compactMap(\.selectedDevice).first
         case .web:
             return nil
         }
@@ -922,11 +997,7 @@ final class WorkspaceStore: ObservableObject {
             visibleSources.remove(source)
 
             for device in devicesToStop {
-                androidDevices.forgetSessionStarted(matching: device)
-                iOSDevices.forgetSessionStarted(matching: device)
-                Task { [weak self] in
-                    try? await self?.automation.terminateGuest(device)
-                }
+                terminatePaneGuest(device)
             }
         }
 
@@ -1093,7 +1164,10 @@ final class WorkspaceStore: ObservableObject {
     ) -> [LaunchableDevice] {
         var byID: [String: LaunchableDevice] = [:]
         for device in sessionStarted + booted {
-            byID[device.id] = device
+            if let existing = byID[device.guestID], !existing.isLightSim {
+                continue
+            }
+            byID[device.guestID] = device
         }
         for guest in paneGuests {
             if byID.values.contains(where: { $0.matchesSessionGuest(guest) }) {
@@ -1136,7 +1210,6 @@ final class WorkspaceStore: ObservableObject {
         for source: ViewerSource,
         slot: Int = 0
     ) -> WindowCaptureSession? {
-        // Only primary (0) and secondary (1) sessions exist today.
         guard slot >= 0, slot < PaneGridLayout.maximumDevicePanesPerSource else {
             assertionFailure("Unsupported capture slot \(slot) for \(source)")
             return nil
@@ -1145,9 +1218,9 @@ final class WorkspaceStore: ObservableObject {
         case .web:
             return nil
         case .android:
-            return slot == 0 ? androidCapture : androidCaptureSecondary
+            return androidCaptureSessions[slot]
         case .iOS:
-            return slot == 0 ? iOSCapture : iOSCaptureSecondary
+            return iOSCaptureSessions[slot]
         }
     }
 

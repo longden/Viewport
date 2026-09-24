@@ -341,7 +341,7 @@ final class DeviceManagerRaceTests: XCTestCase {
         XCTAssertEqual(manager.phase, .ready)
     }
 
-    func testSupersededLaunchReportsCancelledDeviceID() async {
+    func testLaunchingSecondGuestKeepsFirstLaunchRunning() async {
         let first = LaunchableDevice(
             id: "first",
             source: .android,
@@ -370,9 +370,11 @@ final class DeviceManagerRaceTests: XCTestCase {
         manager.launch(second)
         try? await Task.sleep(for: .milliseconds(40))
 
-        XCTAssertNotEqual(manager.lastLaunchFailureToken, priorFailureToken)
-        XCTAssertEqual(manager.lastLaunchFailureDeviceID, "first")
+        XCTAssertEqual(manager.lastLaunchFailureToken, priorFailureToken)
+        XCTAssertEqual(manager.sessionStartedGuestIDs, ["first", "second"])
         XCTAssertEqual(manager.phase, .launching("Second"))
+        try? await Task.sleep(for: .milliseconds(130))
+        XCTAssertEqual(manager.phase, .ready)
     }
 
     func testLaunchRemembersSessionGuestsUntilTaken() async {

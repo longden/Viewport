@@ -19,7 +19,7 @@ struct HelpSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(
-                        "Viewport needs a few tools on this Mac to list, create, and stream devices. Use Install to run a brew command in Terminal, then Recheck."
+                        "Viewport needs a few tools on this Mac to list, create, and stream devices. Use Install to run a brew command in Terminal. Viewport checks again when you return."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -40,6 +40,13 @@ struct HelpSheet: View {
             CreateAndroidEmulatorSheet(manager: androidDevices)
         }
         .onChange(of: androidDevices.devices.count) {
+            Task { await refreshReport() }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
             Task { await refreshReport() }
         }
         .alert(
@@ -108,20 +115,41 @@ struct HelpSheet: View {
                     }
 
                     if !installedItems.isEmpty {
-                        DisclosureGroup(isExpanded: $showInstalledDetails) {
+                        Button {
+                            withAnimation(.snappy(duration: 0.2)) {
+                                showInstalledDetails.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(
+                                        .degrees(showInstalledDetails ? 90 : 0)
+                                    )
+                                Text(
+                                    installedItems.count == report.items.count
+                                        ? "Installed tools (\(installedItems.count))"
+                                        : "Already installed (\(installedItems.count))"
+                                )
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(
+                            showInstalledDetails ? "Expanded" : "Collapsed"
+                        )
+
+                        if showInstalledDetails {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(installedItems) { item in
                                     checkRow(item, compact: true)
                                 }
                             }
-                            .padding(.top, 8)
-                        } label: {
-                            Text(
-                                installedItems.count == report.items.count
-                                    ? "Installed tools (\(installedItems.count))"
-                                    : "Already installed (\(installedItems.count))"
-                            )
-                            .font(.subheadline.weight(.medium))
+                            .padding(.top, 4)
                         }
                     }
 
@@ -179,7 +207,7 @@ struct HelpSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(
-                        "Only showing what’s still missing. Install opens Terminal with the brew command — then tap Recheck. Homebrew: https://brew.sh"
+                        "Only showing what’s still missing. Install opens Terminal with the brew command. Viewport checks again when you return. Homebrew: https://brew.sh"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -381,10 +409,12 @@ struct HelpSheet: View {
     }
 
     private func runInstall(_ command: String) {
-        do {
-            try SetupTerminalInstaller.runInTerminal(command)
-        } catch {
-            installAlertMessage = error.localizedDescription
+        Task {
+            do {
+                try await SetupTerminalInstaller.runInTerminal(command)
+            } catch {
+                installAlertMessage = error.localizedDescription
+            }
         }
     }
 

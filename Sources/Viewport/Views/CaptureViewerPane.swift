@@ -5,6 +5,8 @@ struct CapturePaneHost {
     var onClose: (() -> Void)?
     var onLaunch: (LaunchableDevice) -> Void
     var onShutdown: (LaunchableDevice) -> Void
+    var onShutdownAll: () -> Void
+    var canLaunchAnotherGuest: () -> Bool
     var rotate: () async throws -> Void
     var pressHome: () async throws -> Void
     var pressBack: () async throws -> Void
@@ -17,8 +19,7 @@ struct CaptureViewerPane: View {
     var paneID: UUID?
     var paneTitleSuffix: String?
     var isClosable: Bool = false
-    /// Extra (slot ≥ 1) panes are removed from the layout; primary panes stay empty.
-    var isExtraPane: Bool = false
+    var removesPaneOnClose: Bool = false
     var onScreenshot: (() -> Void)?
     var showPerfHUD: Bool = false
     var showDeviceBezels: Bool = false
@@ -35,6 +36,10 @@ struct CaptureViewerPane: View {
         ViewerPane(
             source: session.source,
             titleSuffix: paneTitleSuffix,
+            subtitle: session.selectedDevice?.displayName
+                ?? session.pendingLaunchName
+                ?? "No running device",
+            headerAccessory: AnyView(launcherMenu),
             contentCornerRadius: ViewerSource.surfaceCornerRadius,
             onClose: isClosable ? { showCloseConfirm = true } : nil
         ) {
@@ -150,11 +155,7 @@ struct CaptureViewerPane: View {
     private var sourcePicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if session.availableDevices.isEmpty {
-                    Text("No running \(session.source.detail.lowercased())")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
+                if !session.availableDevices.isEmpty {
                     Picker(
                         "Device",
                         selection: Binding(
@@ -233,19 +234,6 @@ struct CaptureViewerPane: View {
                 .disabled(session.selectedDevice?.supportsInput != true)
                 .help("Rotate the selected device")
 
-                DeviceLauncherMenu(
-                    manager: deviceManager,
-                    onCreateEmulator: deviceManager.supportsCreatingEmulators
-                        ? { showCreateEmulator = true }
-                        : nil,
-                    onLaunch: { device in
-                        host.onLaunch(device)
-                    },
-                    onShutdown: { device in
-                        host.onShutdown(device)
-                    }
-                )
-                .paneChromeHover()
             }
             .controlSize(.small)
             .buttonStyle(PaneToolbarButtonStyle())
@@ -385,23 +373,24 @@ struct CaptureViewerPane: View {
                     .frame(maxWidth: 260)
             }
 
-            if !isLoadingState {
-                DeviceLauncherMenu(
-                    manager: deviceManager,
-                    compact: false,
-                    onCreateEmulator: deviceManager.supportsCreatingEmulators
-                        ? { showCreateEmulator = true }
-                        : nil,
-                    onLaunch: { device in
-                        host.onLaunch(device)
-                    },
-                    onShutdown: { device in
-                        host.onShutdown(device)
-                    }
-                )
-            }
         }
         .padding(24)
+    }
+
+    private var launcherMenu: some View {
+        DeviceLauncherMenu(
+            manager: deviceManager,
+            onCreateEmulator: deviceManager.supportsCreatingEmulators
+                ? { showCreateEmulator = true }
+                : nil,
+            onLaunch: host.onLaunch,
+            onShutdown: host.onShutdown,
+            onShutdownAll: host.onShutdownAll,
+            canLaunchAnotherGuest: host.canLaunchAnotherGuest
+        )
+        .buttonStyle(PaneToolbarButtonStyle())
+        .controlSize(.small)
+        .paneChromeHover()
     }
 
     private var isLoadingState: Bool {
@@ -410,9 +399,6 @@ struct CaptureViewerPane: View {
         }
         // Creating an AVD is global; only show it on panes that are not live yet.
         if case .creating = deviceManager.phase, session.phase != .live {
-            return true
-        }
-        if case .launching = deviceManager.phase, session.phase != .live {
             return true
         }
         switch session.phase {
@@ -435,9 +421,6 @@ struct CaptureViewerPane: View {
     private var emptyStateTitle: String {
         if let pendingLaunchName = session.pendingLaunchName {
             return "Starting \(pendingLaunchName)"
-        }
-        if case let .launching(name) = deviceManager.phase {
-            return "Starting \(name)"
         }
         if case let .creating(name) = deviceManager.phase {
             return "Creating \(name)"
@@ -464,9 +447,9 @@ struct CaptureViewerPane: View {
         }
 
         if session.pendingLaunchName != nil {
-            return "The live view will connect when the device finishes booting."
-        }
-        if case .launching = deviceManager.phase {
+            if session.pendingLaunchName?.hasPrefix("Light Sim") == true {
+                return "The first Light Sim boot can take a few minutes while simslim turns off unused daemons."
+            }
             return "The live view will connect when the device finishes booting."
         }
 
@@ -483,7 +466,7 @@ struct CaptureViewerPane: View {
             "Connecting to the device video stream."
         default:
             session.source == .iOS
-                ? "Start a Simulator, or connect and trust an unlocked iPhone, then refresh. Drop an .app or .ipa to install."
+                ? "Start a Simulator or Light Sim, or connect and trust an unlocked iPhone, then refresh. Drop an .app or .ipa to install."
                 : "Start or create a device, then refresh. Drop an .apk onto this pane to install."
         }
     }
@@ -539,7 +522,7 @@ struct CaptureViewerPane: View {
 
     private var closeAlertTitle: String {
         guard let guest = session.guestToTerminate else {
-            return isExtraPane ? "Remove this pane?" : "Clear this pane?"
+            return removesPaneOnClose ? "Remove this pane?" : "Clear this pane?"
         }
         switch guest.kind {
         case .iOSSimulator:
@@ -547,27 +530,27 @@ struct CaptureViewerPane: View {
         case .androidEmulator:
             return "Shut down emulator?"
         case .iOSDevice, .androidDevice:
-            return isExtraPane ? "Remove this pane?" : "Disconnect device?"
+            return removesPaneOnClose ? "Remove this pane?" : "Disconnect device?"
         }
     }
 
     private var closeAlertMessage: String {
         guard let guest = session.guestToTerminate else {
-            return isExtraPane
+            return removesPaneOnClose
                 ? "This removes the empty pane from the workspace."
                 : "This clears the live view. No emulator or Simulator is running in this pane."
         }
         switch guest.kind {
         case .iOSSimulator:
-            return isExtraPane
+            return removesPaneOnClose
                 ? "This shuts down \(guest.name) and removes this pane."
                 : "This shuts down \(guest.name) and clears this pane."
         case .androidEmulator:
-            return isExtraPane
+            return removesPaneOnClose
                 ? "This shuts down the \(guest.name) emulator and removes this pane."
                 : "This shuts down the \(guest.name) emulator and clears this pane."
         case .iOSDevice, .androidDevice:
-            return isExtraPane
+            return removesPaneOnClose
                 ? "This disconnects \(guest.displayName) from Viewport and removes this pane. The physical device stays on."
                 : "This disconnects \(guest.displayName) from Viewport. The physical device stays on."
         }
@@ -575,13 +558,13 @@ struct CaptureViewerPane: View {
 
     private var closeConfirmButtonTitle: String {
         guard let guest = session.guestToTerminate else {
-            return isExtraPane ? "Remove" : "Clear"
+            return removesPaneOnClose ? "Remove" : "Clear"
         }
         switch guest.kind {
         case .iOSSimulator, .androidEmulator:
             return "Shut Down"
         case .iOSDevice, .androidDevice:
-            return isExtraPane ? "Remove" : "Disconnect"
+            return removesPaneOnClose ? "Remove" : "Disconnect"
         }
     }
 

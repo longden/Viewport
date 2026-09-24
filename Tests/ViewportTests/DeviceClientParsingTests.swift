@@ -180,6 +180,146 @@ final class DeviceClientParsingTests: XCTestCase {
         XCTAssertEqual(devices.first?.state, .booted)
     }
 
+    func testLightSimCompanionRowsSitAlongsideStockSimulators() throws {
+        let json = """
+        {
+          "devices": {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+              {
+                "udid": "BOOTED",
+                "name": "iPhone 17",
+                "state": "Booted",
+                "isAvailable": true
+              }
+            ]
+          }
+        }
+        """
+
+        let stock = try IOSSimulatorClient.parseDevices(Data(json.utf8))
+        let devices = IOSSimulatorClient.withLightSimCompanionRows(stock)
+
+        XCTAssertEqual(
+            devices.map(\.id),
+            ["BOOTED", "lightsim:BOOTED"]
+        )
+        XCTAssertEqual(devices[0].guestID, "BOOTED")
+        XCTAssertEqual(devices[1].guestID, "BOOTED")
+        XCTAssertFalse(devices[0].isLightSim)
+        XCTAssertTrue(devices[1].isLightSim)
+        XCTAssertEqual(devices[1].name, "Light Sim — iPhone 17")
+        XCTAssertTrue(
+            devices[1].matchesSessionGuest(
+                StreamedDevice(
+                    id: "BOOTED",
+                    name: "iPhone 17",
+                    source: .iOS,
+                    pixelSize: nil,
+                    kind: .iOSSimulator
+                )
+            )
+        )
+    }
+
+    func testSimSlimOnArgumentsKeepWebAndSkipRebootWhenAlreadyBooted() {
+        XCTAssertEqual(
+            SimSlimClient.onArguments(udid: "UDID-1", noReboot: false),
+            ["on", "UDID-1", "--except", "web"]
+        )
+        XCTAssertEqual(
+            SimSlimClient.onArguments(udid: "UDID-1", noReboot: true),
+            ["on", "UDID-1", "--no-reboot", "--except", "web"]
+        )
+        XCTAssertEqual(
+            SimSlimClient.offArguments(udid: "UDID-1"),
+            ["off", "UDID-1"]
+        )
+        XCTAssertEqual(
+            SimSlimClient.statusArguments(udid: "UDID-1"),
+            ["status", "UDID-1", "--json"]
+        )
+    }
+
+    func testLightSimUsesLiveSlimmingForOlderOrUnknownRuntimes() {
+        XCTAssertTrue(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: false,
+                runtime: "iOS 17.5"
+            )
+        )
+        XCTAssertTrue(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: false,
+                runtime: "iOS 18.3"
+            )
+        )
+        XCTAssertTrue(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: false,
+                runtime: nil
+            )
+        )
+        XCTAssertTrue(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: true,
+                runtime: "iOS 26.5"
+            )
+        )
+        XCTAssertFalse(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: false,
+                runtime: "iOS 18.5"
+            )
+        )
+        XCTAssertFalse(
+            SimSlimClient.shouldUseNoReboot(
+                isBooted: false,
+                runtime: "iOS 26"
+            )
+        )
+    }
+
+    func testLightSimAvailabilityUpdatesAfterCLIInstall() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let toolchains = ToolchainLocator(environment: ["PATH": directory.path])
+        let client = IOSSimulatorClient(toolchains: toolchains)
+        try XCTSkipIf(
+            client.isLightSimAvailable,
+            "A global simslim installation masks the temporary executable"
+        )
+
+        let executable = directory.appendingPathComponent("simslim")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        XCTAssertTrue(client.isLightSimAvailable)
+    }
+
+    func testSimSlimStatusJSONTreatsManagedDisabledAsSlim() throws {
+        let slim = """
+        {"managedDisabled":170,"managedTotal":180,"booted":true,"persistent":true,"verdict":"slim"}
+        """
+        let stock = """
+        {"managedDisabled":0,"managedTotal":180,"booted":true,"persistent":true,"verdict":"stock"}
+        """
+        XCTAssertTrue(
+            try SimSlimClient.isSlimmed(statusJSON: Data(slim.utf8))
+        )
+        XCTAssertFalse(
+            try SimSlimClient.isSlimmed(statusJSON: Data(stock.utf8))
+        )
+    }
+
     func testRecognizesAppleIOSCaptureDevice() {
         XCTAssertTrue(
             DeviceFrameClient.isConnectedIOSCaptureDevice(

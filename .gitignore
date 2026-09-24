@@ -5,3 +5,4 @@ dist/
 docs/
 .cursor/hooks.json
 .cursor/hooks/
+private/

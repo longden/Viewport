@@ -4,26 +4,20 @@ Native macOS SwiftUI app via SwiftPM (macOS 26+, Swift 5 language mode). Human o
 
 ## Commands
 
-Prefer `--disable-sandbox` for SwiftPM. Do not change the Mac’s global `xcode-select`; scripts set `DEVELOPER_DIR` to `/Applications/Xcode.app` when present.
+Prefer `--disable-sandbox` for SwiftPM. Do not change the Mac’s global `xcode-select`; set `DEVELOPER_DIR` for commands that need Xcode's toolchain.
 
 ```sh
-./script/build_and_run.sh              # build, package dist/Viewport.app, launch
-./script/build_and_run.sh --debug
-./script/build_and_run.sh --launch     # existing dist/ app
-./script/build_and_run.sh --build-only
 ./script/package.sh                    # unsigned zip/dmg from dist/
 xcrun swift build --disable-sandbox
-xcrun swift test --disable-sandbox
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift test --disable-sandbox
 ```
-
-A Cursor stop hook rebuilds and launches after edits under `Sources/`, `Tests/`, `Package.swift`, `script/`, or `AppIcon.icon`.
 
 ## Layout
 
 - `Sources/Viewport/` — App, Models, Stores, Services, Views, Support
 - `Sources/IndigoTouch/` — ObjC SimulatorKit HID / surface bridge (see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md))
 - `Tests/ViewportTests/` — unit tests; no UI harness
-- `script/` — `build_and_run.sh`, `package.sh`
+- `script/` — `package.sh`
 - `dist/` — generated `.app`; gitignored, do not hand-edit
 
 ## Capture
@@ -38,6 +32,6 @@ A Cursor stop hook rebuilds and launches after edits under `Sources/`, `Tests/`,
 
 - `@MainActor` for UI, stores, and stream orchestration. Mark `stop()`-style teardown `nonisolated` when it must run from `deinit`.
 - Prefer small types under `Services/` or `Models/`. Do not grow mega-views.
-- Keep versions in sync: `Package.swift` header, `script/build_and_run.sh` (`APP_VERSION`), `script/package.sh`.
+- Keep versions in sync: `Package.swift` header and `script/package.sh`.
 - Match surrounding Swift. No drive-by refactors. No new markdown unless asked.
 - Capture, input geometry, or transport changes need tests under `Tests/ViewportTests/`.

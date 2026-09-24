@@ -54,6 +54,7 @@ struct ContentView: View {
                 )
             ) { _ in
                 workspace.refreshHighFrameRateCaptureAvailability()
+                workspace.iOSDevices.refreshIfLightSimAvailabilityChanged()
             }
             .modifier(LaunchReconnectTriggers(
                 androidDevices: workspace.androidDevices,
@@ -74,10 +75,6 @@ struct ContentView: View {
                 }
             ))
             .modifier(LogStreamSyncTriggers(
-                androidCapture: workspace.androidCapture,
-                androidCaptureSecondary: workspace.androidCaptureSecondary,
-                iOSCapture: workspace.iOSCapture,
-                iOSCaptureSecondary: workspace.iOSCaptureSecondary,
                 workspace: workspace,
                 showDeveloperLogs: showDeveloperLogs,
                 sync: syncLogStreams
@@ -561,27 +558,19 @@ private struct LaunchReconnectTriggers: ViewModifier {
 }
 
 private struct LogStreamSyncTriggers: ViewModifier {
-    @ObservedObject var androidCapture: WindowCaptureSession
-    @ObservedObject var androidCaptureSecondary: WindowCaptureSession
-    @ObservedObject var iOSCapture: WindowCaptureSession
-    @ObservedObject var iOSCaptureSecondary: WindowCaptureSession
     @ObservedObject var workspace: WorkspaceStore
     var showDeveloperLogs: Bool
     var sync: () -> Void
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: androidCapture.selectedDeviceID) { _, _ in
-                sync()
-            }
-            .onChange(of: androidCaptureSecondary.selectedDeviceID) { _, _ in
-                sync()
-            }
-            .onChange(of: iOSCapture.selectedDeviceID) { _, _ in
-                sync()
-            }
-            .onChange(of: iOSCaptureSecondary.selectedDeviceID) { _, _ in
-                sync()
+            .background {
+                ForEach(workspace.allCaptureSessions.indices, id: \.self) { index in
+                    CaptureSelectionSync(
+                        session: workspace.allCaptureSessions[index],
+                        sync: sync
+                    )
+                }
             }
             .onChange(of: workspace.focusedCapturePaneID) { _, _ in
                 sync()
@@ -595,3 +584,12 @@ private struct LogStreamSyncTriggers: ViewModifier {
     }
 }
 
+private struct CaptureSelectionSync: View {
+    @ObservedObject var session: WindowCaptureSession
+    var sync: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: session.selectedDeviceID) { _, _ in sync() }
+    }
+}

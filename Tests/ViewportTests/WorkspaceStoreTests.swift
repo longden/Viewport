@@ -233,11 +233,110 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertTrue(store.addPane(.android))
         XCTAssertEqual(store.paneCount(of: .android), 2)
         XCTAssertEqual(store.orderedVisiblePanes.count, 4)
-        XCTAssertFalse(store.addPane(.iOS))
+        XCTAssertTrue(store.addPane(.iOS))
 
         let restored = WorkspaceStore(defaults: defaults)
         XCTAssertEqual(restored.paneCount(of: .android), 2)
-        XCTAssertEqual(restored.orderedVisiblePanes.count, 4)
+        XCTAssertEqual(restored.orderedVisiblePanes.count, 5)
+    }
+
+    func testLaunchingFiveAndroidEmulatorsUsesFiveDistinctPanes() async {
+        let devices = (1...5).map { index in
+            LaunchableDevice(
+                id: "Pixel_\(index)",
+                source: .android,
+                name: "Pixel \(index)",
+                runtime: nil,
+                state: .shutdown
+            )
+        }
+        let client = RecordingDeviceClient(
+            source: .android,
+            devices: devices,
+            launchDelay: .milliseconds(50)
+        )
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: client,
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [])
+        )
+        store.androidDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+
+        for device in devices {
+            XCTAssertTrue(store.launchInNewPane(device))
+        }
+
+        XCTAssertEqual(store.paneCount(of: .android), 5)
+        XCTAssertEqual(
+            (0..<5).compactMap {
+                store.captureSession(for: .android, slot: $0)?.pendingLaunchDeviceID
+            },
+            devices.map(\.id)
+        )
+        XCTAssertFalse(store.canLaunchAnotherGuest(for: .android))
+        XCTAssertFalse(store.launchInNewPane(devices[0]))
+        try? await Task.sleep(for: .milliseconds(90))
+        XCTAssertEqual(Set(client.launchedIDs), Set(devices.map(\.id)))
+    }
+
+    func testShutdownAllAndroidGuestsClearsPanesAndStopsEachGuest() async {
+        let devices = (1...2).map { index in
+            LaunchableDevice(
+                id: "Pixel_\(index)",
+                source: .android,
+                name: "Pixel \(index)",
+                runtime: nil,
+                state: .shutdown
+            )
+        }
+        let client = RecordingDeviceClient(source: .android, devices: devices)
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: client,
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [])
+        )
+        store.androidDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+        for device in devices { XCTAssertTrue(store.launchInNewPane(device)) }
+
+        store.shutdownAllGuests(for: .android)
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(Set(client.shutDownIDs), Set(devices.map(\.id)))
+        XCTAssertTrue(store.androidCaptureSessions.allSatisfy {
+            $0.pendingLaunchDeviceID == nil && $0.selectedDeviceID == nil
+        })
+    }
+
+    func testClosingTwoBootingAndroidPanesStopsBothGuests() async {
+        let devices = (1...2).map { index in
+            LaunchableDevice(
+                id: "Pixel_\(index)",
+                source: .android,
+                name: "Pixel \(index)",
+                runtime: nil,
+                state: .shutdown
+            )
+        }
+        let client = RecordingDeviceClient(source: .android, devices: devices)
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: client,
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [])
+        )
+        store.androidDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+        for device in devices { XCTAssertTrue(store.launchInNewPane(device)) }
+
+        let paneIDs = store.orderedVisiblePanes
+            .filter { $0.viewerSource == .android }
+            .map(\.id)
+        for id in paneIDs { XCTAssertTrue(store.closePane(id: id)) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(Set(client.shutDownIDs), Set(devices.map(\.id)))
+        XCTAssertEqual(store.paneCount(of: .android), 0)
     }
 
     func testRemoveExtraPaneKeepsPrimary() {
@@ -264,11 +363,11 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.paneCount(of: .android), 2)
 
         XCTAssertTrue(store.closePane(id: primaryID!))
-        XCTAssertEqual(store.paneCount(of: .android), 2)
+        XCTAssertEqual(store.paneCount(of: .android), 1)
 
         XCTAssertTrue(store.removePane(id: extraID!))
-        XCTAssertEqual(store.paneCount(of: .android), 1)
-        XCTAssertTrue(store.isVisible(.android))
+        XCTAssertEqual(store.paneCount(of: .android), 0)
+        XCTAssertFalse(store.isVisible(.android))
     }
 
     func testCloseOnlyPlatformPaneHidesColumnWhenOthersRemain() {
@@ -282,7 +381,7 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.paneCount(of: .iOS), 0)
     }
 
-    func testClosePrimaryPaneKeepsEmptyPaneWhenMultipleOfSameSource() {
+    func testClosePrimaryPaneLeavesOtherAndroidPane() {
         let store = WorkspaceStore(defaults: defaults)
         store.setVisible(false, for: .web)
         store.setVisible(false, for: .iOS)
@@ -292,7 +391,7 @@ final class WorkspaceStoreTests: XCTestCase {
         }?.id
         XCTAssertNotNil(primaryID)
         XCTAssertTrue(store.closePane(id: primaryID!))
-        XCTAssertEqual(store.paneCount(of: .android), 2)
+        XCTAssertEqual(store.paneCount(of: .android), 1)
         XCTAssertTrue(store.isVisible(.android))
     }
 
@@ -361,6 +460,55 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertNil(store.androidCapture.pendingLaunchDeviceID)
         XCTAssertEqual(store.androidCaptureSecondary.pendingLaunchName, "Pixel 8")
         XCTAssertEqual(store.androidCaptureSecondary.pendingLaunchDeviceID, "pixel8")
+    }
+
+    func testPendingAndroidLaunchWaitsForMatchingAVD() {
+        let session = WindowCaptureSession(source: .android)
+        session.prepareForPendingLaunch(named: "Pixel 2", deviceID: "Pixel_2")
+        let first = StreamedDevice(
+            id: "emulator-5554",
+            name: "Pixel 1",
+            source: .android,
+            pixelSize: nil,
+            kind: .androidEmulator
+        )
+        let second = StreamedDevice(
+            id: "emulator-5556",
+            name: "Pixel 2",
+            source: .android,
+            pixelSize: nil,
+            kind: .androidEmulator
+        )
+
+        XCTAssertNil(session.preferredDevice(
+            in: [first], previousSelection: nil, occupied: []
+        ))
+        XCTAssertEqual(session.preferredDevice(
+            in: [first, second], previousSelection: nil, occupied: []
+        )?.id, second.id)
+    }
+
+    func testLaunchLightSimBindsPendingCaptureToGuestUDID() async {
+        let light = LaunchableDevice(
+            id: "lightsim:UDID-IPHONE",
+            source: .iOS,
+            name: "Light Sim — iPhone 16",
+            runtime: "iOS 26",
+            state: .shutdown
+        )
+        let store = WorkspaceStore(
+            defaults: defaults,
+            androidClient: RecordingDeviceClient(source: .android, devices: []),
+            iOSClient: RecordingDeviceClient(source: .iOS, devices: [light])
+        )
+
+        store.iOSDevices.refreshDevices()
+        try? await Task.sleep(for: .milliseconds(30))
+
+        store.launch(light, into: store.iOSCapture)
+
+        XCTAssertEqual(store.iOSCapture.pendingLaunchName, "Light Sim — iPhone 16")
+        XCTAssertEqual(store.iOSCapture.pendingLaunchDeviceID, "UDID-IPHONE")
     }
 
     func testTerminateRunningGuestsShutsDownLaunchedAndBootedDevices() async {
@@ -601,18 +749,28 @@ final class WorkspaceStoreTests: XCTestCase {
 private final class RecordingDeviceClient: DeviceClient {
     let source: ViewerSource
     private let devices: [LaunchableDevice]
+    private let launchDelay: Duration
+    private(set) var launchedIDs: [String] = []
     private(set) var shutDownIDs: [String] = []
 
-    init(source: ViewerSource, devices: [LaunchableDevice]) {
+    init(
+        source: ViewerSource,
+        devices: [LaunchableDevice],
+        launchDelay: Duration = .zero
+    ) {
         self.source = source
         self.devices = devices
+        self.launchDelay = launchDelay
     }
 
     func listDevices() async throws -> [LaunchableDevice] {
         devices
     }
 
-    func launch(_ device: LaunchableDevice) async throws {}
+    func launch(_ device: LaunchableDevice) async throws {
+        if launchDelay > .zero { try await Task.sleep(for: launchDelay) }
+        launchedIDs.append(device.id)
+    }
 
     func shutdown(_ device: LaunchableDevice) async throws {
         shutDownIDs.append(device.id)

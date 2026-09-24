@@ -23,14 +23,24 @@ struct WorkspaceSplitView: View {
     @State private var dragState: DividerDragState?
     @State private var transientPaneWidths: [UUID: CGFloat]?
 
-    private let minimumPaneWidth: CGFloat = 190
     private let dividerWidth: CGFloat = 12
+
+    private var minimumPaneWidth: CGFloat {
+        CGFloat(PaneGridLayout.minimumPaneWidth(
+            forPaneCount: workspace.orderedVisiblePanes.count
+        ))
+    }
 
     var body: some View {
         GeometryReader { proxy in
             let panes = workspace.orderedVisiblePanes
+            let layoutWidth = max(
+                proxy.size.width,
+                minimumPaneWidth * CGFloat(panes.count)
+                    + dividerWidth * CGFloat(max(panes.count - 1, 0))
+            )
             let contentWidth = max(
-                proxy.size.width
+                layoutWidth
                     - dividerWidth * CGFloat(max(panes.count - 1, 0)),
                 1
             )
@@ -41,7 +51,7 @@ struct WorkspaceSplitView: View {
             let widths = transientPaneWidths ?? persistedWidths
             let isResizing = transientPaneWidths != nil
 
-            HStack(spacing: 0) {
+            let paneRow = HStack(spacing: 0) {
                 ForEach(Array(panes.enumerated()), id: \.element.id) {
                     index, node in
                     pane(for: node)
@@ -73,11 +83,10 @@ struct WorkspaceSplitView: View {
                 }
             }
             .frame(
-                width: proxy.size.width,
+                width: layoutWidth,
                 height: proxy.size.height,
                 alignment: .topLeading
             )
-            .clipped()
             .environment(\.isPaneResizing, isResizing)
             .transaction { transaction in
                 if isResizing {
@@ -85,6 +94,15 @@ struct WorkspaceSplitView: View {
                     transaction.animation = nil
                 }
             }
+
+            Group {
+                if layoutWidth > proxy.size.width {
+                    ScrollView(.horizontal) { paneRow }
+                } else {
+                    paneRow
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
             .onAppear {
                 workspace.noteSplitContentSize(proxy.size)
             }
@@ -241,6 +259,9 @@ struct WorkspaceSplitView: View {
             )
         case .android, .iOS:
             if let session = workspace.captureSession(for: node) {
+                let sourceIndex = workspace.orderedVisiblePanes
+                    .filter { $0.viewerSource == node.viewerSource }
+                    .firstIndex { $0.id == node.id } ?? 0
                 CaptureViewerPane(
                     session: session,
                     deviceManager: node.viewerSource == .android
@@ -257,10 +278,19 @@ struct WorkspaceSplitView: View {
                             _ = workspace.closePane(id: node.id)
                         },
                         onLaunch: { device in
-                            workspace.launch(device, into: session)
+                            _ = workspace.launchInNewPane(
+                                device,
+                                preferredSession: session
+                            )
                         },
                         onShutdown: { device in
                             workspace.shutdownGuest(device)
+                        },
+                        onShutdownAll: {
+                            workspace.shutdownAllGuests(for: session.source)
+                        },
+                        canLaunchAnotherGuest: {
+                            workspace.canLaunchAnotherGuest(for: session.source)
                         },
                         rotate: {
                             workspace.focusCapture(
@@ -285,9 +315,9 @@ struct WorkspaceSplitView: View {
                         }
                     ),
                     paneID: node.id,
-                    paneTitleSuffix: node.slot >= 1 ? " \(node.slot + 1)" : nil,
+                    paneTitleSuffix: sourceIndex > 0 ? " \(sourceIndex + 1)" : nil,
                     isClosable: true,
-                    isExtraPane: node.slot >= 1,
+                    removesPaneOnClose: workspace.orderedVisiblePanes.count > 1,
                     onScreenshot: onPaneScreenshot.map { handler in
                         { handler(node.viewerSource ?? .android, session) }
                     },
@@ -307,4 +337,3 @@ private struct DividerDragState {
     let leadingWidth: CGFloat
     let trailingWidth: CGFloat
 }
-

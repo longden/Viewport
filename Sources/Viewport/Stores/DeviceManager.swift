@@ -36,9 +36,14 @@ final class DeviceManager: ObservableObject {
 
     private let client: any DeviceClient
     private var refreshTask: Task<Void, Never>?
+    private var guestLaunchTasks: [String: Task<Void, Never>] = [:]
+    private var guestLaunchGenerations: [String: UUID] = [:]
+    /// Used for creating an AVD; guest boots are tracked separately above.
     private var launchTask: Task<Void, Never>?
+    private var shutdownTasks: [String: Task<Void, Never>] = [:]
     private var refreshGeneration = UUID()
     private var launchGeneration = UUID()
+    private var lastListedLightSimAvailability: Bool?
     /// Guests this manager booted during the current app session.
     private var sessionStartedGuests: [String: LaunchableDevice] = [:]
 
@@ -50,6 +55,8 @@ final class DeviceManager: ObservableObject {
     deinit {
         refreshTask?.cancel()
         launchTask?.cancel()
+        guestLaunchTasks.values.forEach { $0.cancel() }
+        shutdownTasks.values.forEach { $0.cancel() }
     }
 
     func refreshDevices() {
@@ -64,10 +71,10 @@ final class DeviceManager: ObservableObject {
         case .launching, .creating:
             isLaunching = true
         default:
-            isLaunching = false
+            isLaunching = !guestLaunchTasks.isEmpty || !shutdownTasks.isEmpty
             launchTask?.cancel()
             launchGeneration = UUID()
-            phase = .loading
+            if !isLaunching { phase = .loading }
         }
 
         refreshTask = Task { [weak self] in
@@ -80,6 +87,7 @@ final class DeviceManager: ObservableObject {
                     return
                 }
                 self.devices = devices
+                self.lastListedLightSimAvailability = client.isLightSimAvailable
                 if !isLaunching {
                     switch self.phase {
                     case .launching, .creating:
@@ -105,76 +113,94 @@ final class DeviceManager: ObservableObject {
 
     func launch(_ device: LaunchableDevice) {
         guard devices.contains(where: { $0.id == device.id }) else { return }
+        let deviceID = device.guestID
+        guard guestLaunchTasks[deviceID] == nil,
+              shutdownTasks[deviceID] == nil else { return }
 
         refreshTask?.cancel()
         refreshGeneration = UUID()
-        launchTask?.cancel()
         let generation = UUID()
-        launchGeneration = generation
+        guestLaunchGenerations[deviceID] = generation
         lastLaunchFailureMessage = nil
-        let deviceID = device.id
-        sessionStartedGuests[device.id] = device
+        sessionStartedGuests[deviceID] = device
         phase = .launching(device.name)
 
-        launchTask = Task { [weak self] in
+        guestLaunchTasks[deviceID] = Task { [weak self] in
             guard let self else { return }
 
             do {
                 try await client.launch(device)
                 guard !Task.isCancelled,
-                      launchGeneration == generation else { return }
+                      guestLaunchGenerations[deviceID] == generation else { return }
 
+                self.guestLaunchTasks.removeValue(forKey: deviceID)
+                self.guestLaunchGenerations.removeValue(forKey: deviceID)
                 self.lastLaunchToken = UUID()
-                self.phase = .ready
-                self.launchTask = nil
+                if self.guestLaunchTasks.isEmpty, self.shutdownTasks.isEmpty {
+                    self.phase = .ready
+                }
                 self.refreshDevices()
             } catch is CancellationError {
-                // Superseded by another launch/create; the new operation owns phase.
-                // Clear only this device’s pending “Starting…” — not sibling panes.
+                guard guestLaunchGenerations[deviceID] == generation else { return }
+                self.guestLaunchTasks.removeValue(forKey: deviceID)
+                self.guestLaunchGenerations.removeValue(forKey: deviceID)
+                self.sessionStartedGuests.removeValue(forKey: deviceID)
                 self.lastLaunchFailureDeviceID = deviceID
                 self.lastLaunchFailureToken = UUID()
+                if self.guestLaunchTasks.isEmpty, self.shutdownTasks.isEmpty {
+                    self.phase = .ready
+                }
             } catch {
                 guard !Task.isCancelled,
-                      launchGeneration == generation else { return }
+                      guestLaunchGenerations[deviceID] == generation else { return }
+                self.guestLaunchTasks.removeValue(forKey: deviceID)
+                self.guestLaunchGenerations.removeValue(forKey: deviceID)
+                self.sessionStartedGuests.removeValue(forKey: deviceID)
                 self.lastLaunchFailureMessage = error.localizedDescription
                 self.lastLaunchFailureDeviceID = deviceID
                 self.lastLaunchFailureToken = UUID()
-                self.phase = .failed(error.localizedDescription)
-                self.launchTask = nil
+                if self.guestLaunchTasks.isEmpty, self.shutdownTasks.isEmpty {
+                    self.phase = .failed(error.localizedDescription)
+                }
             }
         }
     }
 
     func shutdown(_ device: LaunchableDevice) {
-        guard devices.contains(where: { $0.id == device.id })
-            || sessionStartedGuests[device.id] != nil else { return }
+        guard devices.contains(where: { $0.guestID == device.guestID })
+            || sessionStartedGuests[device.guestID] != nil else { return }
+        guard shutdownTasks[device.guestID] == nil else { return }
 
         refreshTask?.cancel()
         refreshGeneration = UUID()
+        guestLaunchTasks[device.guestID]?.cancel()
+        guestLaunchTasks.removeValue(forKey: device.guestID)
+        guestLaunchGenerations.removeValue(forKey: device.guestID)
         launchTask?.cancel()
-        let generation = UUID()
-        launchGeneration = generation
-        sessionStartedGuests.removeValue(forKey: device.id)
+        launchTask = nil
+        launchGeneration = UUID()
         phase = .shuttingDown(device.name)
 
-        launchTask = Task { [weak self] in
+        shutdownTasks[device.guestID] = Task { [weak self] in
             guard let self else { return }
 
             do {
                 try await client.shutdown(device)
-                guard !Task.isCancelled,
-                      launchGeneration == generation else { return }
-
-                self.phase = .ready
-                self.launchTask = nil
+                guard !Task.isCancelled else { return }
+                self.sessionStartedGuests.removeValue(forKey: device.guestID)
+                self.shutdownTasks.removeValue(forKey: device.guestID)
+                if self.shutdownTasks.isEmpty {
+                    self.phase = self.guestLaunchTasks.isEmpty
+                        ? .ready
+                        : .launching("devices")
+                }
                 self.refreshDevices()
             } catch is CancellationError {
-                // Superseded by another operation.
+                self.shutdownTasks.removeValue(forKey: device.guestID)
             } catch {
-                guard !Task.isCancelled,
-                      launchGeneration == generation else { return }
+                guard !Task.isCancelled else { return }
                 self.phase = .failed(error.localizedDescription)
-                self.launchTask = nil
+                self.shutdownTasks.removeValue(forKey: device.guestID)
             }
         }
     }
@@ -216,12 +242,32 @@ final class DeviceManager: ObservableObject {
         guard !devices.isEmpty else { return }
         launchTask?.cancel()
         launchGeneration = UUID()
+        guestLaunchTasks.values.forEach { $0.cancel() }
+        guestLaunchTasks.removeAll()
+        guestLaunchGenerations.removeAll()
+        shutdownTasks.values.forEach { $0.cancel() }
+        shutdownTasks.removeAll()
         refreshTask?.cancel()
         refreshGeneration = UUID()
         for device in devices {
-            sessionStartedGuests.removeValue(forKey: device.id)
-            try? await client.shutdown(device)
+            do {
+                try await client.shutdown(device)
+                sessionStartedGuests.removeValue(forKey: device.guestID)
+            } catch {}
         }
+        phase = .ready
+    }
+
+    var isLightSimAvailable: Bool {
+        client.isLightSimAvailable
+    }
+
+    func refreshIfLightSimAvailabilityChanged() {
+        guard source == .iOS,
+              let lastListedLightSimAvailability,
+              lastListedLightSimAvailability != client.isLightSimAvailable,
+              !phase.isBusy else { return }
+        refreshDevices()
     }
 
     var supportsCreatingEmulators: Bool {

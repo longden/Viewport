@@ -2,9 +2,15 @@ import Foundation
 
 protocol DeviceClient {
     var source: ViewerSource { get }
+    /// True when Light Sim companion rows can be offered (simslim is installed).
+    var isLightSimAvailable: Bool { get }
     func listDevices() async throws -> [LaunchableDevice]
     func launch(_ device: LaunchableDevice) async throws
     func shutdown(_ device: LaunchableDevice) async throws
+}
+
+extension DeviceClient {
+    var isLightSimAvailable: Bool { false }
 }
 
 enum AndroidDeviceProbeCache {
@@ -168,7 +174,14 @@ struct AndroidDeviceClient: DeviceClient {
         guard let adb else {
             throw CommandRunnerError.executableNotFound("adb")
         }
-        guard let serial = await serial(forAVDNamed: device.id) else {
+        var runningSerial = await serial(forAVDNamed: device.id)
+        let retries = device.state == .booted ? 3 : 30
+        for _ in 0..<retries where runningSerial == nil {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .seconds(1))
+            runningSerial = await serial(forAVDNamed: device.id)
+        }
+        guard let serial = runningSerial else {
             throw CommandRunnerError.commandFailed(
                 command: "Stop \(device.name)",
                 code: 1,
@@ -472,6 +485,19 @@ struct IOSSimulatorClient: DeviceClient {
     private let developerDirectory: URL
     private let simulatorApplication: URL
 
+    var isLightSimAvailable: Bool {
+        toolchains.simslim != nil
+    }
+
+    private var simslim: SimSlimClient? {
+        guard let executable = toolchains.simslim else { return nil }
+        return SimSlimClient(
+            executable: executable,
+            runner: runner,
+            environment: processEnvironment
+        )
+    }
+
     init(
         runner: CommandRunner = CommandRunner(),
         toolchains: ToolchainLocator = ToolchainLocator(),
@@ -503,35 +529,32 @@ struct IOSSimulatorClient: DeviceClient {
             )
         }
 
-        return try Self.parseDevices(
+        let devices = try Self.parseDevices(
             Data(result.standardOutput.utf8)
         )
+        guard isLightSimAvailable else { return devices }
+        return Self.withLightSimCompanionRows(devices)
     }
 
     func launch(_ device: LaunchableDevice) async throws {
         guard device.source == .iOS else { return }
+        let udid = device.guestID
 
-        // `bootstatus -b` boots when needed and blocks until the runtime is
-        // ready for IOSurface / HID. Prefer it over a separate `simctl boot`
-        // (which had no timeout and could leave Play stuck on "Starting…").
-        let bootStatusCommand = toolchains.simctlCommand([
-            "bootstatus", device.id, "-b"
-        ])
-        let bootStatus = try await runner.run(
-            executable: bootStatusCommand.executable,
-            arguments: bootStatusCommand.arguments,
-            environment: processEnvironment,
-            timeout: 180
-        )
-        guard bootStatus.exitCode == 0 else {
-            throw CommandRunnerError.commandFailed(
-                command: "Boot \(device.name)",
-                code: bootStatus.exitCode,
-                message: bootStatus.standardError.isEmpty
-                    ? bootStatus.standardOutput
-                    : bootStatus.standardError
+        if device.isLightSim {
+            guard let simslim else {
+                throw CommandRunnerError.executableNotFound("simslim")
+            }
+            try await simslim.enableLightSim(
+                udid: udid,
+                isBooted: device.state == .booted,
+                runtime: device.runtime
             )
+        } else if let simslim {
+            try await waitUntilBooted(udid: udid, name: device.name)
+            try await simslim.restoreStockIfSlimmed(udid: udid)
         }
+
+        try await waitUntilBooted(udid: udid, name: device.name)
 
         // Direct Surface + HID do not need Simulator.app. Open it when the
         // user opts out of headless (Legacy host-window capture needs the UI).
@@ -546,7 +569,7 @@ struct IOSSimulatorClient: DeviceClient {
                 simulatorApplication.path,
                 "--args",
                 "-CurrentDeviceUDID",
-                device.id
+                udid
             ],
             environment: processEnvironment
         )
@@ -563,7 +586,7 @@ struct IOSSimulatorClient: DeviceClient {
     func shutdown(_ device: LaunchableDevice) async throws {
         guard device.source == .iOS else { return }
 
-        let command = toolchains.simctlCommand(["shutdown", device.id])
+        let command = toolchains.simctlCommand(["shutdown", device.guestID])
         let result = try await runner.run(
             executable: command.executable,
             arguments: command.arguments,
@@ -628,6 +651,41 @@ struct IOSSimulatorClient: DeviceClient {
                 return lhs.name.localizedStandardCompare(rhs.name)
                     == .orderedAscending
             }
+    }
+
+    static func withLightSimCompanionRows(
+        _ devices: [LaunchableDevice]
+    ) -> [LaunchableDevice] {
+        devices.flatMap { device -> [LaunchableDevice] in
+            guard device.source == .iOS, !device.isLightSim else {
+                return [device]
+            }
+            return [device, device.asLightSim()]
+        }
+    }
+
+    private func waitUntilBooted(udid: String, name: String) async throws {
+        // `bootstatus -b` boots when needed and blocks until the runtime is
+        // ready for IOSurface / HID. Prefer it over a separate `simctl boot`
+        // (which had no timeout and could leave Play stuck on "Starting…").
+        let bootStatusCommand = toolchains.simctlCommand([
+            "bootstatus", udid, "-b"
+        ])
+        let bootStatus = try await runner.run(
+            executable: bootStatusCommand.executable,
+            arguments: bootStatusCommand.arguments,
+            environment: processEnvironment,
+            timeout: 180
+        )
+        guard bootStatus.exitCode == 0 else {
+            throw CommandRunnerError.commandFailed(
+                command: "Boot \(name)",
+                code: bootStatus.exitCode,
+                message: bootStatus.standardError.isEmpty
+                    ? bootStatus.standardOutput
+                    : bootStatus.standardError
+            )
+        }
     }
 
     private var processEnvironment: [String: String] {

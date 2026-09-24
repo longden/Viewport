@@ -66,6 +66,15 @@ enum SetupInstallGuides {
         urlTitle: "scrcpy on GitHub"
     )
 
+    static let simslim = SetupInstallGuide(
+        id: "simslim",
+        title: "Light Sim (simslim)",
+        summary: "Optional. Slims iOS Simulator background daemons so Light Sim uses less memory. Viewport calls the simslim CLI; it does not reimplement it.",
+        command: SimSlimClient.installCommand,
+        url: SimSlimClient.githubURL,
+        urlTitle: SimSlimClient.githubTitle
+    )
+
     static let xcode = SetupInstallGuide(
         id: "xcode",
         title: "Xcode",
@@ -79,6 +88,7 @@ enum SetupInstallGuides {
         adb,
         androidCLI,
         scrcpy,
+        simslim,
         xcode
     ]
 }
@@ -135,6 +145,8 @@ extension SetupInstallGuide {
             report.isItemReady("android-cli")
         case "scrcpy":
             report.isItemReady("scrcpy")
+        case "simslim":
+            report.isItemReady("simslim")
         case "xcode":
             report.isItemReady("xcode")
         default:
@@ -165,6 +177,7 @@ struct AndroidSetupDiagnostics {
         let emulator = toolchains.androidEmulator
         let androidCLI = toolchains.androidCLI
         let scrcpy = toolchains.scrcpy
+        let simslim = toolchains.simslim
         let systemImageCount = countSystemImages(in: sdk)
         let existingEmulators = await existingAVDCount()
         let xcodeReady = toolchains.simctl != nil
@@ -236,6 +249,20 @@ struct AndroidSetupDiagnostics {
                 installCommand: scrcpy == nil ? SetupInstallGuides.scrcpy.command : nil,
                 installURL: scrcpy == nil ? SetupInstallGuides.scrcpy.url : nil,
                 installURLTitle: scrcpy == nil ? SetupInstallGuides.scrcpy.urlTitle : nil
+            ),
+            SetupCheckItem(
+                id: "simslim",
+                title: "Light Sim (simslim)",
+                status: simslim == nil ? .optionalMissing : .ready,
+                detail: simslim.map(\.path)
+                    ?? "Optional. Install to offer Light Sim next to stock Simulators.",
+                installCommand: simslim == nil
+                    ? SetupInstallGuides.simslim.command
+                    : nil,
+                installURL: simslim == nil ? SetupInstallGuides.simslim.url : nil,
+                installURLTitle: simslim == nil
+                    ? SetupInstallGuides.simslim.urlTitle
+                    : nil
             ),
             SetupCheckItem(
                 id: "xcode",

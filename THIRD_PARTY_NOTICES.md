@@ -58,6 +58,15 @@ Viewport may launch that install’s `scrcpy-server` on a device and speak
 scrcpy’s video/control socket protocol. Install it yourself with
 `brew install scrcpy` if you want that transport.
 
+## simslim (MIT)
+
+Viewport does **not** vendor or redistribute
+[simslim](https://github.com/MobAI-App/simslim) (copyright Interlap, MIT
+License). If simslim is installed on the Mac, Viewport may invoke that
+install’s `simslim` CLI to slim or restore an iOS Simulator (Light Sim).
+Install it yourself with `brew install mobai-app/tap/simslim` or from the
+Play menu’s **Install Light Sim…** button.
+
 ## Apple private frameworks
 
 At runtime the IndigoTouch module loads Apple’s private CoreSimulator and

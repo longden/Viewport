@@ -11,6 +11,7 @@ final class AndroidSetupDiagnosticsTests: XCTestCase {
                 missing("android-cli"),
                 ready("system-images"),
                 ready("scrcpy"),
+                ready("simslim"),
                 ready("xcode"),
                 ready("avds")
             ],
@@ -31,6 +32,7 @@ final class AndroidSetupDiagnosticsTests: XCTestCase {
                 ready("emulator"),
                 missing("system-images"),
                 optionalMissing("scrcpy"),
+                optionalMissing("simslim"),
                 missing("xcode")
             ],
             canCreateEmulators: false,
@@ -47,6 +49,7 @@ final class AndroidSetupDiagnosticsTests: XCTestCase {
         XCTAssertTrue(neededIDs.contains("android-studio"))
         XCTAssertFalse(neededIDs.contains("adb"))
         XCTAssertTrue(neededIDs.contains("scrcpy"))
+        XCTAssertTrue(neededIDs.contains("simslim"))
         XCTAssertTrue(neededIDs.contains("xcode"))
     }
 
@@ -87,11 +90,35 @@ final class AndroidSetupDiagnosticsTests: XCTestCase {
     func testBrewRequirementDetection() {
         XCTAssertTrue(SetupTerminalInstaller.requiresBrew("brew install scrcpy"))
         XCTAssertTrue(
+            SetupTerminalInstaller.requiresBrew(SimSlimClient.installCommand)
+        )
+        XCTAssertTrue(
             SetupTerminalInstaller.requiresBrew(
                 "brew tap android/tap && brew install android-cli"
             )
         )
         XCTAssertFalse(SetupTerminalInstaller.requiresBrew("echo hello"))
+    }
+
+    func testSimSlimInstallUsesLocatedHomebrewBinary() throws {
+        let command = try SetupTerminalInstaller.terminalCommand(
+            for: SimSlimClient.installCommand,
+            brewExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/brew")
+        )
+        XCTAssertEqual(command, "'/opt/homebrew/bin/brew' install mobai-app/tap/simslim")
+    }
+
+    func testSimSlimInstallReportsMissingHomebrew() {
+        XCTAssertThrowsError(
+            try SetupTerminalInstaller.terminalCommand(
+                for: SimSlimClient.installCommand,
+                brewExecutable: nil
+            )
+        ) { error in
+            guard case SetupTerminalInstaller.InstallError.brewMissing = error else {
+                return XCTFail("Expected missing Homebrew, got \(error)")
+            }
+        }
     }
 
     private func ready(_ id: String) -> SetupCheckItem {

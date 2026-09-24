@@ -2,13 +2,13 @@ import Foundation
 
 /// Layout model for the workspace row of panes.
 ///
-/// Supports optional Web plus up to two Android and two iOS panes, capped at
+/// Supports optional Web plus up to five Android and five iOS panes, capped at
 /// ``maximumPaneCount`` total. Nested vertical splits remain future work.
 struct PaneGridNode: Identifiable, Codable, Equatable {
     var id: UUID
     var source: String
     var weight: Double
-    /// 0 = primary capture session, 1 = secondary (second Android / iOS pane).
+    /// Stable capture-session slot for this platform.
     var slot: Int
 
     var viewerSource: ViewerSource? {
@@ -37,12 +37,14 @@ struct PaneGridLayout: Codable, Equatable {
     var axis: PaneGridSplitAxis
     var nodes: [PaneGridNode]
 
-    static let maximumPaneCount = 4
-    static let maximumDevicePanesPerSource = 2
+    static let maximumDevicePanesPerSource = 5
+    static let maximumPaneCount = 1 + 2 * maximumDevicePanesPerSource
 
     /// Matches ``WorkspaceSplitView`` divider / clamp metrics.
     static let splitDividerWidth: Double = 12
-    static let minimumPaneWidth: Double = 190
+    static func minimumPaneWidth(forPaneCount count: Int) -> Double {
+        120 + Double(max(count - 1, 0)) * 15
+    }
     /// Title + controls + padding above the live preview inside a pane.
     static let paneChromeHeight: Double = 140
     /// Typical modern phone width÷height when no live frame is available.
@@ -52,7 +54,7 @@ struct PaneGridLayout: Codable, Equatable {
     static let defaultSplitContentSize = CGSize(width: 1_596, height: 860)
 
     static func preferredWeight(for source: ViewerSource) -> Double {
-        preferredSourceWeights[source] ?? minimumPaneWidth
+        preferredSourceWeights[source] ?? minimumPaneWidth(forPaneCount: 1)
     }
 
     /// Source-level defaults derived from the aspect-fit layout at the default desk.
@@ -80,6 +82,8 @@ struct PaneGridLayout: Codable, Equatable {
         deviceAspectByNodeID: [UUID: Double]
     ) -> [UUID: Double] {
         guard !nodes.isEmpty else { return [:] }
+
+        let minimumPaneWidth = minimumPaneWidth(forPaneCount: nodes.count)
 
         let dividerTotal = splitDividerWidth * Double(max(nodes.count - 1, 0))
         let availableWidth = max(Double(contentSize.width) - dividerTotal, minimumPaneWidth)
@@ -200,9 +204,13 @@ struct PaneGridLayout: Codable, Equatable {
 
     mutating func addPane(source: ViewerSource, weight: Double = 1) -> PaneGridNode? {
         guard canAddPane(source: source) else { return nil }
-        let slot = count(of: source)
+        let occupiedSlots = Set(nodes.filter { $0.source == source.rawValue }.map(\.slot))
+        guard let slot = (0..<Self.maximumDevicePanesPerSource).first(where: {
+            !occupiedSlots.contains($0)
+        }) else { return nil }
         let node = PaneGridNode(source: source, weight: weight, slot: slot)
         nodes.insert(node, at: insertionIndex(for: source))
+        nodes.sort(by: Self.canonicalPaneOrder)
         return node
     }
 
@@ -212,7 +220,6 @@ struct PaneGridLayout: Codable, Equatable {
 
     mutating func removePane(id: UUID) {
         nodes.removeAll { $0.id == id }
-        reindexSlots()
     }
 
     /// Drops the highest-slot secondary pane for a source.
@@ -224,14 +231,12 @@ struct PaneGridLayout: Codable, Equatable {
             return false
         }
         nodes.removeAll { $0.id == secondary.id }
-        reindexSlots()
         return true
     }
 
     /// Stable left-to-right order: Web, Android, iOS (by slot within a source).
     mutating func normalizeCanonicalOrder() {
         nodes.sort(by: Self.canonicalPaneOrder)
-        reindexSlots()
     }
 
     var canonicallyOrderedNodes: [PaneGridNode] {
@@ -271,15 +276,6 @@ struct PaneGridLayout: Codable, Equatable {
         return index
     }
 
-    private mutating func reindexSlots() {
-        for source in ViewerSource.allCases {
-            var slot = 0
-            for index in nodes.indices where nodes[index].source == source.rawValue {
-                nodes[index].slot = slot
-                slot += 1
-            }
-        }
-    }
 }
 
 enum PaneGridMigration {

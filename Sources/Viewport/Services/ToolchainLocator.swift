@@ -73,6 +73,18 @@ struct ToolchainLocator {
         )
     }
 
+    /// Optional CLI that slims iOS Simulator daemons (`brew install mobai-app/tap/simslim`).
+    var simslim: URL? {
+        ExecutableLocator.executable(
+            named: "simslim",
+            candidates: [
+                URL(fileURLWithPath: "/opt/homebrew/bin/simslim"),
+                URL(fileURLWithPath: "/usr/local/bin/simslim")
+            ],
+            environment: environment
+        )
+    }
+
     /// Xcode developer directory that actually contains Simulator tools.
     /// Ignores `DEVELOPER_DIR` / `xcode-select` when they point at Command Line
     /// Tools (which do not ship `simctl`).

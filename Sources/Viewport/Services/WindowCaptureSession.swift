@@ -366,7 +366,7 @@ final class WindowCaptureSession: ObservableObject {
         }
     }
 
-    private func preferredDevice(
+    func preferredDevice(
         in devices: [StreamedDevice],
         previousSelection: String?,
         occupied: Set<String>
@@ -374,6 +374,21 @@ final class WindowCaptureSession: ObservableObject {
         if let pendingLaunchDeviceID,
            let match = devices.first(where: { $0.id == pendingLaunchDeviceID }) {
             return match
+        }
+
+        if source == .android, let pendingLaunchDeviceID {
+            let pending = LaunchableDevice(
+                id: pendingLaunchDeviceID,
+                source: .android,
+                name: pendingLaunchName ?? pendingLaunchDeviceID,
+                runtime: nil,
+                state: .starting
+            )
+            // ADB reports a serial, while launch uses an AVD name. Wait for
+            // that AVD's own stream instead of taking another pane's guest.
+            return devices.first {
+                !occupied.contains($0.id) && pending.matchesSessionGuest($0)
+            }
         }
 
         if let previousSelection,

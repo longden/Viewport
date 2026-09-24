@@ -195,15 +195,31 @@ final class PaneGridLayoutTests: XCTestCase {
         XCTAssertFalse(PaneGridMigration.roadmapNote.isEmpty)
     }
 
-    func testCanAddSecondDevicePaneUntilCap() {
+    func testCanAddFiveDevicePanesPerPlatform() {
         var layout = PaneGridLayout.defaultTriple
-        XCTAssertTrue(layout.canAddPane(source: .android))
-        XCTAssertNotNil(layout.addPane(source: .android))
-        XCTAssertEqual(layout.count(of: .android), 2)
+        for _ in 1..<5 {
+            XCTAssertNotNil(layout.addPane(source: .android))
+            XCTAssertNotNil(layout.addPane(source: .iOS))
+        }
+        XCTAssertEqual(layout.count(of: .android), 5)
+        XCTAssertEqual(layout.count(of: .iOS), 5)
+        XCTAssertEqual(layout.nodes.count, PaneGridLayout.maximumPaneCount)
         XCTAssertFalse(layout.canAddPane(source: .android))
-        // At 4 panes (web+2 android+ios), cannot add iOS 2.
-        XCTAssertEqual(layout.nodes.count, 4)
         XCTAssertFalse(layout.canAddPane(source: .iOS))
+    }
+
+    func testRemovingMiddlePanePreservesCaptureSlots() {
+        var layout = PaneGridLayout.defaultTriple
+        for _ in 1..<5 { _ = layout.addPane(source: .android) }
+        let middle = layout.nodes.first {
+            $0.viewerSource == .android && $0.slot == 2
+        }!
+        layout.removePane(id: middle.id)
+        XCTAssertEqual(
+            layout.nodes.filter { $0.viewerSource == .android }.map(\.slot),
+            [0, 1, 3, 4]
+        )
+        XCTAssertEqual(layout.addPane(source: .android)?.slot, 2)
     }
 
     func testRemoveExtraPaneDropsSecondarySlot() {

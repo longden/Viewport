@@ -109,7 +109,7 @@ struct SourceVisibilityControls: View {
                     .contentShape(Rectangle())
             }
             .help(
-                "Add a second Android or iOS pane (max \(PaneGridLayout.maximumPaneCount) panes)"
+                "Add up to five Android and five iOS panes"
             )
             .accessibilityLabel("Manage panes")
         }

@@ -217,54 +217,32 @@ struct WorkspaceScreenshotService {
                     )
                 )
             case .android:
-                if let image = framed(
-                    workspace.androidCapture.snapshotFrame(),
-                    includeDeviceBezels: includeDeviceBezels
-                ) {
+                for node in workspace.orderedVisiblePanes where node.viewerSource == .android {
+                    guard let session = workspace.captureSession(for: node),
+                          let image = framed(
+                            session.snapshotFrame(),
+                            includeDeviceBezels: includeDeviceBezels
+                          ) else { continue }
                     panes.append(
                         ScreenshotPaneCapture(
                             source: .android,
                             image: image,
-                            label: ScreenshotPlatformLabel.title(for: .android)
-                        )
-                    )
-                }
-                if workspace.paneCount(of: .android) > 1,
-                   let image = framed(
-                    workspace.androidCaptureSecondary.snapshotFrame(),
-                    includeDeviceBezels: includeDeviceBezels
-                   ) {
-                    panes.append(
-                        ScreenshotPaneCapture(
-                            source: .android,
-                            image: image,
-                            label: "Android 2"
+                            label: node.slot == 0 ? "Android" : "Android \(node.slot + 1)"
                         )
                     )
                 }
             case .iOS:
-                if let image = framed(
-                    workspace.iOSCapture.snapshotFrame(),
-                    includeDeviceBezels: includeDeviceBezels
-                ) {
+                for node in workspace.orderedVisiblePanes where node.viewerSource == .iOS {
+                    guard let session = workspace.captureSession(for: node),
+                          let image = framed(
+                            session.snapshotFrame(),
+                            includeDeviceBezels: includeDeviceBezels
+                          ) else { continue }
                     panes.append(
                         ScreenshotPaneCapture(
                             source: .iOS,
                             image: image,
-                            label: ScreenshotPlatformLabel.title(for: .iOS)
-                        )
-                    )
-                }
-                if workspace.paneCount(of: .iOS) > 1,
-                   let image = framed(
-                    workspace.iOSCaptureSecondary.snapshotFrame(),
-                    includeDeviceBezels: includeDeviceBezels
-                   ) {
-                    panes.append(
-                        ScreenshotPaneCapture(
-                            source: .iOS,
-                            image: image,
-                            label: "iOS 2"
+                            label: node.slot == 0 ? "iOS" : "iOS \(node.slot + 1)"
                         )
                     )
                 }

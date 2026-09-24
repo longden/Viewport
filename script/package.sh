@@ -22,8 +22,7 @@ Packages an already-built $APP_NAME.app into unsigned archives under dist/.
   --zip-only          Skip .dmg creation (zip only)
   --version <semver>  Version label in archive names (default: $VERSION or VIEWPORT_VERSION)
 
-Prerequisites:
-  ./script/build_and_run.sh --build-only
+Prerequisite: a built dist/$APP_NAME.app bundle.
 EOF
 }
 
@@ -53,7 +52,7 @@ done
 
 if [[ ! -d "$APP_BUNDLE" ]]; then
   echo "Missing $APP_BUNDLE" >&2
-  echo "Build first with: ./script/build_and_run.sh --build-only" >&2
+  echo "Build the app bundle before packaging." >&2
   exit 1
 fi
 

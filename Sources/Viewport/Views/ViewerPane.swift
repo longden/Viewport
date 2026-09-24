@@ -3,6 +3,8 @@ import SwiftUI
 struct ViewerPane<Controls: View, Content: View>: View {
     let source: ViewerSource
     var titleSuffix: String? = nil
+    var subtitle: String? = nil
+    var headerAccessory: AnyView? = nil
     /// Clip radius for the live surface (ADB / Simulator / Web).
     var contentCornerRadius: CGFloat = 14
     var onClose: (() -> Void)? = nil
@@ -16,10 +18,13 @@ struct ViewerPane<Controls: View, Content: View>: View {
                     sourceMark
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(source.title + (titleSuffix ?? ""))
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text(source.detail)
+                        HStack(spacing: 6) {
+                            Text(source.title + (titleSuffix ?? ""))
+                                .font(.headline)
+                                .lineLimit(1)
+                            headerAccessory
+                        }
+                        Text(subtitle ?? source.detail)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
