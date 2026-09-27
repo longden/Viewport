@@ -63,7 +63,7 @@ struct BugReportService {
         let manifest = BugReportManifest(
             generatedAt: ISO8601DateFormatter().string(from: Date()),
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.1.0-dev",
+                as? String ?? "0.2.0-dev",
             macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             currentURL: web.currentURL?.absoluteString,
             visibleSources: workspace.orderedVisibleSources.map(\.rawValue),
