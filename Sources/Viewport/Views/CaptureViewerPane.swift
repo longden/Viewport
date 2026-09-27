@@ -39,7 +39,6 @@ struct CaptureViewerPane: View {
             subtitle: session.selectedDevice?.displayName
                 ?? session.pendingLaunchName
                 ?? "No running device",
-            headerAccessory: AnyView(launcherMenu),
             contentCornerRadius: ViewerSource.surfaceCornerRadius,
             onClose: isClosable ? { showCloseConfirm = true } : nil
         ) {
@@ -155,6 +154,11 @@ struct CaptureViewerPane: View {
     private var sourcePicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                if showsCompactDeviceLauncher {
+                    deviceLauncherMenu(compact: true)
+                        .buttonStyle(PaneToolbarButtonStyle())
+                }
+
                 if !session.availableDevices.isEmpty {
                     Picker(
                         "Device",
@@ -238,6 +242,7 @@ struct CaptureViewerPane: View {
             .controlSize(.small)
             .buttonStyle(PaneToolbarButtonStyle())
         }
+        .paneToolbarScrollFade()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -373,13 +378,28 @@ struct CaptureViewerPane: View {
                     .frame(maxWidth: 260)
             }
 
+            if showsEmptyStateLauncher {
+                deviceLauncherMenu(compact: false)
+                    .buttonStyle(.plain)
+            }
         }
         .padding(24)
     }
 
-    private var launcherMenu: some View {
+    private var showsEmptyStateLauncher: Bool {
+        !isLoadingState && session.phase != .live
+    }
+
+    /// The empty state owns the large launcher. Keep a compact one in the
+    /// toolbar while a device is starting or already streaming.
+    private var showsCompactDeviceLauncher: Bool {
+        !showsEmptyStateLauncher
+    }
+
+    private func deviceLauncherMenu(compact: Bool) -> some View {
         DeviceLauncherMenu(
             manager: deviceManager,
+            compact: compact,
             onCreateEmulator: deviceManager.supportsCreatingEmulators
                 ? { showCreateEmulator = true }
                 : nil,
@@ -388,9 +408,6 @@ struct CaptureViewerPane: View {
             onShutdownAll: host.onShutdownAll,
             canLaunchAnotherGuest: host.canLaunchAnotherGuest
         )
-        .buttonStyle(PaneToolbarButtonStyle())
-        .controlSize(.small)
-        .paneChromeHover()
     }
 
     private var isLoadingState: Bool {
@@ -437,7 +454,7 @@ struct CaptureViewerPane: View {
         case .connecting:
             "Connecting"
         default:
-            "Start \(session.source.detail)"
+            "Start or create a device"
         }
     }
 
@@ -466,8 +483,8 @@ struct CaptureViewerPane: View {
             "Connecting to the device video stream."
         default:
             session.source == .iOS
-                ? "Start a Simulator or Light Sim, or connect and trust an unlocked iPhone, then refresh. Drop an .app or .ipa to install."
-                : "Start or create a device, then refresh. Drop an .apk onto this pane to install."
+                ? "Choose a Simulator or Light Sim, or connect and trust an unlocked iPhone. Drop an .app or .ipa to install."
+                : "Choose an emulator or create one. Drop an .apk onto this pane to install."
         }
     }
 
@@ -513,11 +530,17 @@ struct CaptureViewerPane: View {
     }
 
     private func devicePickerLabel(for device: StreamedDevice) -> String {
+        let isLightSim = deviceManager.sessionStartedGuestDevices.contains {
+            $0.isLightSim && $0.matchesSessionGuest(device)
+        }
+        let name = isLightSim
+            ? "\(device.displayName) · Light Sim"
+            : device.displayName
         guard device.id == session.selectedDeviceID,
               session.phase == .live else {
-            return device.displayName
+            return name
         }
-        return "\(device.displayName) (\(session.transport.shortLabel))"
+        return "\(name) (\(session.transport.shortLabel))"
     }
 
     private var closeAlertTitle: String {

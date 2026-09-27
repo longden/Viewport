@@ -16,7 +16,7 @@ private struct PaneToolbarButton: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .background {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(fillColor)
             }
             .onHover { isHovered = $0 }
@@ -56,5 +56,65 @@ struct PaneChromeHoverModifier: ViewModifier {
 extension View {
     func paneChromeHover(cornerRadius: CGFloat = 3) -> some View {
         modifier(PaneChromeHoverModifier(cornerRadius: cornerRadius))
+    }
+
+    /// Fades whichever horizontal edges have buttons scrolled out of the pane toolbar.
+    func paneToolbarScrollFade() -> some View {
+        modifier(PaneToolbarScrollFadeModifier())
+    }
+}
+
+struct PaneToolbarScrollOverflow: Equatable {
+    var showsLeadingFade: Bool
+    var showsTrailingFade: Bool
+
+    init(visibleMinX: CGFloat, visibleMaxX: CGFloat, contentWidth: CGFloat) {
+        let slop: CGFloat = 1
+        showsLeadingFade = visibleMinX > slop
+        showsTrailingFade = contentWidth - visibleMaxX > slop
+    }
+}
+
+private struct PaneToolbarScrollFadeModifier: ViewModifier {
+    @State private var overflow = PaneToolbarScrollOverflow(
+        visibleMinX: 0,
+        visibleMaxX: 0,
+        contentWidth: 0
+    )
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: PaneToolbarScrollOverflow.self) { geometry in
+                PaneToolbarScrollOverflow(
+                    visibleMinX: geometry.visibleRect.minX,
+                    visibleMaxX: geometry.visibleRect.maxX,
+                    contentWidth: geometry.contentSize.width
+                )
+            } action: { _, next in
+                overflow = next
+            }
+            .mask {
+                GeometryReader { proxy in
+                    let fadeWidth = min(30, proxy.size.width / 5)
+                    HStack(spacing: 0) {
+                        edgeFade(isActive: overflow.showsLeadingFade, leading: true)
+                            .frame(width: fadeWidth)
+                        Color.black
+                        edgeFade(isActive: overflow.showsTrailingFade, leading: false)
+                            .frame(width: fadeWidth)
+                    }
+                    .animation(.easeOut(duration: 0.16), value: overflow)
+                }
+            }
+    }
+
+    private func edgeFade(isActive: Bool, leading: Bool) -> some View {
+        let hidden = Color.black.opacity(isActive ? 0 : 1)
+        let solid = Color.black
+        return LinearGradient(
+            colors: leading ? [hidden, solid] : [solid, hidden],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
     }
 }

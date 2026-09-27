@@ -121,15 +121,29 @@ struct DeviceLauncherMenu: View {
                 Label("Refresh devices", systemImage: "arrow.clockwise")
             }
         } label: {
-            if manager.phase.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            } else if compact {
+            if compact {
                 Image(systemName: "play.circle")
             } else {
-                Label(
-                    "Choose \(manager.source.launchDetail)",
-                    systemImage: "play.circle"
+                HStack(spacing: 8) {
+                    if manager.phase.isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "play.fill")
+                    }
+                    Text("Start \(manager.source.launchDetail)")
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .font(.callout.weight(.medium))
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .contentShape(Capsule())
+                .glassEffect(
+                    .regular.tint(manager.source.accentColor.opacity(0.35)).interactive(),
+                    in: Capsule()
                 )
             }
         }

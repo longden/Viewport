@@ -103,7 +103,7 @@ struct SourceVisibilityControls: View {
                     .disabled(workspace.paneCount(of: .iOS) < 2)
                 }
             } label: {
-                Label("Panes", systemImage: "rectangle.split.3x1")
+                Label("Panes", systemImage: "plus")
                     .labelStyle(.iconOnly)
                     .frame(minWidth: 24, minHeight: 24)
                     .contentShape(Rectangle())

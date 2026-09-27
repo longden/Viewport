@@ -21,6 +21,7 @@ struct WebViewerPane: View {
     var body: some View {
         ViewerPane(
             source: .web,
+            headerAccessory: AnyView(addressField),
             contentCornerRadius: surfaceCornerRadius,
             onClose: onClose == nil ? nil : { showCloseConfirm = true }
         ) {
@@ -125,7 +126,7 @@ struct WebViewerPane: View {
     }
 
     private var addressBar: some View {
-        VStack(spacing: 8) {
+        GeometryReader { geometry in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ControlGroup {
@@ -152,6 +153,22 @@ struct WebViewerPane: View {
                     FavoritesMenu(favorites: favorites, web: model)
 
                     Button {
+                        toggleFavorite()
+                    } label: {
+                        Label(
+                            currentWebsiteIsSaved ? "Unsave website" : "Save website",
+                            systemImage: currentWebsiteIsSaved ? "star.fill" : "star"
+                        )
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(model.currentURL == nil)
+                    .help(
+                        currentWebsiteIsSaved
+                            ? "Remove from saved websites"
+                            : "Save current website"
+                    )
+
+                    Button {
                         onScreenshot?()
                     } label: {
                         Label("Screenshot", systemImage: "camera")
@@ -174,37 +191,21 @@ struct WebViewerPane: View {
                 }
                 .controlSize(.small)
                 .buttonStyle(PaneToolbarButtonStyle())
+                .frame(minWidth: geometry.size.width, alignment: .trailing)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 8) {
-                TextField("Web address", text: $model.address)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($addressIsFocused)
-                    .onSubmit {
-                        model.loadAddress()
-                        addressIsFocused = false
-                    }
-
-                Button {
-                    toggleFavorite()
-                } label: {
-                    Label(
-                        currentWebsiteIsSaved ? "Unsave website" : "Save website",
-                        systemImage: currentWebsiteIsSaved ? "star.fill" : "star"
-                    )
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(PaneToolbarButtonStyle())
-                .disabled(model.currentURL == nil)
-                .help(
-                    currentWebsiteIsSaved
-                        ? "Remove from saved websites"
-                        : "Save current website"
-                )
-            }
-            .controlSize(.small)
+            .paneToolbarScrollFade()
         }
+        .frame(height: 28)
+    }
+
+    private var addressField: some View {
+        TextField("Web address", text: $model.address)
+            .textFieldStyle(.roundedBorder)
+            .focused($addressIsFocused)
+            .onSubmit {
+                model.loadAddress()
+                addressIsFocused = false
+            }
     }
 
     private var viewportPresetPicker: some View {

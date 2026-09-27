@@ -18,19 +18,21 @@ struct ViewerPane<Controls: View, Content: View>: View {
                     sourceMark
 
                     VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 6) {
-                            Text(source.title + (titleSuffix ?? ""))
-                                .font(.headline)
-                                .lineLimit(1)
-                            headerAccessory
-                        }
+                        Text(source.title + (titleSuffix ?? ""))
+                            .font(.headline)
+                            .lineLimit(1)
                         Text(subtitle ?? source.detail)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
-                    Spacer(minLength: 8)
+                    if let headerAccessory {
+                        headerAccessory
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 8)
+                    }
 
                     if let onClose {
                         Button(action: onClose) {
