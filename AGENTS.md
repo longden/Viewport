@@ -7,17 +7,20 @@ Native macOS SwiftUI app via SwiftPM (macOS 26+, Swift 5 language mode). Human o
 Prefer `--disable-sandbox` for SwiftPM. Do not change the Mac’s global `xcode-select`; set `DEVELOPER_DIR` for commands that need Xcode's toolchain.
 
 ```sh
+./script/build_and_run.sh --verify     # local helper: build and run one Viewport instance
 ./script/package.sh                    # unsigned zip/dmg from dist/
 xcrun swift build --disable-sandbox
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift test --disable-sandbox
 ```
+
+For live UI checks, use `script/build_and_run.sh` when present. Before any launch, stop all existing Viewport processes and verify they exited; after launch, verify exactly one is running. Do not make differently named preview `.app` bundles or use `open -n` directly. If process inspection is denied, get the required permission rather than bypassing the check.
 
 ## Layout
 
 - `Sources/Viewport/` — App, Models, Stores, Services, Views, Support
 - `Sources/IndigoTouch/` — ObjC SimulatorKit HID / surface bridge (see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md))
 - `Tests/ViewportTests/` — unit tests; no UI harness
-- `script/` — `package.sh`
+- `script/` — `package.sh`; local `build_and_run.sh` when present
 - `dist/` — generated `.app`; gitignored, do not hand-edit
 
 ## Capture
