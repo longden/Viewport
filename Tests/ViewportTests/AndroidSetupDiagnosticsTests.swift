@@ -2,6 +2,25 @@ import XCTest
 @testable import Viewport
 
 final class AndroidSetupDiagnosticsTests: XCTestCase {
+    func testSetupBadgeRequiresNeitherXcodeNorADB() {
+        XCTAssertFalse(
+            report(xcode: true, adb: false, androidCLI: false, systemImages: false)
+                .showsSetupRequiredBadge
+        )
+        XCTAssertFalse(
+            report(xcode: false, adb: true, androidCLI: false, systemImages: false)
+                .showsSetupRequiredBadge
+        )
+        XCTAssertTrue(
+            report(xcode: false, adb: false, androidCLI: true, systemImages: true)
+                .showsSetupRequiredBadge
+        )
+        XCTAssertFalse(
+            report(xcode: true, adb: true, androidCLI: true, systemImages: true)
+                .showsSetupRequiredBadge
+        )
+    }
+
     func testNeededInstallGuidesHidesSatisfiedEntries() {
         let report = AndroidSetupReport(
             items: [
@@ -119,6 +138,34 @@ final class AndroidSetupDiagnosticsTests: XCTestCase {
                 return XCTFail("Expected missing Homebrew, got \(error)")
             }
         }
+    }
+
+    private func report(
+        xcode: Bool,
+        adb: Bool,
+        androidCLI: Bool,
+        systemImages: Bool
+    ) -> AndroidSetupReport {
+        AndroidSetupReport(
+            items: [
+                missingOrReady("sdk", ready: false),
+                missingOrReady("adb", ready: adb),
+                missingOrReady("emulator", ready: false),
+                missingOrReady("android-cli", ready: androidCLI),
+                missingOrReady("system-images", ready: systemImages),
+                optionalMissing("scrcpy"),
+                optionalMissing("simslim"),
+                missingOrReady("xcode", ready: xcode),
+                ready("avds")
+            ],
+            canCreateEmulators: false,
+            canLaunchEmulators: adb,
+            existingEmulatorCount: 0
+        )
+    }
+
+    private func missingOrReady(_ id: String, ready isReady: Bool) -> SetupCheckItem {
+        isReady ? ready(id) : missing(id)
     }
 
     private func ready(_ id: String) -> SetupCheckItem {

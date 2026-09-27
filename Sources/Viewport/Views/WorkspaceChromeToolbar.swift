@@ -7,6 +7,7 @@ struct WorkspaceUtilityToolbar: View {
     @Binding var showDeveloperLogs: Bool
     @Binding var showSettings: Bool
     @Binding var showHelp: Bool
+    var setupRequired: Bool
     @Binding var showBatchSnapshots: Bool
     @Binding var showBuildPlay: Bool
     var isExportingBugReport: Bool
@@ -142,6 +143,12 @@ struct WorkspaceUtilityToolbar: View {
             )
 
             Button {
+                showHelp = true
+            } label: {
+                Label("Set up / dependencies…", systemImage: "wrench.and.screwdriver")
+            }
+
+            Button {
                 showSettings = true
             } label: {
                 Label("Settings…", systemImage: "gearshape")
@@ -157,21 +164,23 @@ struct WorkspaceUtilityToolbar: View {
             showBuildPlay: $showBuildPlay
         )
 
-        Button {
-            showHelp = true
-        } label: {
-            Label("Help", systemImage: "questionmark.circle")
+        if setupRequired {
+            Button {
+                showHelp = true
+            } label: {
+                Label("Setup required", systemImage: "exclamationmark.circle.fill")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help("Setup required — open installation checks")
         }
-        .help("Setup checks, install guides, and create an emulator")
     }
 }
 
-/// Principal action chrome: refresh, combined screenshot, record.
+/// Media actions beside the source visibility controls.
 struct WorkspaceActionToolbar: View {
     @ObservedObject var recording: WorkspaceRecordingService
     @ObservedObject var elapsedClock: RecordingElapsedClock
     var isTakingScreenshot: Bool
-    var onRefresh: () -> Void
     var onCombinedScreenshot: () -> Void
     var onToggleRecording: () -> Void
 
@@ -190,17 +199,11 @@ struct WorkspaceActionToolbar: View {
     }
 
     var body: some View {
-        ControlGroup {
-            Button(action: onRefresh) {
-                Label(
-                    "Refresh all clients",
-                    systemImage: "arrow.clockwise"
-                )
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 24, minHeight: 24)
-                .contentShape(Rectangle())
-            }
-            .help("Refresh all clients (⇧⌘R)")
+        HStack(spacing: 4) {
+            Text("Media")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.leading, 12)
 
             Button(action: onCombinedScreenshot) {
                 Group {
@@ -235,7 +238,9 @@ struct WorkspaceActionToolbar: View {
             }
             .help(recordingHelp)
         }
+        .buttonStyle(PaneToolbarButtonStyle())
         .controlSize(.regular)
         .fixedSize()
+        .padding(.trailing, 16)
     }
 }

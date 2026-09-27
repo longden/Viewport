@@ -94,7 +94,8 @@ struct DeviceToolsMenu: View {
                     .frame(maxWidth: 260, alignment: .leading)
             }
         } label: {
-            Label("Device tools", systemImage: "wrench.and.screwdriver")
+            Label("Tools", systemImage: "wrench.and.screwdriver")
+                .labelStyle(.titleAndIcon)
         }
         .help("Appearance, status bars, compare tools, and optional experimental helpers")
         .disabled(isBusy)

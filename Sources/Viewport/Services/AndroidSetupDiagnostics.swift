@@ -103,6 +103,12 @@ struct AndroidSetupReport: Equatable {
         !items.contains(where: \.isBlocking)
     }
 
+    /// Toolbar warning. Streaming needs Xcode or ADB. The other platform,
+    /// Android CLI, and system images stay in Help without a permanent badge.
+    var showsSetupRequiredBadge: Bool {
+        !isItemReady("xcode") && !isItemReady("adb")
+    }
+
     func isItemReady(_ id: String) -> Bool {
         items.first(where: { $0.id == id })?.status == .ready
     }
@@ -168,6 +174,28 @@ struct AndroidSetupDiagnostics {
         self.toolchains = toolchains
         self.runner = runner
         self.fileManager = fileManager
+    }
+
+    /// Badge check only. Skips system-image walks and device-list processes.
+    func showsSetupRequiredBadge() -> Bool {
+        let xcode = SetupCheckItem(
+            id: "xcode",
+            title: "Xcode",
+            status: toolchains.simctl == nil ? .missing : .ready,
+            detail: ""
+        )
+        let adb = SetupCheckItem(
+            id: "adb",
+            title: "ADB",
+            status: toolchains.adb == nil ? .missing : .ready,
+            detail: ""
+        )
+        return AndroidSetupReport(
+            items: [xcode, adb],
+            canCreateEmulators: false,
+            canLaunchEmulators: false,
+            existingEmulatorCount: 0
+        ).showsSetupRequiredBadge
     }
 
     func evaluate() async -> AndroidSetupReport {

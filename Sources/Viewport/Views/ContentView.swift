@@ -18,12 +18,15 @@ struct ContentView: View {
     @State private var exportErrorTitle = "Export Failed"
     @State private var savedExportURL: URL?
     @State private var showHelp = false
+    @State private var isFirstSetupPresentation = false
+    @State private var setupRequired = false
     @State private var showSettings = false
     @State private var showBatchSnapshots = false
     @State private var showBuildPlay = false
     @State private var annotationItem: AnnotatableScreenshot?
     @AppStorage("developerLogsVisible") private var showDeveloperLogs = false
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.system.rawValue
+    @AppStorage("hasShownInitialSetup") private var hasShownInitialSetup = false
     @State private var dismissExportTask: Task<Void, Never>?
 
     private var preferredAppearance: ColorScheme? {
@@ -55,6 +58,7 @@ struct ContentView: View {
             ) { _ in
                 workspace.refreshHighFrameRateCaptureAvailability()
                 workspace.iOSDevices.refreshIfLightSimAvailabilityChanged()
+                refreshSetupStatus()
             }
             .modifier(LaunchReconnectTriggers(
                 androidDevices: workspace.androidDevices,
@@ -112,16 +116,34 @@ struct ContentView: View {
                 workspaceUtilityToolbar
             }
 
-            ToolbarItemGroup(placement: .principal) {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: refreshAll) {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help("Reload all clients (⇧⌘R)")
+            }
+
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+
+            ToolbarItemGroup(placement: .primaryAction) {
                 workspaceActionToolbar
             }
+
+            ToolbarSpacer(.fixed, placement: .primaryAction)
 
             ToolbarItem(placement: .primaryAction) {
                 SourceVisibilityControls(workspace: workspace)
             }
         }
-        .sheet(isPresented: $showHelp) {
-            HelpSheet(androidDevices: workspace.androidDevices)
+        .sheet(isPresented: $showHelp, onDismiss: {
+            isFirstSetupPresentation = false
+            refreshSetupStatus()
+        }) {
+            HelpSheet(
+                androidDevices: workspace.androidDevices,
+                isFirstLaunch: isFirstSetupPresentation
+            )
         }
         .preferredColorScheme(preferredAppearance)
         .sheet(isPresented: $showSettings) {
@@ -175,6 +197,12 @@ struct ContentView: View {
             workspace.refreshAll()
             syncLogStreams()
             installPointerEventSinks()
+            if !hasShownInitialSetup {
+                hasShownInitialSetup = true
+                isFirstSetupPresentation = true
+                showHelp = true
+            }
+            refreshSetupStatus()
         }
         .onDisappear {
             dismissExportTask?.cancel()
@@ -197,6 +225,7 @@ struct ContentView: View {
             showDeveloperLogs: $showDeveloperLogs,
             showSettings: $showSettings,
             showHelp: $showHelp,
+            setupRequired: setupRequired,
             showBatchSnapshots: $showBatchSnapshots,
             showBuildPlay: $showBuildPlay,
             isExportingBugReport: isExportingBugReport,
@@ -210,7 +239,6 @@ struct ContentView: View {
             recording: recording,
             elapsedClock: recording.elapsedClock,
             isTakingScreenshot: isTakingScreenshot,
-            onRefresh: refreshAll,
             onCombinedScreenshot: takeCombinedScreenshot,
             onToggleRecording: toggleRecording
         )
@@ -340,6 +368,11 @@ struct ContentView: View {
                 )
             }
         }
+    }
+
+    @MainActor
+    private func refreshSetupStatus() {
+        setupRequired = AndroidSetupDiagnostics().showsSetupRequiredBadge()
     }
 
     private func takePaneScreenshot(_ source: ViewerSource, session: WindowCaptureSession? = nil) {

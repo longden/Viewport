@@ -3,6 +3,7 @@ import SwiftUI
 
 struct HelpSheet: View {
     @ObservedObject var androidDevices: DeviceManager
+    var isFirstLaunch = false
     @Environment(\.dismiss) private var dismiss
 
     @State private var report: AndroidSetupReport?
@@ -19,7 +20,9 @@ struct HelpSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(
-                        "Viewport needs a few tools on this Mac to list, create, and stream devices. Use Install to run a brew command in Terminal. Viewport checks again when you return."
+                        isFirstLaunch
+                            ? "Welcome to Viewport. Check the tools below to finish setting up device viewing. Use Install to open Terminal; Viewport checks again when you return."
+                            : "Check the tools installed on this Mac for listing, creating, and streaming devices. Use Install to open Terminal; Viewport checks again when you return."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -227,9 +230,9 @@ struct HelpSheet: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Help")
+                Text(isFirstLaunch ? "Set up Viewport" : "Setup & downloads")
                     .font(.title2.weight(.semibold))
-                Text("Setup & downloads")
+                Text(isFirstLaunch ? "Get ready to view devices" : "Installation checks and guides")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
