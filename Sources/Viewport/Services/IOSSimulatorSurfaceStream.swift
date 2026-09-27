@@ -21,11 +21,8 @@ final class IOSSimulatorSurfaceStream {
     private nonisolated(unsafe) var onFrame: ((IOSurfaceRef) -> Void)?
     private nonisolated(unsafe) var onFailure: ((Error) -> Void)?
     private nonisolated(unsafe) var stallWatchdog: DispatchWorkItem?
-    private nonisolated(unsafe) var lastFrameAt: CFAbsoluteTime = 0
-
-    /// Stall timeout in seconds. If no frame arrives within this interval
-    /// after subscription or after the last frame, `onFailure` fires.
-    private let stallTimeout: TimeInterval = 5
+    /// Sleeping must not count as a capture stall and force a slower transport.
+    nonisolated private let stallDeadline = CaptureStallDeadline(timeout: 5)
 
     deinit {
         stop()
@@ -83,7 +80,7 @@ final class IOSSimulatorSurfaceStream {
             throw IOSSimulatorSurfaceError.subscribeFailed(message)
         }
         subscription = handle
-        lastFrameAt = CFAbsoluteTimeGetCurrent()
+        stallDeadline.recordActivity()
         scheduleStallWatchdog()
     }
 
@@ -102,19 +99,18 @@ final class IOSSimulatorSurfaceStream {
 
     /// Records a frame without reallocating the stall timer on every callback.
     nonisolated private func noteFrame() {
-        lastFrameAt = CFAbsoluteTimeGetCurrent()
+        stallDeadline.recordActivity()
         guard stallWatchdog == nil else { return }
         scheduleStallWatchdog()
     }
 
-    /// Fires onFailure if no frame arrives within `stallTimeout`.
+    /// Fires onFailure after five awake seconds without a frame.
     nonisolated private func scheduleStallWatchdog(delay: TimeInterval? = nil) {
-        let wait = delay ?? stallTimeout
+        let wait = delay ?? stallDeadline.remaining
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.subscription != nil else { return }
-            let idle = CFAbsoluteTimeGetCurrent() - self.lastFrameAt
-            let remaining = self.stallTimeout - idle
-            if remaining > 0.001 {
+            let remaining = self.stallDeadline.remaining
+            if self.stallDeadline.shouldRenew {
                 self.stallWatchdog = nil
                 self.scheduleStallWatchdog(delay: remaining)
                 return
