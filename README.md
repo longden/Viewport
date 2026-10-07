@@ -38,6 +38,14 @@ Light Sim is optional. You can also install it with `brew install mobai-app/tap/
 xcrun swift build --disable-sandbox
 ```
 
+## Updates and releases
+
+Official release builds include an **Updates** section in the macOS Viewport menu. Choose **Updates…** to open the dedicated update window, or **Check for Updates…** to check directly. Automatic checks are optional. Installation requires an explicit action, and restart waits until recordings and Build & Play finish. Local debug bundles have production updates disabled.
+
+Release downloads remain ZIP files on GitHub Releases. Sparkle reads update metadata from GitHub Pages at `https://longden.github.io/Viewport/updates/appcast.xml`; the feed points to a specific release's ZIP.
+
+Existing users need one manual download of the first updater-enabled release. Subsequent releases can be installed from inside Viewport.
+
 ## License
 
 Copyright 2026 Longden. Licensed under [Apache 2.0](LICENSE), with [third-party notices](THIRD_PARTY_NOTICES.md).

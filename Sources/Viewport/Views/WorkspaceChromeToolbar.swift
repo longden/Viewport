@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Navigation utility chrome: settings menu, device tools, help.
 struct WorkspaceUtilityToolbar: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var workspace: WorkspaceStore
     @ObservedObject var recording: WorkspaceRecordingService
     @Binding var showDeveloperLogs: Bool
@@ -152,6 +153,12 @@ struct WorkspaceUtilityToolbar: View {
                 showSettings = true
             } label: {
                 Label("Settings…", systemImage: "gearshape")
+            }
+
+            Button {
+                openWindow(id: "updates")
+            } label: {
+                Label("Updates…", systemImage: "arrow.triangle.2.circlepath")
             }
         } label: {
             Label("Settings", systemImage: "gearshape")

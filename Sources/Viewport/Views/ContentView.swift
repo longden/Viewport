@@ -10,7 +10,8 @@ struct ContentView: View {
     /// toolbar menu (which dismissed the Logs item on hover).
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
-    @StateObject private var recording = WorkspaceRecordingService()
+    @ObservedObject private var recording: WorkspaceRecordingService
+    @EnvironmentObject private var updates: UpdateController
     @State private var pointerBridge = PointerEventBridge()
     @State private var isTakingScreenshot = false
     @State private var isExportingBugReport = false
@@ -33,8 +34,9 @@ struct ContentView: View {
         (AppAppearance(rawValue: appearanceRaw) ?? .system).colorScheme
     }
 
-    init(workspace: WorkspaceStore) {
+    init(workspace: WorkspaceStore, recording: WorkspaceRecordingService) {
         _workspace = ObservedObject(wrappedValue: workspace)
+        _recording = ObservedObject(wrappedValue: recording)
         let developerLogs = DeveloperLogStore()
         _developerLogs = State(wrappedValue: developerLogs)
         _web = State(
@@ -139,6 +141,7 @@ struct ContentView: View {
         .sheet(isPresented: $showHelp, onDismiss: {
             isFirstSetupPresentation = false
             refreshSetupStatus()
+            updates.start()
         }) {
             HelpSheet(
                 androidDevices: workspace.androidDevices,
@@ -194,6 +197,7 @@ struct ContentView: View {
             )
         )
         .task {
+            let setupWasShown = hasShownInitialSetup
             workspace.refreshAll()
             syncLogStreams()
             installPointerEventSinks()
@@ -203,18 +207,13 @@ struct ContentView: View {
                 showHelp = true
             }
             refreshSetupStatus()
+            if setupWasShown {
+                updates.start()
+            }
         }
         .onDisappear {
             dismissExportTask?.cancel()
             developerLogs.stopAll()
-            let shouldFinalize = recording.isRecording
-            let workspace = workspace
-            Task { @MainActor in
-                if shouldFinalize {
-                    _ = try? await recording.stop()
-                }
-                await workspace.terminateSessionStartedGuests()
-            }
         }
     }
 

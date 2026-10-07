@@ -11,6 +11,9 @@ let package = Package(
     products: [
         .executable(name: "Viewport", targets: ["Viewport"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
+    ],
     targets: [
         .target(
             name: "IndigoTouch",
@@ -28,10 +31,16 @@ let package = Package(
         ),
         .executableTarget(
             name: "Viewport",
-            dependencies: ["IndigoTouch"],
+            dependencies: [
+                "IndigoTouch",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/Viewport",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]
         ),
         .testTarget(

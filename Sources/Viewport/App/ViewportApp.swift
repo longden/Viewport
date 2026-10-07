@@ -7,7 +7,9 @@ struct ViewportApp: App {
 
     var body: some Scene {
         Window("Viewport", id: "workspace") {
-            ContentView(workspace: appDelegate.workspace)
+            ContentView(workspace: appDelegate.workspace, recording: appDelegate.recording)
+                .environmentObject(appDelegate.updates)
+                .environmentObject(appDelegate.activity)
                 .frame(minWidth: 760, minHeight: 620)
                 .background(WindowChromeConfigurator())
         }
@@ -15,17 +17,28 @@ struct ViewportApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             WorkspaceCommands()
+            UpdateCommands(updates: appDelegate.updates, activity: appDelegate.activity)
         }
+
+        Window("Viewport Updates", id: "updates") {
+            UpdatesView(updates: appDelegate.updates, activity: appDelegate.activity)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor
     private var workspaceStorage: WorkspaceStore?
     private var isWaitingForGuestShutdown = false
     private var hasConfirmedClose = false
+    let activity = AppActivityStore()
+    lazy var recording = WorkspaceRecordingService(activity: activity)
+    lazy var updates = UpdateController(activity: activity)
 
-    @MainActor
     var workspace: WorkspaceStore {
         if let workspaceStorage {
             return workspaceStorage
@@ -50,13 +63,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         if isWaitingForGuestShutdown {
-            return .terminateNow
+            // A repeated quit may skip the guest shutdown wait, but must not
+            // abandon a recording that is still being finalised.
+            return recording.isStopping ? .terminateLater : .terminateNow
         }
         guard confirmClosingWorkspace() else {
+            abandonTermination()
+            return .terminateCancel
+        }
+        let recordingDecision = recording.isRecording ? confirmRecordingBeforeQuit() : nil
+        guard recordingDecision != .cancel,
+              activity.reserveTermination(allowRecording: true) else {
+            abandonTermination()
             return .terminateCancel
         }
         isWaitingForGuestShutdown = true
         Task { @MainActor in
+            switch recordingDecision {
+            case .save:
+                do {
+                    // A cancelled save panel discards the recording; quitting continues.
+                    _ = try await self.recording.stop()
+                } catch {
+                    let alert = NSAlert()
+                    alert.messageText = "The recording could not be saved"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                    self.abandonTermination()
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                    return
+                }
+            case .discard:
+                self.recording.cancel()
+            case .cancel, nil:
+                break
+            }
             await Self.shutDownSessionGuests(
                 workspace: self.workspaceStorage
             )
@@ -65,16 +106,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    /// Returns `true` when the window / app may close. Shows a confirmation if
-    /// Simulators or emulators are still running.
+    /// The workspace window is Viewport: closing it quits through the shared
+    /// termination flow (busy checks, recording save, guest shutdown), even
+    /// when the Updates window is still open.
+    func requestWorkspaceWindowClose() -> Bool {
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
+        return false
+    }
+
+    private enum RecordingQuitDecision {
+        case save, discard, cancel
+    }
+
+    private func confirmRecordingBeforeQuit() -> RecordingQuitDecision {
+        let alert = NSAlert()
+        alert.messageText = "Save the recording before quitting?"
+        alert.informativeText = "Viewport is still recording. If you don’t save it, the recording will be discarded."
+        alert.addButton(withTitle: "Save…")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .save
+        case .alertThirdButtonReturn:
+            return .discard
+        default:
+            return .cancel
+        }
+    }
+
+    private func abandonTermination() {
+        isWaitingForGuestShutdown = false
+        hasConfirmedClose = false
+        activity.cancelTermination()
+        updates.terminationCancelled()
+    }
+
+    /// Returns `true` when the app may quit. Blocks while non-recording work
+    /// is active, and shows a confirmation if Simulators or emulators are
+    /// still running. Active recordings are handled by the quit flow.
     func confirmClosingWorkspace() -> Bool {
+        if activity.activities.values.contains(where: { $0 != .recording }) {
+            BusyActivityAlert.present(
+                activity,
+                verb: "closing",
+                instruction: "Stop and save recordings or finish Build & Play before closing."
+            )
+            return false
+        }
         if hasConfirmedClose || isWaitingForGuestShutdown {
             return true
         }
-        let prompt = MainActor.assumeIsolated {
-            workspaceStorage?.sessionGuestClosePrompt
-        }
-        guard let prompt else {
+        guard let prompt = workspaceStorage?.sessionGuestClosePrompt else {
             hasConfirmedClose = true
             return true
         }
@@ -92,7 +177,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return confirmed
     }
 
-    @MainActor
     private static func shutDownSessionGuests(workspace: WorkspaceStore?) async {
         guard let workspace else { return }
         await withTaskGroup(of: Void.self) { group in
@@ -145,7 +229,7 @@ private final class ChromeHostView: NSView, NSWindowDelegate {
            previousWindowDelegate.windowShouldClose?(sender) == false {
             return false
         }
-        return (NSApp.delegate as? AppDelegate)?.confirmClosingWorkspace() ?? true
+        return (NSApp.delegate as? AppDelegate)?.requestWorkspaceWindowClose() ?? true
     }
 
     override func responds(to aSelector: Selector) -> Bool {

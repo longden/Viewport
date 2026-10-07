@@ -8,6 +8,7 @@ struct BuildPlaySheet: View {
     @ObservedObject var developerLogs: DeveloperLogStore
     @Binding var showDeveloperLogs: Bool
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var activity: AppActivityStore
 
     @State private var settings = ProjectBuildPlaySettings()
     @State private var schemes: [String] = []
@@ -263,6 +264,13 @@ struct BuildPlaySheet: View {
     }
 
     private func startBuild() {
+        let activityToken: UUID
+        do {
+            activityToken = try activity.begin(.build)
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
         lastError = nil
         statusMessage = nil
         isRunning = true
@@ -272,6 +280,7 @@ struct BuildPlaySheet: View {
         developerLogs.clear(.build)
 
         runTask = Task { @MainActor in
+            defer { activity.end(activityToken) }
             await service.saveSettings(settings)
             do {
                 try await service.buildAndPlay(

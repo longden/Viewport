@@ -59,10 +59,16 @@ final class WorkspaceRecordingService: ObservableObject {
     private var compositeEngine: CompositeRecordingEngine?
     private var temporaryURL: URL?
     private var elapsedTask: Task<Void, Never>?
-    private var isStopping = false
+    private(set) var isStopping = false
+    private let activity: AppActivityStore
+    private var activityToken: UUID?
     private var captureTarget: WorkspaceRecordingTarget?
     private var webCaptureTarget: WorkspaceRecordingTarget?
     private var recordingPixelBufferSessions: [WindowCaptureSession] = []
+
+    init(activity: AppActivityStore) {
+        self.activity = activity
+    }
 
     func updateCaptureTarget(_ target: WorkspaceRecordingTarget?) {
         captureTarget = target
@@ -93,11 +99,18 @@ final class WorkspaceRecordingService: ObservableObject {
         web: WebViewModel,
         workspace: WorkspaceStore
     ) async throws {
-        guard !isRecording else {
+        guard !isRecording, activityToken == nil else {
             throw WorkspaceRecordingError.alreadyRecording
         }
         guard !workspace.orderedVisiblePanes.isEmpty else {
             throw WorkspaceRecordingError.nothingToRecord
+        }
+
+        activityToken = try activity.begin(.recording)
+        defer {
+            if !isRecording {
+                finishActivity()
+            }
         }
 
         if workspace.recordingQuality == .composite {
@@ -337,6 +350,9 @@ final class WorkspaceRecordingService: ObservableObject {
             return nil
         }
         isStopping = true
+        if let activityToken {
+            activity.update(activityToken, to: .savingRecording)
+        }
 
         elapsedTask?.cancel()
         elapsedTask = nil
@@ -448,6 +464,13 @@ final class WorkspaceRecordingService: ObservableObject {
         isStopping = false
         isRecording = false
         squareWebContentCorners = false
+        finishActivity()
+    }
+
+    private func finishActivity() {
+        guard let activityToken else { return }
+        activity.end(activityToken)
+        self.activityToken = nil
     }
 
     private func presentSavePanel(for temporaryURL: URL) throws -> URL? {

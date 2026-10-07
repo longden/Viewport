@@ -35,6 +35,6 @@ For live UI checks, use `script/build_and_run.sh` when present. Before any launc
 
 - `@MainActor` for UI, stores, and stream orchestration. Mark `stop()`-style teardown `nonisolated` when it must run from `deinit`.
 - Prefer small types under `Services/` or `Models/`. Do not grow mega-views.
-- Keep versions in sync: `Package.swift` header and `script/package.sh`.
+- Keep versions in sync: `Package.swift` header and `script/version.env`.
 - Match surrounding Swift. No drive-by refactors. No new markdown unless asked.
 - Capture, input geometry, or transport changes need tests under `Tests/ViewportTests/`.
