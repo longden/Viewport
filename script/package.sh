@@ -66,7 +66,7 @@ cp -R "$APP_BUNDLE" "$STAGING_DIR/$APP_NAME.app"
 rm -f "$ZIP_PATH"
 (
   cd "$STAGING_DIR"
-  /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$ZIP_PATH"
+  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_NAME.app" "$ZIP_PATH"
 )
 echo "Wrote $ZIP_PATH"
 
