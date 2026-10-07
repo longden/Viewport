@@ -5,14 +5,16 @@
     <link>https://github.com/longden/Viewport/releases</link>
     <description>Stable Viewport releases</description>
     <item>
-      <title>Viewport 0.3.0</title>
-      <link>https://github.com/longden/Viewport/releases/tag/v0.3.0</link>
-      <sparkle:version>4</sparkle:version>
-      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <title>Viewport 0.3.1</title>
+      <link>https://github.com/longden/Viewport/releases/tag/v0.3.1</link>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <pubDate>Wed, 07 Oct 2026 22:08:29 +0000</pubDate>
-      <sparkle:releaseNotesLink>https://longden.github.io/Viewport/updates/notes/Viewport-0.3.0.html</sparkle:releaseNotesLink>
+      <pubDate>Wed, 07 Oct 2026 22:31:57 +0000</pubDate>
+      <sparkle:releaseNotesLink>https://longden.github.io/Viewport/updates/notes/Viewport-0.3.1.html</sparkle:releaseNotesLink>
       <description sparkle:format="markdown">Notarized macOS release. Requires macOS 26 or later. The download contains the signed, notarized Viewport app.
+
+This release replaces 0.3.0, whose download could not be opened. macOS reported that Apple could not verify the app because of a packaging problem in the ZIP. The app itself was unchanged; 0.3.1 ships the same features in a correctly packaged archive.
 
 ## In-app updates
 
@@ -24,7 +26,7 @@ This is the first release with the updater, so existing users need to download t
 
 - Quitting while recording now asks whether to save or discard the recording.
 - Quitting is blocked while Build &amp; Play is running or a recording is being saved, with a message explaining why.</description>
-      <enclosure url="https://github.com/longden/Viewport/releases/download/v0.3.0/Viewport-0.3.0.zip" length="4789172" type="application/octet-stream" />
+      <enclosure url="https://github.com/longden/Viewport/releases/download/v0.3.1/Viewport-0.3.1.zip" length="4809639" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
