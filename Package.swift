@@ -18,7 +18,7 @@ let package = Package(
         .target(
             name: "IndigoTouch",
             path: "Sources/IndigoTouch",
-            sources: ["ViewportIndigoTouch.m"],
+            sources: ["ViewportIndigoTouch.m", "ViewportSimulatorAccessibility.m"],
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("include"),
@@ -26,7 +26,8 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("IOSurface"),
-                .linkedFramework("CoreGraphics")
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("AppKit")
             ]
         ),
         .executableTarget(

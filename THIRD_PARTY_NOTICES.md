@@ -9,10 +9,12 @@ excerpts remain MIT; they are not relicensed as Apache 2.0.
 
 ## Meta idb (MIT)
 
-`Sources/IndigoTouch/Indigo.h`, `Sources/IndigoTouch/Mach.h`, and HID message
-construction in `Sources/IndigoTouch/ViewportIndigoTouch.m` are adapted from
-[Meta idb](https://github.com/facebook/idb)
-(`PrivateHeaders/SimulatorApp/` and `FBSimulatorIndigoHID.m`), copyright Meta
+`Sources/IndigoTouch/Indigo.h`, `Sources/IndigoTouch/Mach.h`, HID message
+construction in `Sources/IndigoTouch/ViewportIndigoTouch.m`, and the accessibility
+translator flow in `Sources/IndigoTouch/ViewportSimulatorAccessibility.m` are
+adapted from [Meta idb](https://github.com/facebook/idb)
+(`PrivateHeaders/SimulatorApp/`, `FBSimulatorIndigoHID.m`, and
+`FBSimulatorAccessibilityCommands.m`), copyright Meta
 Platforms, Inc. and affiliates, under the MIT License:
 
 ```

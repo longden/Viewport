@@ -10,6 +10,7 @@
 
 #import "ViewportIndigoTouch.h"
 #import "Indigo.h"
+#import "SimDeviceLookup.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
@@ -741,3 +742,15 @@ void ViewportSurfaceUnsubscribe(void *subscriptionPointer) {
   subscription.handler = nil;
 }
 
+
+id ViewportBootedSimDevice(NSString *udid, NSError **error) {
+  if (!ViewportHIDLoadFrameworks()) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ViewportHID" code:3 userInfo:@{
+        NSLocalizedDescriptionKey: @"CoreSimulator could not be loaded"
+      }];
+    }
+    return nil;
+  }
+  return BootedDevice(udid, error);
+}
