@@ -4,6 +4,7 @@ struct WorkspaceCommandActions {
     let refreshAll: () -> Void
     let clearCookies: () -> Void
     let clearAllWebsiteData: () -> Void
+    let openLink: () -> Void
 }
 
 private struct WorkspaceCommandActionsKey: FocusedValueKey {
@@ -40,6 +41,15 @@ struct WorkspaceCommands: Commands {
                 actions?.clearAllWebsiteData()
             }
             .disabled(actions == nil)
+
+            Divider()
+
+            Button("Open Link…") {
+                actions?.openLink()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(actions == nil)
         }
+
     }
 }

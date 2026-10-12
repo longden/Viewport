@@ -318,6 +318,70 @@ final class NetworkConditionsTests: XCTestCase {
     }
 }
 
+final class DeepLinkHistoryTests: XCTestCase {
+    func testRecordsMostRecentFirstWithoutDuplicates() {
+        var history = DeepLinkHistory(limit: 3)
+        history.record("myapp://a")
+        history.record(" myapp://b ")
+        history.record("myapp://a")
+        XCTAssertEqual(history.entries, ["myapp://a", "myapp://b"])
+        history.record("myapp://c")
+        history.record("myapp://d")
+        XCTAssertEqual(history.entries, ["myapp://d", "myapp://c", "myapp://a"])
+        history.record("   ")
+        history.remove("myapp://c")
+        XCTAssertEqual(history.entries, ["myapp://d", "myapp://a"])
+        history.clear()
+        XCTAssertTrue(history.entries.isEmpty)
+    }
+
+    func testRestoresTrimmedUniqueEntries() {
+        let history = DeepLinkHistory(entries: ["a://1", "a://1", "", "a://2"], limit: 5)
+        XCTAssertEqual(history.entries, ["a://1", "a://2"])
+    }
+
+    func testFavoritesMoveOutOfRecentlyAndBack() {
+        var history = DeepLinkHistory(entries: ["a://1", "a://2"], limit: 5)
+        history.addFavorite("a://2")
+        XCTAssertEqual(history.favorites, ["a://2"])
+        XCTAssertEqual(history.entries, ["a://1"])
+        XCTAssertTrue(history.isFavorite(" a://2 "))
+        // Sending a favorite doesn't duplicate it into Recently.
+        history.record("a://2")
+        XCTAssertEqual(history.entries, ["a://1"])
+        history.clear()
+        XCTAssertEqual(history.favorites, ["a://2"])
+        history.removeFavorite("a://2")
+        XCTAssertTrue(history.favorites.isEmpty)
+        XCTAssertEqual(history.entries, ["a://2"])
+    }
+
+    func testRestoredFavoritesAreRemovedFromRecently() {
+        let history = DeepLinkHistory(entries: ["a://1", "a://2"], favorites: ["a://1", "a://1", " "])
+        XCTAssertEqual(history.favorites, ["a://1"])
+        XCTAssertEqual(history.entries, ["a://2"])
+    }
+
+    func testOnlyHTTPLinksLoadInTheWebPane() {
+        XCTAssertTrue(DeepLinkHistory.isWebLoadable("https://example.com/path"))
+        XCTAssertTrue(DeepLinkHistory.isWebLoadable("example.com"))
+        XCTAssertFalse(DeepLinkHistory.isWebLoadable("myapp://orders/1"))
+        XCTAssertFalse(DeepLinkHistory.isWebLoadable(""))
+    }
+
+    @MainActor
+    func testStorePersistsHistory() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "DeepLinkHistoryTests-\(UUID().uuidString)"))
+        let store = DeepLinkHistoryStore(defaults: defaults, key: "links")
+        store.record("myapp://home")
+        store.record("myapp://cart")
+        store.addFavorite("myapp://home")
+        let restored = DeepLinkHistoryStore(defaults: defaults, key: "links").history
+        XCTAssertEqual(restored.entries, ["myapp://cart"])
+        XCTAssertEqual(restored.favorites, ["myapp://home"])
+    }
+}
+
 final class DeviceAccessibilitySettingsTests: XCTestCase {
     func testTextSizeMapsToSimulatorCategories() {
         XCTAssertEqual(DeviceFontScale.defaultScale.iOSContentSize, "large")

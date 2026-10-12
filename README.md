@@ -15,7 +15,7 @@ Open a website alongside an Android emulator and an iOS Simulator to see how the
 - Record demo videos and walkthroughs with all visible panes together in one MP4.
 - Capture and annotate screenshots for release notes, documentation or bug reports.
 - Show or hide web, Android and iOS panes to suit what you're working on.
-- Tap, type, paste, open deep links and set device locations. You can also mirror input across supported panes.
+- Tap and type on devices, and open a URL or deep link on every visible pane at once from **Open Link** (⇧⌘L). You can also mirror input across supported panes.
 - Change appearance, text size and contrast on all devices at once.
 - Build and install Xcode or Android projects on simulators and emulators with **Build & Play**.
 - Read web console messages, Android logcat and simulator logs alongside the devices.

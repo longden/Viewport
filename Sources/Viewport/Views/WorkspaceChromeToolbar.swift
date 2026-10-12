@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Navigation utility chrome: settings menu, device tools, help.
-struct WorkspaceUtilityToolbar: View {
+struct WorkspaceUtilityToolbar<Accessory: View>: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var workspace: WorkspaceStore
     @ObservedObject var recording: WorkspaceRecordingService
@@ -14,6 +14,7 @@ struct WorkspaceUtilityToolbar: View {
     var isExportingBugReport: Bool
     var isTakingScreenshot: Bool
     var onExportBugReport: () -> Void
+    @ViewBuilder var accessory: Accessory
 
     var body: some View {
         Menu {
@@ -170,6 +171,8 @@ struct WorkspaceUtilityToolbar: View {
             showBatchSnapshots: $showBatchSnapshots,
             showBuildPlay: $showBuildPlay
         )
+
+        accessory
 
         if setupRequired {
             Button {

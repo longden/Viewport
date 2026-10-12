@@ -10,6 +10,8 @@ struct ContentView: View {
     /// toolbar menu (which dismissed the Logs item on hover).
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
+    @State private var deepLinkHistory = DeepLinkHistoryStore()
+    @State private var showDeepLink = false
     @ObservedObject private var recording: WorkspaceRecordingService
     @EnvironmentObject private var updates: UpdateController
     @State private var pointerBridge = PointerEventBridge()
@@ -201,7 +203,8 @@ struct ContentView: View {
             WorkspaceCommandActions(
                 refreshAll: refreshAll,
                 clearCookies: web.clearCookies,
-                clearAllWebsiteData: web.clearAllWebsiteData
+                clearAllWebsiteData: web.clearAllWebsiteData,
+                openLink: { showDeepLink = true }
             )
         )
         .task {
@@ -238,7 +241,14 @@ struct ContentView: View {
             isExportingBugReport: isExportingBugReport,
             isTakingScreenshot: isTakingScreenshot,
             onExportBugReport: exportBugReport
-        )
+        ) {
+            DeepLinkToolbarButton(
+                workspace: workspace,
+                web: web,
+                history: deepLinkHistory,
+                isPresented: $showDeepLink
+            )
+        }
     }
 
     private var workspaceActionToolbar: some View {
