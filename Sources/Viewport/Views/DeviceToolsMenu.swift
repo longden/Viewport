@@ -6,6 +6,7 @@ struct DeviceToolsMenu: View {
     @ObservedObject var workspace: WorkspaceStore
     @Binding var showBatchSnapshots: Bool
     @Binding var showBuildPlay: Bool
+    var onOpenInspector: (InspectorTab) -> Void = { _ in }
     @State private var isBusy = false
     @State private var statusMessage: String?
 
@@ -14,6 +15,27 @@ struct DeviceToolsMenu: View {
             Section("Build") {
                 Button("Build & Play…") {
                     showBuildPlay = true
+                }
+            }
+
+            Section("Inspect") {
+                Button("Inspect elements…") {
+                    onOpenInspector(.elements)
+                }
+                Button("Grid, mockups, and measuring…") {
+                    onOpenInspector(.design)
+                }
+            }
+
+            Section("Environment") {
+                Button("Location and routes…") {
+                    onOpenInspector(.location)
+                }
+                Button("Permissions and push…") {
+                    onOpenInspector(.apps)
+                }
+                Button("Network and proxy…") {
+                    onOpenInspector(.network)
                 }
             }
 

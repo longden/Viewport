@@ -14,6 +14,7 @@ struct WorkspaceUtilityToolbar<Accessory: View>: View {
     var isExportingBugReport: Bool
     var isTakingScreenshot: Bool
     var onExportBugReport: () -> Void
+    var onOpenInspector: (InspectorTab) -> Void
     @ViewBuilder var accessory: Accessory
 
     var body: some View {
@@ -169,7 +170,8 @@ struct WorkspaceUtilityToolbar<Accessory: View>: View {
         DeviceToolsMenu(
             workspace: workspace,
             showBatchSnapshots: $showBatchSnapshots,
-            showBuildPlay: $showBuildPlay
+            showBuildPlay: $showBuildPlay,
+            onOpenInspector: onOpenInspector
         )
 
         accessory

@@ -10,7 +10,14 @@ struct ContentView: View {
     /// toolbar menu (which dismissed the Logs item on hover).
     @State private var developerLogs: DeveloperLogStore
     @StateObject private var favorites = FavoritesStore()
+    /// Held without `@StateObject` so hover and snapshot updates only redraw
+    /// the inspector column and pane overlays, not the whole workspace.
+    @State private var inspector: InspectorStore
+    @State private var locationSimulation: LocationSimulationStore
+    @State private var appEnvironment: AppEnvironmentStore
+    @State private var networkConditions: NetworkConditionsStore
     @State private var deepLinkHistory = DeepLinkHistoryStore()
+    @AppStorage("inspectorVisible") private var showInspector = false
     @State private var showDeepLink = false
     @ObservedObject private var recording: WorkspaceRecordingService
     @EnvironmentObject private var updates: UpdateController
@@ -41,15 +48,22 @@ struct ContentView: View {
         _recording = ObservedObject(wrappedValue: recording)
         let developerLogs = DeveloperLogStore()
         _developerLogs = State(wrappedValue: developerLogs)
-        _web = State(
-            wrappedValue: WebViewModel {
-                [weak developerLogs] level, message, timestamp in
-                developerLogs?.appendWeb(
-                    level: level,
-                    message: message,
-                    timestamp: timestamp
-                )
-            }
+        let web = WebViewModel {
+            [weak developerLogs] level, message, timestamp in
+            developerLogs?.appendWeb(
+                level: level,
+                message: message,
+                timestamp: timestamp
+            )
+        }
+        _web = State(wrappedValue: web)
+        _inspector = State(wrappedValue: InspectorStore(workspace: workspace, web: web))
+        _locationSimulation = State(
+            wrappedValue: LocationSimulationStore(workspace: workspace, web: web)
+        )
+        _appEnvironment = State(wrappedValue: AppEnvironmentStore(workspace: workspace))
+        _networkConditions = State(
+            wrappedValue: NetworkConditionsStore(workspace: workspace, web: web)
         )
     }
 
@@ -112,6 +126,19 @@ struct ContentView: View {
             }
         }
         .animation(.snappy(duration: 0.22), value: savedExportURL)
+        .inspector(isPresented: $showInspector) {
+            InspectorPanel(
+                inspector: inspector,
+                location: locationSimulation,
+                apps: appEnvironment,
+                network: networkConditions,
+                workspace: workspace
+            )
+            .inspectorColumnWidth(min: 300, ideal: 340, max: 520)
+        }
+        .onChange(of: showInspector) { _, isShown in
+            inspector.setPresented(isShown)
+        }
         // One continuous window surface — no opaque fill under the panes,
         // and no separate toolbar plate (avoids the color/shadow seam).
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -146,6 +173,15 @@ struct ContentView: View {
 
             ToolbarItem(placement: .primaryAction) {
                 SourceVisibilityControls(workspace: workspace)
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.trailing")
+                }
+                .help("Inspect elements, design tools, location, apps, and network (⌥⌘I)")
             }
         }
         .sheet(isPresented: $showHelp, onDismiss: {
@@ -204,7 +240,9 @@ struct ContentView: View {
                 refreshAll: refreshAll,
                 clearCookies: web.clearCookies,
                 clearAllWebsiteData: web.clearAllWebsiteData,
-                openLink: { showDeepLink = true }
+                openLink: { showDeepLink = true },
+                toggleInspector: { showInspector.toggle() },
+                openInspectorTab: openInspector
             )
         )
         .task {
@@ -221,6 +259,7 @@ struct ContentView: View {
             if setupWasShown {
                 updates.start()
             }
+            inspector.setPresented(showInspector)
         }
         .onDisappear {
             dismissExportTask?.cancel()
@@ -240,7 +279,8 @@ struct ContentView: View {
             showBuildPlay: $showBuildPlay,
             isExportingBugReport: isExportingBugReport,
             isTakingScreenshot: isTakingScreenshot,
-            onExportBugReport: exportBugReport
+            onExportBugReport: exportBugReport,
+            onOpenInspector: openInspector
         ) {
             DeepLinkToolbarButton(
                 workspace: workspace,
@@ -249,6 +289,11 @@ struct ContentView: View {
                 isPresented: $showDeepLink
             )
         }
+    }
+
+    private func openInspector(_ tab: InspectorTab) {
+        inspector.tab = tab
+        showInspector = true
     }
 
     private var workspaceActionToolbar: some View {
@@ -279,6 +324,7 @@ struct ContentView: View {
             workspace: workspace,
             web: web,
             favorites: favorites,
+            inspector: inspector,
             onPaneScreenshot: takePaneScreenshot,
             onWebCaptureTargetChange: { target in
                 recording.updateWebCaptureTarget(target)

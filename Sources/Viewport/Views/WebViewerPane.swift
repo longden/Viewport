@@ -3,6 +3,8 @@ import SwiftUI
 struct WebViewerPane: View {
     @ObservedObject var model: WebViewModel
     @ObservedObject var favorites: FavoritesStore
+    var inspector: InspectorStore? = nil
+    var paneID: UUID? = nil
     var onScreenshot: (() -> Void)?
     var onCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     /// Kept for recording callers; squares the live web clip while recording.
@@ -71,6 +73,7 @@ struct WebViewerPane: View {
                             )
                             .scaleEffect(scale, anchor: .center)
                             .frame(width: layoutSize.width, height: layoutSize.height)
+                            .overlay { inspectionOverlay }
                             .background {
                                 webCaptureAnchor
                             }
@@ -86,6 +89,7 @@ struct WebViewerPane: View {
                                     style: .continuous
                                 )
                             )
+                            .overlay { inspectionOverlay }
                             .background {
                                 webCaptureAnchor
                             }
@@ -108,6 +112,13 @@ struct WebViewerPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.clear)
+    }
+
+    @ViewBuilder
+    private var inspectionOverlay: some View {
+        if let inspector, let paneID, !isPaneResizing {
+            PaneInspectionOverlay(inspector: inspector, paneID: paneID, contentSize: nil)
+        }
     }
 
     @ViewBuilder

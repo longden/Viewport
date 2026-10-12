@@ -5,6 +5,8 @@ struct WorkspaceCommandActions {
     let clearCookies: () -> Void
     let clearAllWebsiteData: () -> Void
     let openLink: () -> Void
+    let toggleInspector: () -> Void
+    let openInspectorTab: (InspectorTab) -> Void
 }
 
 private struct WorkspaceCommandActionsKey: FocusedValueKey {
@@ -51,5 +53,21 @@ struct WorkspaceCommands: Commands {
             .disabled(actions == nil)
         }
 
+        CommandMenu("Inspect") {
+            Button("Show or Hide Inspector") {
+                actions?.toggleInspector()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(actions == nil)
+
+            Divider()
+
+            ForEach(InspectorTab.allCases) { tab in
+                Button(tab.title) {
+                    actions?.openInspectorTab(tab)
+                }
+                .disabled(actions == nil)
+            }
+        }
     }
 }

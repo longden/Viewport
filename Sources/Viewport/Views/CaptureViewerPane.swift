@@ -23,6 +23,7 @@ struct CaptureViewerPane: View {
     var onScreenshot: (() -> Void)?
     var showPerfHUD: Bool = false
     var showDeviceBezels: Bool = false
+    var inspector: InspectorStore?
     @Environment(\.isPaneResizing) private var isPaneResizing
     @State private var showCreateEmulator = false
     @State private var showCloseConfirm = false
@@ -49,6 +50,15 @@ struct CaptureViewerPane: View {
                     CapturePreviewView(session: session) {
                         host.onFocus()
                     }
+                        .overlay {
+                            if let inspector, let paneID, !isPaneResizing {
+                                PaneInspectionOverlay(
+                                    inspector: inspector,
+                                    paneID: paneID,
+                                    contentSize: session.capturedFrameSize
+                                )
+                            }
+                        }
                         .padding(showDeviceBezels ? 12 : 0)
                         .background {
                             if showDeviceBezels {

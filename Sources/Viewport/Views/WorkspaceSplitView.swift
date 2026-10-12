@@ -17,6 +17,7 @@ struct WorkspaceSplitView: View {
     @ObservedObject var workspace: WorkspaceStore
     var web: WebViewModel
     var favorites: FavoritesStore
+    var inspector: InspectorStore?
     var onPaneScreenshot: ((ViewerSource, WindowCaptureSession?) -> Void)?
     var onWebCaptureTargetChange: (@MainActor (WorkspaceRecordingTarget?) -> Void)?
     var squareWebContentCorners: Bool = false
@@ -248,6 +249,8 @@ struct WorkspaceSplitView: View {
             WebViewerPane(
                 model: web,
                 favorites: favorites,
+                inspector: inspector,
+                paneID: node.id,
                 onScreenshot: onPaneScreenshot.map { handler in
                     { handler(.web, nil) }
                 },
@@ -322,7 +325,8 @@ struct WorkspaceSplitView: View {
                         { handler(node.viewerSource ?? .android, session) }
                     },
                     showPerfHUD: workspace.perfHUDEnabled,
-                    showDeviceBezels: workspace.deviceBezelsEnabled
+                    showDeviceBezels: workspace.deviceBezelsEnabled,
+                    inspector: inspector
                 )
             }
         case .none:

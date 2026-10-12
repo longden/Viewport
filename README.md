@@ -16,6 +16,10 @@ Open a website alongside an Android emulator and an iOS Simulator to see how the
 - Capture and annotate screenshots for release notes, documentation or bug reports.
 - Show or hide web, Android and iOS panes to suit what you're working on.
 - Tap and type on devices, and open a URL or deep link on every visible pane at once from **Open Link** (⇧⌘L). You can also mirror input across supported panes.
+- Inspect elements across platforms: click a control in one pane and Viewport finds the same one on the others, compares labels and roles, and flags missing labels and small tap targets.
+- Check designs with grids, mockup overlays (overlay, difference, split), measurements in pt/dp/px, and a colour picker.
+- Simulate locations and play GPX routes on Simulators, Android emulators and the web pane together.
+- Allow, deny or reset app permissions, send test pushes to Simulators, throttle Android emulator networks, and route panes through a debugging proxy such as Proxyman, Charles or mitmproxy.
 - Change appearance, text size and contrast on all devices at once.
 - Build and install Xcode or Android projects on simulators and emulators with **Build & Play**.
 - Read web console messages, Android logcat and simulator logs alongside the devices.
