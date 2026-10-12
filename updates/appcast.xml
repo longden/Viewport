@@ -5,6 +5,44 @@
     <link>https://github.com/longden/Viewport/releases</link>
     <description>Stable Viewport releases</description>
     <item>
+      <title>Viewport 0.4.0</title>
+      <link>https://github.com/longden/Viewport/releases/tag/v0.4.0</link>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <pubDate>Mon, 12 Oct 2026 22:12:42 +0000</pubDate>
+      <sparkle:releaseNotesLink>https://longden.github.io/Viewport/updates/notes/Viewport-0.4.0.html</sparkle:releaseNotesLink>
+      <description sparkle:format="markdown">Notarized macOS release. Requires macOS 26 or later. The download contains the signed, notarized Viewport app.
+
+## Inspector
+
+A new inspector panel opens from the toolbar or **Inspect ▸ Show or Hide Inspector** (⌥⌘I).
+
+- **Elements:** click a control in one pane and Viewport finds the same control in the other panes. It compares labels and roles, and flags missing accessible names and small tap targets. Works with Android devices, iOS Simulators and the web pane.
+- **Design:** layout grids, mockup overlays (overlay, difference or split), measurements in pt, dp or px, and a colour picker with a magnifier.
+- **Location:** set a location or play a GPX route on Simulators, Android emulators and the web pane together.
+- **Apps:** allow, deny or reset app permissions, and send test push notifications to Simulators.
+- **Network:** throttle Android emulator networks, go offline, and route panes through a debugging proxy such as Proxyman, Charles or mitmproxy.
+
+## Open Link
+
+**Open Link** (⇧⌘L) sends a URL or deep link to every visible pane at once, and keeps recent links and favourites.
+
+## Screenshots
+
+Screenshot annotations now include text labels and numbered steps. Click to place one, or drag to add a pointer line.
+
+## Devices
+
+- Text size now works on iOS Simulators as well as Android.
+- A new Contrast option turns increased contrast on or off on every device.
+
+## Updates
+
+Viewport checks quietly for a new version when it opens and shows an **Update available** button in the toolbar when there is one. **Check for Updates…** in the Viewport menu opens the Updates window, which checks again and offers to install.</description>
+      <enclosure url="https://github.com/longden/Viewport/releases/download/v0.4.0/Viewport-0.4.0.zip" length="5471064" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Viewport 0.3.1</title>
       <link>https://github.com/longden/Viewport/releases/tag/v0.3.1</link>
       <sparkle:version>5</sparkle:version>
