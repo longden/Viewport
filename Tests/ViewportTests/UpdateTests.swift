@@ -118,3 +118,28 @@ final class UpdateTests: XCTestCase {
         XCTAssertFalse(controller.canCheckForUpdates)
     }
 }
+
+final class UpdateAvailabilityTests: XCTestCase {
+    private let noUpdate = NSError(domain: "SUSparkleErrorDomain", code: 1001)
+
+    func testProbeOutcomes() {
+        XCTAssertEqual(UpdateAvailability.afterCycle(.checking, error: noUpdate), .upToDate)
+        XCTAssertEqual(UpdateAvailability.afterCycle(.checking, error: nil), .upToDate)
+        let found = UpdateAvailability.available(version: "0.4.0")
+        XCTAssertEqual(UpdateAvailability.afterCycle(found, error: nil), found)
+        XCTAssertTrue(found.isAvailable)
+        XCTAssertFalse(UpdateAvailability.upToDate.isAvailable)
+    }
+
+    func testFailuresDoNotHideAFoundUpdate() {
+        let network = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        guard case .failed = UpdateAvailability.afterCycle(.checking, error: network) else {
+            return XCTFail("Expected a failure")
+        }
+        let found = UpdateAvailability.available(version: "0.4.0")
+        XCTAssertEqual(UpdateAvailability.afterCycle(found, error: network), found)
+        let cancelled = NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        XCTAssertEqual(UpdateAvailability.afterCycle(found, error: cancelled), found)
+        XCTAssertEqual(UpdateAvailability.afterCycle(.checking, error: cancelled), .unknown)
+    }
+}

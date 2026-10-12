@@ -31,10 +31,7 @@ struct UpdatesView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else {
-                Text("Check for a new version of Viewport. Updates include release notes before you install.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                availabilityStatus
             }
 
             Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
@@ -54,17 +51,61 @@ struct UpdatesView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(activity.isBusy || activity.isTerminating)
-                } else {
-                    Button("Check for Updates…") {
+                } else if updates.availability.isAvailable {
+                    Button("Install Update…") {
                         updates.checkForUpdates()
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!updates.canCheckForUpdates)
+                    .help("Shows the release notes, then downloads and installs")
+                } else {
+                    Button(updates.availability == .unknown ? "Check for Updates" : "Check Again") {
+                        updates.refreshAvailability()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!updates.canCheckForUpdates || updates.availability == .checking)
                 }
             }
         }
         .padding(28)
         .frame(width: 440)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            // Opening the window is the check; no second click needed.
+            updates.refreshAvailability()
+        }
+    }
+
+    @ViewBuilder
+    private var availabilityStatus: some View {
+        switch updates.availability {
+        case .unknown:
+            // No check is running (updater not started yet, or one was cancelled).
+            Text("Check for a new version of Viewport. Updates include release notes before you install.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking for updates…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        case .upToDate:
+            Label("Viewport is up to date.", systemImage: "checkmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(.green)
+        case let .available(version):
+            Label("Viewport \(version) is available.", systemImage: "arrow.down.circle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+        case let .failed(message):
+            Label("Couldn’t check for updates: \(message)", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

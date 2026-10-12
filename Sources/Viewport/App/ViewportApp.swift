@@ -17,7 +17,7 @@ struct ViewportApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             WorkspaceCommands()
-            UpdateCommands(updates: appDelegate.updates, activity: appDelegate.activity)
+            UpdateCommands()
         }
 
         Window("Viewport Updates", id: "updates") {

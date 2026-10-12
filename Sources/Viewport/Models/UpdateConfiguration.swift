@@ -37,3 +37,36 @@ struct UpdateConfiguration {
         )
     }
 }
+
+/// Result of the quiet update probe shown in the toolbar chip and Updates window.
+enum UpdateAvailability: Equatable {
+    case unknown
+    case checking
+    case upToDate
+    case available(version: String)
+    case failed(String)
+
+    var isAvailable: Bool {
+        if case .available = self { return true }
+        return false
+    }
+
+    /// Sparkle reports "no update" as an error on the finished cycle.
+    static func afterCycle(_ current: UpdateAvailability, error: Error?) -> UpdateAvailability {
+        guard let error = error as NSError? else {
+            return current == .checking ? .upToDate : current
+        }
+        if isNoUpdate(error) {
+            return current.isAvailable ? current : .upToDate
+        }
+        // Cancelled user-driven sessions keep whatever the probe found.
+        if error.domain == NSCocoaErrorDomain, error.code == NSUserCancelledError {
+            return current == .checking ? .unknown : current
+        }
+        return current.isAvailable ? current : .failed(error.localizedDescription)
+    }
+
+    static func isNoUpdate(_ error: NSError) -> Bool {
+        error.domain == "SUSparkleErrorDomain" && error.code == 1001
+    }
+}

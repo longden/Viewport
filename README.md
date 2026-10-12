@@ -40,7 +40,7 @@ xcrun swift build --disable-sandbox
 
 ## Updates and releases
 
-Official release builds include an **Updates** section in the macOS Viewport menu. Choose **Updates…** to open the dedicated update window, or **Check for Updates…** to check directly. Automatic checks are optional. Installation requires an explicit action, and restart waits until recordings and Build & Play finish. Local debug bundles have production updates disabled.
+Official release builds check quietly for a new version when Viewport opens and show an **Update available** chip in the toolbar when there is one. Click the chip, or choose **Check for Updates…** in the Viewport menu, to open the Updates window, which checks again and offers the install. Scheduled background checks are optional. Installation requires an explicit action, and restart waits until recordings and Build & Play finish. Local debug bundles have production updates disabled.
 
 Release downloads remain ZIP files on GitHub Releases. Sparkle reads update metadata from GitHub Pages at `https://longden.github.io/Viewport/updates/appcast.xml`; the feed points to a specific release's ZIP.
 

@@ -118,6 +118,14 @@ struct ContentView: View {
                 workspaceUtilityToolbar
             }
 
+            if updates.availability.isAvailable {
+                ToolbarItem(placement: .primaryAction) {
+                    UpdateAvailableChip(updates: updates)
+                }
+
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
+
             ToolbarItem(placement: .primaryAction) {
                 Button(action: refreshAll) {
                     Label("Reload", systemImage: "arrow.clockwise")

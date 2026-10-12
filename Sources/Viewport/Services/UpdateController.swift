@@ -14,6 +14,7 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
     @Published private(set) var hasPendingInstallation = false
     @Published private(set) var isUpdaterStarted = false
+    @Published private(set) var availability: UpdateAvailability = .unknown
 
     let configuration: UpdateConfiguration
     private let activity: AppActivityStore
@@ -46,8 +47,20 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
             .store(in: &subscriptions)
         controller.startUpdater()
         isUpdaterStarted = true
+        // Quiet probe on launch: drives the "Update available" chip, no UI.
+        refreshAvailability()
     }
 
+    /// Looks for a newer release without showing Sparkle's UI.
+    func refreshAvailability() {
+        guard let updater = controller?.updater, !updater.sessionInProgress else { return }
+        if !availability.isAvailable {
+            availability = .checking
+        }
+        updater.checkForUpdateInformation()
+    }
+
+    /// Sparkle's own flow: release notes, download, and install prompts.
     func checkForUpdates() {
         guard canCheckForUpdates else { return }
         controller?.checkForUpdates(nil)
@@ -83,6 +96,14 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         return true
     }
 
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        availability = .available(version: item.displayVersionString)
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        availability = .upToDate
+    }
+
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         clearInstallation()
     }
@@ -93,6 +114,7 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         error: Error?
     ) {
         clearInstallation()
+        availability = UpdateAvailability.afterCycle(availability, error: error)
     }
 
     private func clearInstallation() {
@@ -103,7 +125,7 @@ final class UpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {
         BusyActivityAlert.present(
             activity,
             verb: "updating",
-            instruction: "When it finishes, choose Install Update and Restart from the Viewport menu or Updates window."
+            instruction: "When it finishes, choose Check for Updates… in the Viewport menu, then Install Update and Restart."
         )
     }
 }

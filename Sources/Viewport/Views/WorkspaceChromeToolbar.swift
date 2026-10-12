@@ -158,7 +158,7 @@ struct WorkspaceUtilityToolbar: View {
             Button {
                 openWindow(id: "updates")
             } label: {
-                Label("Updates…", systemImage: "arrow.triangle.2.circlepath")
+                Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
             }
         } label: {
             Label("Settings", systemImage: "gearshape")
@@ -249,5 +249,27 @@ struct WorkspaceActionToolbar: View {
         .controlSize(.regular)
         .fixedSize()
         .padding(.trailing, 16)
+    }
+}
+
+/// Toolbar chip shown when the launch probe finds a newer release.
+struct UpdateAvailableChip: View {
+    @ObservedObject var updates: UpdateController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if case let .available(version) = updates.availability {
+            Button {
+                openWindow(id: "updates")
+            } label: {
+                Label("Update available", systemImage: "arrow.down.circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.callout.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .help("Viewport \(version) is available. Click to see what’s new and install.")
+        }
     }
 }
