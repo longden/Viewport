@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import WebKit
 
 @MainActor
@@ -21,6 +22,9 @@ final class WebViewModel: ObservableObject {
     private let defaults: UserDefaults
     private let viewportPresetKey: String
     private var consoleCaptureEnabled = false
+    private(set) var geolocationOverride: GeoCoordinate?
+    @Published private(set) var proxySettings: ProxySettings?
+    private(set) var proxyCertificate: ProxyCertificate?
     private var hasLoadedInitialPage = false
     private var noticeGeneration = UUID()
 
@@ -48,6 +52,11 @@ final class WebViewModel: ObservableObject {
         configuration.websiteDataStore = .default()
         configuration.preferences.isElementFullscreenEnabled = true
         consoleBridge.install(in: configuration)
+        // Installed up front so watches a page starts before an override is set
+        // can still be moved onto the simulated position.
+        configuration.userContentController.addUserScript(
+            WebGeolocationOverride.userScript(initial: nil)
+        )
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = true
@@ -110,6 +119,77 @@ final class WebViewModel: ObservableObject {
         )
     }
 
+    /// Routes web pane traffic through an HTTP CONNECT proxy. The optional CA
+    /// is trusted for this web view only, so HTTPS interception works without
+    /// adding it to the login keychain.
+    func setProxy(_ settings: ProxySettings?, certificate: ProxyCertificate?) {
+        let store = webView.configuration.websiteDataStore
+        if let settings,
+           settings.isValid,
+           let port = NWEndpoint.Port(rawValue: UInt16(settings.port)) {
+            proxySettings = settings
+            proxyCertificate = certificate
+            store.proxyConfigurations = [
+                ProxyConfiguration(
+                    httpCONNECTProxy: .hostPort(
+                        host: NWEndpoint.Host(settings.trimmedHost),
+                        port: port
+                    )
+                )
+            ]
+        } else {
+            proxySettings = nil
+            proxyCertificate = nil
+            store.proxyConfigurations = []
+        }
+        if webView.url != nil {
+            webView.reload()
+        }
+    }
+
+    /// Accepts server certificates signed by the configured proxy CA.
+    func acceptsProxyServerTrust(_ trust: SecTrust) -> Bool {
+        guard proxySettings != nil, let proxyCertificate else { return false }
+        return proxyCertificate.evaluate(trust)
+    }
+
+    /// Simulated position for `navigator.geolocation`; `nil` restores WebKit's.
+    func setGeolocationOverride(_ coordinate: GeoCoordinate?) {
+        geolocationOverride = coordinate
+        reinstallUserScripts()
+        // The document-start script only reaches new documents; patch the open
+        // page too (the script ignores a second install), then move it.
+        webView.evaluateJavaScript(
+            WebGeolocationOverride.source(initial: coordinate)
+                + WebGeolocationOverride.updateScript(coordinate),
+            completionHandler: nil
+        )
+    }
+
+    /// Updates the position without touching the document-start script; used
+    /// for route playback so later reloads still start at the live position.
+    func moveGeolocationOverride(to coordinate: GeoCoordinate) {
+        guard geolocationOverride != nil else {
+            setGeolocationOverride(coordinate)
+            return
+        }
+        geolocationOverride = coordinate
+        webView.evaluateJavaScript(
+            WebGeolocationOverride.updateScript(coordinate),
+            completionHandler: nil
+        )
+    }
+
+    private func reinstallUserScripts() {
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        consoleBridge.addUserScript(to: controller)
+        // New documents start at this position; `__viewportSetGeo` moves it.
+        controller.addUserScript(
+            WebGeolocationOverride.userScript(initial: geolocationOverride)
+        )
+    }
+
     func setConsoleCaptureEnabled(_ enabled: Bool) {
         consoleCaptureEnabled = enabled
         consoleBridge.setEnabled(enabled, in: webView)
@@ -141,6 +221,12 @@ final class WebViewModel: ObservableObject {
         updateNavigationState()
         // User scripts reset page flags on each document; re-apply capture state.
         consoleBridge.setEnabled(consoleCaptureEnabled, in: webView)
+        if let geolocationOverride {
+            webView.evaluateJavaScript(
+                WebGeolocationOverride.updateScript(geolocationOverride),
+                completionHandler: nil
+            )
+        }
     }
 
     func navigationDidFail(_ error: Error) {

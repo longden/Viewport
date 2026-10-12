@@ -22,6 +22,11 @@ final class WebConsoleBridge: NSObject, WKScriptMessageHandler {
             WeakScriptMessageHandler(delegate: self),
             name: Self.handlerName
         )
+        addUserScript(to: controller)
+    }
+
+    /// Re-adds the console hook after `removeAllUserScripts()`.
+    func addUserScript(to controller: WKUserContentController) {
         controller.addUserScript(
             WKUserScript(
                 source: Self.bridgeScript,

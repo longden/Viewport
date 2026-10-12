@@ -58,5 +58,18 @@ struct WebContentView: NSViewRepresentable {
         ) {
             model.navigationDidFail(error)
         }
+
+        func webView(
+            _ webView: WKWebView,
+            respondTo challenge: URLAuthenticationChallenge
+        ) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            guard challenge.protectionSpace.authenticationMethod
+                    == NSURLAuthenticationMethodServerTrust,
+                  let trust = challenge.protectionSpace.serverTrust,
+                  model.acceptsProxyServerTrust(trust) else {
+                return (.performDefaultHandling, nil)
+            }
+            return (.useCredential, URLCredential(trust: trust))
+        }
     }
 }

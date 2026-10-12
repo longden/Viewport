@@ -26,8 +26,11 @@ final class WebViewModelTests: XCTestCase {
         let model = WebViewModel()
         let scripts = model.webView.configuration.userContentController.userScripts
 
-        XCTAssertEqual(scripts.count, 1)
-        XCTAssertEqual(scripts[0].injectionTime, .atDocumentStart)
-        XCTAssertFalse(scripts[0].isForMainFrameOnly)
+        // Console bridge, plus the geolocation wrapper installed before any override.
+        XCTAssertEqual(scripts.count, 2)
+        for script in scripts {
+            XCTAssertEqual(script.injectionTime, .atDocumentStart)
+            XCTAssertFalse(script.isForMainFrameOnly)
+        }
     }
 }
