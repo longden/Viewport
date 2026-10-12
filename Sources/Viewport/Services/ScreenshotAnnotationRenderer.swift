@@ -1,11 +1,14 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 
 enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
     case arrow
     case box
     case redact
+    case text
+    case step
 
     var id: String { rawValue }
 
@@ -14,6 +17,8 @@ enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
         case .arrow: "Arrow"
         case .box: "Box"
         case .redact: "Redact"
+        case .text: "Text"
+        case .step: "Step"
         }
     }
 
@@ -22,7 +27,14 @@ enum ScreenshotAnnotationKind: String, CaseIterable, Identifiable {
         case .arrow: "arrow.up.right"
         case .box: "rectangle"
         case .redact: "rectangle.dashed"
+        case .text: "textformat"
+        case .step: "1.circle"
         }
+    }
+
+    /// Text and step callouts are placed with a click; dragging adds a leader line.
+    var isCallout: Bool {
+        self == .text || self == .step
     }
 }
 
@@ -30,19 +42,46 @@ struct ScreenshotAnnotation: Identifiable, Equatable {
     let id: UUID
     var kind: ScreenshotAnnotationKind
     /// Normalized top-left origin (0…1) relative to image bounds.
+    /// Callouts sit at `start`; `end` is the leader-line tip.
     var start: CGPoint
     var end: CGPoint
+    /// Label for `.text` callouts.
+    var text: String?
+    /// Number shown in a `.step` marker.
+    var number: Int?
 
     init(
         id: UUID = UUID(),
         kind: ScreenshotAnnotationKind,
         start: CGPoint,
-        end: CGPoint
+        end: CGPoint,
+        text: String? = nil,
+        number: Int? = nil
     ) {
         self.id = id
         self.kind = kind
         self.start = start
         self.end = end
+        self.text = text
+        self.number = number
+    }
+
+    /// The string drawn inside a callout, if any.
+    var calloutText: String? {
+        switch kind {
+        case .text:
+            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        case .step:
+            return number.map(String.init)
+        case .arrow, .box, .redact:
+            return nil
+        }
+    }
+
+    /// Next number for a new step marker, continuing after the highest one placed.
+    static func nextStepNumber(in annotations: [ScreenshotAnnotation]) -> Int {
+        (annotations.compactMap { $0.kind == .step ? $0.number : nil }.max() ?? 0) + 1
     }
 }
 
@@ -52,6 +91,15 @@ enum ScreenshotAnnotationRenderer {
     static let arrowHeadLength: CGFloat = 18
     /// Large mosaic blocks so redaction is obviously unreadable.
     static let redactBlockSize: CGFloat = 18
+    static let stepMarkerRadius: CGFloat = 15
+    static let stepFontSize: CGFloat = 16
+    static let textFontSize: CGFloat = 17
+    static let textPadding = CGSize(width: 10, height: 6)
+    static let textCornerRadius: CGFloat = 8
+    static let leaderLineWidth: CGFloat = 3
+    static let leaderDotRadius: CGFloat = 4
+    /// Drags shorter than this (preview points) place a callout without a leader.
+    static let minimumLeaderLength: CGFloat = 12
 
     /// Maps preview-canvas point sizes onto image pixels so export strokes match
     /// what was drawn on the fitted preview (aspect-fit).
@@ -103,6 +151,14 @@ enum ScreenshotAnnotationRenderer {
                     from: start,
                     to: end,
                     source: image,
+                    in: context
+                )
+            case .text, .step:
+                drawCallout(
+                    annotation,
+                    at: start,
+                    leaderEnd: end,
+                    scale: scale,
                     in: context
                 )
             }
@@ -253,6 +309,154 @@ enum ScreenshotAnnotationRenderer {
         context.addLine(to: geometry.right)
         context.closePath()
         context.fillPath()
+        context.restoreGState()
+    }
+
+    /// Whether a callout drag is long enough to draw a leader line.
+    static func hasLeader(
+        from start: CGPoint,
+        to end: CGPoint,
+        scale: CGFloat = 1
+    ) -> Bool {
+        hypot(end.x - start.x, end.y - start.y) >= minimumLeaderLength * max(scale, 0.01)
+    }
+
+    /// Leader start on the edge of a callout bubble so the line doesn't cross the label.
+    static func leaderStart(
+        bubble: CGRect,
+        toward end: CGPoint
+    ) -> CGPoint {
+        let center = CGPoint(x: bubble.midX, y: bubble.midY)
+        let dx = end.x - center.x
+        let dy = end.y - center.y
+        guard dx != 0 || dy != 0 else { return center }
+        let halfWidth = max(bubble.width / 2, 0.01)
+        let halfHeight = max(bubble.height / 2, 0.01)
+        let factor = 1 / max(abs(dx) / halfWidth, abs(dy) / halfHeight)
+        return CGPoint(x: center.x + dx * min(factor, 1), y: center.y + dy * min(factor, 1))
+    }
+
+    /// Bubble rect centred on `center` for a label of `textSize`.
+    static func calloutBubble(
+        kind: ScreenshotAnnotationKind,
+        center: CGPoint,
+        textSize: CGSize,
+        scale: CGFloat = 1
+    ) -> CGRect {
+        let scale = max(scale, 0.01)
+        if kind == .step {
+            let radius = max(stepMarkerRadius * scale, textSize.width / 2 + 5 * scale)
+            return CGRect(
+                x: center.x - radius,
+                y: center.y - stepMarkerRadius * scale,
+                width: radius * 2,
+                height: stepMarkerRadius * scale * 2
+            )
+        }
+        let width = textSize.width + textPadding.width * 2 * scale
+        let height = textSize.height + textPadding.height * 2 * scale
+        return CGRect(
+            x: center.x - width / 2,
+            y: center.y - height / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    static func calloutFont(
+        for kind: ScreenshotAnnotationKind,
+        scale: CGFloat
+    ) -> NSFont {
+        let size = (kind == .step ? stepFontSize : textFontSize) * max(scale, 0.01)
+        return kind == .step
+            ? NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
+            : NSFont.systemFont(ofSize: size, weight: .semibold)
+    }
+
+    private static func drawCallout(
+        _ annotation: ScreenshotAnnotation,
+        at center: CGPoint,
+        leaderEnd: CGPoint,
+        scale: CGFloat,
+        in context: CGContext
+    ) {
+        guard let label = annotation.calloutText else { return }
+        let font = calloutFont(for: annotation.kind, scale: scale)
+        let attributed = NSAttributedString(
+            string: label,
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.white
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributed)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+        let textSize = CGSize(width: width, height: ascent + descent)
+        let bubble = calloutBubble(
+            kind: annotation.kind,
+            center: center,
+            textSize: textSize,
+            scale: scale
+        )
+        let fill = annotation.kind == .step
+            ? NSColor.systemRed.cgColor
+            : NSColor.black.withAlphaComponent(0.82).cgColor
+
+        context.saveGState()
+        if hasLeader(from: center, to: leaderEnd, scale: scale) {
+            let lineStart = leaderStart(bubble: bubble, toward: leaderEnd)
+            context.setStrokeColor(NSColor.systemRed.cgColor)
+            context.setFillColor(NSColor.systemRed.cgColor)
+            context.setLineWidth(leaderLineWidth * scale)
+            context.setLineCap(.round)
+            context.move(to: lineStart)
+            context.addLine(to: leaderEnd)
+            context.strokePath()
+            let dot = leaderDotRadius * scale
+            context.fillEllipse(in: CGRect(
+                x: leaderEnd.x - dot,
+                y: leaderEnd.y - dot,
+                width: dot * 2,
+                height: dot * 2
+            ))
+        }
+
+        context.setFillColor(fill)
+        if annotation.kind == .step {
+            let path = CGPath(
+                roundedRect: bubble,
+                cornerWidth: bubble.height / 2,
+                cornerHeight: bubble.height / 2,
+                transform: nil
+            )
+            context.addPath(path)
+            context.fillPath()
+            context.setStrokeColor(NSColor.white.cgColor)
+            context.setLineWidth(2 * scale)
+            context.addPath(path)
+            context.strokePath()
+        } else {
+            let radius = textCornerRadius * scale
+            context.addPath(CGPath(
+                roundedRect: bubble,
+                cornerWidth: radius,
+                cornerHeight: radius,
+                transform: nil
+            ))
+            context.fillPath()
+        }
+
+        // CG space is bottom-left: the baseline sits `descent` above the bottom
+        // of the vertically centred text block.
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(
+            x: bubble.midX - width / 2,
+            y: bubble.midY - textSize.height / 2 + descent
+        )
+        CTLineDraw(line, context)
         context.restoreGState()
     }
 

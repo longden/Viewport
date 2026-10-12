@@ -13,7 +13,7 @@ Open a website alongside an Android emulator and an iOS Simulator to see how the
 ## What you can do
 
 - Record demo videos and walkthroughs with all visible panes together in one MP4.
-- Capture and annotate screenshots for release notes, documentation or bug reports.
+- Capture and annotate screenshots with arrows, boxes, redaction, text and numbered steps for release notes, documentation or bug reports.
 - Show or hide web, Android and iOS panes to suit what you're working on.
 - Tap and type on devices, and open a URL or deep link on every visible pane at once from **Open Link** (⇧⌘L). You can also mirror input across supported panes.
 - Inspect elements across platforms: click a control in one pane and Viewport finds the same one on the others, compares labels and roles, and flags missing labels and small tap targets.

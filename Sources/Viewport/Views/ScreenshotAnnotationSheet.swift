@@ -8,6 +8,7 @@ struct ScreenshotAnnotationSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var kind: ScreenshotAnnotationKind = .arrow
+    @State private var calloutText = "Note"
     @State private var annotations: [ScreenshotAnnotation] = []
     @State private var draftStart: CGPoint?
     @State private var draftEnd: CGPoint?
@@ -47,7 +48,7 @@ struct ScreenshotAnnotationSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Annotate screenshot")
                     .font(.title3.weight(.semibold))
-                Text("Draw arrows, boxes, or pixelate redaction regions, then save.")
+                Text("Draw arrows and boxes, pixelate regions, or click to place text and numbered steps. Drag a callout to add a pointer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -59,7 +60,14 @@ struct ScreenshotAnnotationSheet: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 420)
+
+            if kind == .text {
+                TextField("Label", text: $calloutText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .help("Text placed by the next click")
+            }
 
             Button("Discard") {
                 didSave = true
@@ -210,11 +218,7 @@ struct ScreenshotAnnotationSheet: View {
             }
             if let draftStart, let draftEnd {
                 draw(
-                    ScreenshotAnnotation(
-                        kind: kind,
-                        start: draftStart,
-                        end: draftEnd
-                    ),
+                    makeAnnotation(start: draftStart, end: draftEnd),
                     in: context,
                     size: size,
                     baseImage: baseImage
@@ -314,11 +318,96 @@ struct ScreenshotAnnotationSheet: View {
             } else {
                 context.fill(Path(rect), with: .color(.black))
             }
+        case .text, .step:
+            drawCallout(annotation, at: start, leaderEnd: end, in: context)
         }
     }
 
+    /// Preview twin of `ScreenshotAnnotationRenderer.drawCallout` at scale 1.
+    private func drawCallout(
+        _ annotation: ScreenshotAnnotation,
+        at center: CGPoint,
+        leaderEnd: CGPoint,
+        in context: GraphicsContext
+    ) {
+        guard let label = annotation.calloutText else { return }
+        let font = ScreenshotAnnotationRenderer.calloutFont(
+            for: annotation.kind,
+            scale: 1
+        )
+        let resolved = context.resolve(
+            Text(label)
+                .font(Font(font))
+                .foregroundColor(.white)
+        )
+        let textSize = resolved.measure(in: CGSize(width: 2_000, height: 400))
+        let bubble = ScreenshotAnnotationRenderer.calloutBubble(
+            kind: annotation.kind,
+            center: center,
+            textSize: textSize
+        )
+        if ScreenshotAnnotationRenderer.hasLeader(from: center, to: leaderEnd) {
+            var leader = Path()
+            leader.move(to: ScreenshotAnnotationRenderer.leaderStart(
+                bubble: bubble,
+                toward: leaderEnd
+            ))
+            leader.addLine(to: leaderEnd)
+            context.stroke(
+                leader,
+                with: .color(.red),
+                style: StrokeStyle(
+                    lineWidth: ScreenshotAnnotationRenderer.leaderLineWidth,
+                    lineCap: .round
+                )
+            )
+            let dot = ScreenshotAnnotationRenderer.leaderDotRadius
+            context.fill(
+                Path(ellipseIn: CGRect(
+                    x: leaderEnd.x - dot,
+                    y: leaderEnd.y - dot,
+                    width: dot * 2,
+                    height: dot * 2
+                )),
+                with: .color(.red)
+            )
+        }
+        if annotation.kind == .step {
+            let capsule = Path(
+                roundedRect: bubble,
+                cornerRadius: bubble.height / 2,
+                style: .continuous
+            )
+            context.fill(capsule, with: .color(.red))
+            context.stroke(capsule, with: .color(.white), lineWidth: 2)
+        } else {
+            context.fill(
+                Path(
+                    roundedRect: bubble,
+                    cornerRadius: ScreenshotAnnotationRenderer.textCornerRadius,
+                    style: .continuous
+                ),
+                with: .color(.black.opacity(0.82))
+            )
+        }
+        context.draw(resolved, at: CGPoint(x: bubble.midX, y: bubble.midY))
+    }
+
+    private func makeAnnotation(start: CGPoint, end: CGPoint) -> ScreenshotAnnotation {
+        ScreenshotAnnotation(
+            kind: kind,
+            start: start,
+            end: end,
+            text: kind == .text ? calloutText : nil,
+            number: kind == .step
+                ? ScreenshotAnnotation.nextStepNumber(in: annotations)
+                : nil
+        )
+    }
+
     private func dragGesture(in size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        // Zero distance so a plain click places a text or step callout.
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let start = normalize(value.startLocation, in: size)
                 let end = normalize(value.location, in: size)
@@ -326,13 +415,21 @@ struct ScreenshotAnnotationSheet: View {
                 draftEnd = end
             }
             .onEnded { value in
-                let start = normalize(value.startLocation, in: size)
-                let end = normalize(value.location, in: size)
-                annotations.append(
-                    ScreenshotAnnotation(kind: kind, start: start, end: end)
+                defer {
+                    draftStart = nil
+                    draftEnd = nil
+                }
+                let distance = hypot(
+                    value.location.x - value.startLocation.x,
+                    value.location.y - value.startLocation.y
                 )
-                draftStart = nil
-                draftEnd = nil
+                guard kind.isCallout || distance >= 2 else { return }
+                let annotation = makeAnnotation(
+                    start: normalize(value.startLocation, in: size),
+                    end: normalize(value.location, in: size)
+                )
+                guard !kind.isCallout || annotation.calloutText != nil else { return }
+                annotations.append(annotation)
             }
     }
 

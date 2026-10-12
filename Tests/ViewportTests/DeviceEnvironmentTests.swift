@@ -394,3 +394,73 @@ final class DeviceAccessibilitySettingsTests: XCTestCase {
         XCTAssertEqual(DeviceContrast.standard.androidValue, "0")
     }
 }
+
+final class ScreenshotCalloutTests: XCTestCase {
+    func testStepNumbersContinueAfterTheHighest() {
+        XCTAssertEqual(ScreenshotAnnotation.nextStepNumber(in: []), 1)
+        let annotations = [
+            ScreenshotAnnotation(kind: .step, start: .zero, end: .zero, number: 1),
+            ScreenshotAnnotation(kind: .arrow, start: .zero, end: .zero),
+            ScreenshotAnnotation(kind: .step, start: .zero, end: .zero, number: 4)
+        ]
+        XCTAssertEqual(ScreenshotAnnotation.nextStepNumber(in: annotations), 5)
+    }
+
+    func testCalloutText() {
+        XCTAssertEqual(ScreenshotAnnotation(kind: .text, start: .zero, end: .zero, text: "  Tap here ").calloutText, "Tap here")
+        XCTAssertNil(ScreenshotAnnotation(kind: .text, start: .zero, end: .zero, text: "   ").calloutText)
+        XCTAssertEqual(ScreenshotAnnotation(kind: .step, start: .zero, end: .zero, number: 3).calloutText, "3")
+        XCTAssertNil(ScreenshotAnnotation(kind: .box, start: .zero, end: .zero).calloutText)
+        XCTAssertTrue(ScreenshotAnnotationKind.step.isCallout)
+        XCTAssertFalse(ScreenshotAnnotationKind.arrow.isCallout)
+    }
+
+    func testLeaderGeometry() {
+        XCTAssertFalse(ScreenshotAnnotationRenderer.hasLeader(from: .zero, to: CGPoint(x: 5, y: 5)))
+        XCTAssertTrue(ScreenshotAnnotationRenderer.hasLeader(from: .zero, to: CGPoint(x: 30, y: 0)))
+        // Scaled exports need proportionally longer drags.
+        XCTAssertFalse(ScreenshotAnnotationRenderer.hasLeader(from: .zero, to: CGPoint(x: 30, y: 0), scale: 3))
+        let bubble = CGRect(x: 0, y: 0, width: 40, height: 20)
+        let start = ScreenshotAnnotationRenderer.leaderStart(bubble: bubble, toward: CGPoint(x: 120, y: 10))
+        XCTAssertEqual(start.x, 40, accuracy: 0.001)
+        XCTAssertEqual(start.y, 10, accuracy: 0.001)
+        let step = ScreenshotAnnotationRenderer.calloutBubble(
+            kind: .step,
+            center: CGPoint(x: 50, y: 50),
+            textSize: CGSize(width: 8, height: 12),
+            scale: 2
+        )
+        XCTAssertEqual(step.height, ScreenshotAnnotationRenderer.stepMarkerRadius * 4, accuracy: 0.001)
+        XCTAssertEqual(step.midX, 50, accuracy: 0.001)
+    }
+
+    func testRendersStepAndTextCallouts() throws {
+        let image = try XCTUnwrap(makeImage(width: 200, height: 200))
+        let rendered = try ScreenshotAnnotationRenderer.render(image, annotations: [
+            ScreenshotAnnotation(kind: .step, start: CGPoint(x: 0.25, y: 0.25), end: CGPoint(x: 0.25, y: 0.25), number: 1),
+            ScreenshotAnnotation(kind: .text, start: CGPoint(x: 0.5, y: 0.75), end: CGPoint(x: 0.9, y: 0.95), text: "Tap"),
+            ScreenshotAnnotation(kind: .text, start: CGPoint(x: 0.8, y: 0.2), end: CGPoint(x: 0.8, y: 0.2), text: " ")
+        ])
+        // Step marker is red at its rim, off the white digit.
+        let marker = try XCTUnwrap(PixelSampler.color(in: rendered, at: CGPoint(x: 0.25 - 10.0 / 200, y: 0.25), source: .iOS))
+        XCTAssertGreaterThan(marker.red, 200)
+        XCTAssertLessThan(marker.blue, 120)
+        // Text bubble is a dark pill.
+        let pill = try XCTUnwrap(PixelSampler.color(in: rendered, at: CGPoint(x: 0.5 - 18.0 / 200, y: 0.75), source: .iOS))
+        XCTAssertLessThan(pill.red + pill.green + pill.blue, 200)
+        // An empty text callout draws nothing.
+        let untouched = try XCTUnwrap(PixelSampler.color(in: rendered, at: CGPoint(x: 0.8, y: 0.2), source: .iOS))
+        XCTAssertGreaterThan(untouched.blue, 150)
+    }
+
+    private func makeImage(width: Int, height: Int) -> CGImage? {
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+}
