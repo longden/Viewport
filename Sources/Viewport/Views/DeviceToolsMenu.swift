@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Compare-workflow tools: appearance, font scale, status bars, and optional
+/// Compare-workflow tools: appearance, text size, contrast, status bars, and optional
 /// experimental compare helpers.
 struct DeviceToolsMenu: View {
     @ObservedObject var workspace: WorkspaceStore
@@ -28,11 +28,22 @@ struct DeviceToolsMenu: View {
                 }
             }
 
-            Section("Font scale (Android)") {
+            Section("Text size") {
                 ForEach(DeviceFontScale.allCases) { scale in
                     Button(scale.title) {
                         run {
                             try await workspace.broadcastFontScale(scale)
+                        }
+                    }
+                    .disabled(isBusy)
+                }
+            }
+
+            Section("Contrast") {
+                ForEach(DeviceContrast.allCases) { contrast in
+                    Button(contrast.title) {
+                        run {
+                            try await workspace.broadcastContrast(contrast)
                         }
                     }
                     .disabled(isBusy)

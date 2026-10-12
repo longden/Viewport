@@ -16,6 +16,7 @@ Open a website alongside an Android emulator and an iOS Simulator to see how the
 - Capture and annotate screenshots for release notes, documentation or bug reports.
 - Show or hide web, Android and iOS panes to suit what you're working on.
 - Tap, type, paste, open deep links and set device locations. You can also mirror input across supported panes.
+- Change appearance, text size and contrast on all devices at once.
 - Build and install Xcode or Android projects on simulators and emulators with **Build & Play**.
 - Read web console messages, Android logcat and simulator logs alongside the devices.
 - Use **Light Sim**, powered by [simslim](https://github.com/MobAI-App/simslim), as an alternative to the standard iOS Simulator. Install it from Help or the iOS Play menu.

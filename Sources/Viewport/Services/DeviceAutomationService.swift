@@ -63,6 +63,46 @@ enum DeviceFontScale: String, CaseIterable, Identifiable {
         case .extraLarge: "1.3"
         }
     }
+
+    /// Simulator `simctl ui content_size` category closest to the Android scale.
+    var iOSContentSize: String {
+        switch self {
+        case .small: "small"
+        case .defaultScale: "large"
+        case .large: "extra-large"
+        case .extraLarge: "extra-extra-large"
+        }
+    }
+}
+
+enum DeviceContrast: String, CaseIterable, Identifiable {
+    case standard
+    case increased
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: "Standard contrast"
+        case .increased: "Increase contrast"
+        }
+    }
+
+    /// Simulator `simctl ui increase_contrast` argument.
+    var iOSValue: String {
+        switch self {
+        case .standard: "disabled"
+        case .increased: "enabled"
+        }
+    }
+
+    /// Android `high_text_contrast_enabled` secure setting.
+    var androidValue: String {
+        switch self {
+        case .standard: "0"
+        case .increased: "1"
+        }
+    }
 }
 
 enum DeviceAutomationError: LocalizedError {
@@ -123,7 +163,7 @@ struct DeviceInjectionResult: Sendable, Equatable {
 }
 
 /// Cross-device helpers for compare workflows: open URL, appearance,
-/// font scale, and clean status bars.
+/// text size, contrast, and clean status bars.
 actor DeviceAutomationService {
     private let runner: CommandRunner
     private let adb: URL?
@@ -211,9 +251,44 @@ actor DeviceAutomationService {
                 ],
                 label: "Set font scale"
             )
-        case .iOSSimulator, .iOSDevice:
+        case .iOSSimulator:
+            try await runXcrun(
+                arguments: [
+                    "simctl", "ui", device.id, "content_size", scale.iOSContentSize
+                ],
+                label: "Set text size"
+            )
+        case .iOSDevice:
             throw DeviceAutomationError.unsupported(
-                "Font scale is Android-only for now. Use Settings ▸ Display on iOS."
+                "Text size can be changed on Simulator and Android. Use Settings ▸ Display on a physical iPhone."
+            )
+        }
+    }
+
+    func setContrast(
+        _ contrast: DeviceContrast,
+        on device: StreamedDevice
+    ) async throws {
+        switch device.kind {
+        case .androidEmulator, .androidDevice:
+            try await runADB(
+                serial: device.id,
+                arguments: [
+                    "shell", "settings", "put", "secure",
+                    "high_text_contrast_enabled", contrast.androidValue
+                ],
+                label: "Set contrast"
+            )
+        case .iOSSimulator:
+            try await runXcrun(
+                arguments: [
+                    "simctl", "ui", device.id, "increase_contrast", contrast.iOSValue
+                ],
+                label: "Set contrast"
+            )
+        case .iOSDevice:
+            throw DeviceAutomationError.unsupported(
+                "Contrast can be changed on Simulator and Android. Use Settings ▸ Accessibility on a physical iPhone."
             )
         }
     }

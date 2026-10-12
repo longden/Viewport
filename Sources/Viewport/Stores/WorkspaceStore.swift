@@ -761,6 +761,10 @@ final class WorkspaceStore: ObservableObject {
         try await broadcast { try await automation.setFontScale(scale, on: $0) }
     }
 
+    func broadcastContrast(_ contrast: DeviceContrast) async throws {
+        try await broadcast { try await automation.setContrast(contrast, on: $0) }
+    }
+
     func broadcastCleanStatusBar() async throws {
         try await broadcast { try await automation.applyCleanStatusBar(on: $0) }
     }
